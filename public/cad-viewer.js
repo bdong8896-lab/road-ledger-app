@@ -737,6 +737,24 @@ function decodeDxfText(raw) {
     return s;
 }
 
+// "_SLOPE" 레이어의 TEXT는 원본 캐드 프로그램(도로 종단 설계용 애드인)이 자기
+// 자신만 다시 파싱해서 편집할 수 있도록 "시점역#종점역#S=경사%#수평거리#H=높이
+// L=길이" 5개 필드를 "#"로 이어붙여 그룹코드 1(문자열)에 그대로 저장해둔다
+// (실제 업로드 파일의 _SLOPE TEXT 16개 표본 전부 이 형식 — 예:
+// "4+060#5+040#S=3.220%#39.10#H=5.17 L=962.00"). 원본 오토캐드 화면에는 3·5번째
+// 필드(S=...%, H=...L=...)만 두 줄로 보이고 나머지(역 구간, 수평거리)는 안
+// 보이는데, dxf-parser는 이 원문을 가공 없이 그대로 넘기므로 우리가 그대로
+// fillText에 넣으면 "#"까지 전부 드러나 이상해 보였다(사용자 스크린샷으로
+// 확인된 버그) — 그래서 이 레이어에서만 필드를 골라 재구성한다.
+function formatSlopeAnnotationText(raw, layer) {
+    if (layer !== '_SLOPE' || !raw) return raw;
+    const parts = raw.split('#');
+    if (parts.length === 5 && /^S=/.test(parts[2]) && /^H=/.test(parts[4])) {
+        return `${parts[2]}\n${parts[4]}`;
+    }
+    return raw;
+}
+
 const dxfViewer = {
     canvas: null, ctx: null,
     entities: [], layers: {}, layerVisible: {}, blocks: {},
@@ -752,11 +770,21 @@ const dxfViewer = {
         this.layers = (dxf.tables && dxf.tables.layer && dxf.tables.layer.layers) || {};
         this.blocks = dxf.blocks || {};
         this.layerVisible = {};
-        Object.keys(this.layers).forEach((name) => { this.layerVisible[name] = true; });
+        // dxf-parser는 LAYER 테이블의 그룹코드 70(플래그)·62(색상)을 이미 layer.frozen
+        // (동결)·layer.visible(off 레이어면 false, 색상값이 음수)로 해석해서 넘겨준다.
+        // 예전엔 이걸 무시하고 무조건 전부 true로 켰는데, 실제 파일(_SLOPE 레이어,
+        // 종단 구배 주기용 TEXT)이 원본 캐드에서는 동결(70=1)돼 있어 안 보이는데도
+        // 우리 뷰어에서는 뜬금없이 보이는 버그가 있었다(사용자가 스크린샷으로 확인,
+        // 원본엔 그 위치에 글자가 아예 없음). 오토캐드처럼 원본 DXF에 저장된 켜짐/꺼짐
+        // 상태를 기본값으로 그대로 따른다 — 여전히 레이어 목록에서 수동으로 켤 수 있다.
+        Object.keys(this.layers).forEach((name) => {
+            const l = this.layers[name];
+            this.layerVisible[name] = !(l && (l.frozen || l.visible === false));
+        });
         // TITLE 레이어(장성로고 같은 기관 마크 INSERT)는 실제 파일에서 도면 프레임
         // 바깥 좌표에 놓여 있어 화면/인쇄 어디에도 보이지 않는데, 레이어 목록에는
-        // 계속 뜨고 바운딩박스도 왜곡시켜 기본값을 꺼둔다. 필요하면 레이어
-        // 목록에서 다시 켤 수 있다(완전히 지우진 않음).
+        // 계속 뜨고 바운딩박스도 왜곡시켜 기본값을 꺼둔다(DXF 자체엔 동결 표시가
+        // 없어 위 규칙만으론 안 잡힘). 필요하면 레이어 목록에서 다시 켤 수 있다.
         if ('TITLE' in this.layerVisible) this.layerVisible.TITLE = false;
         this.bbox = this._computeBBox();
         this.fit();
@@ -1130,7 +1158,7 @@ const dxfViewer = {
                     // textAlign이 그대로 대응돼서 계산 없이 바로 쓸 수 있다.
                     ctx.textAlign = e.halign === 2 ? 'right' : e.halign ? 'center' : 'left';
                     ctx.textBaseline = e.valign === 3 ? 'top' : e.valign === 2 ? 'middle' : e.valign === 1 ? 'bottom' : 'alphabetic';
-                    decodeDxfText(e.text).split('\n').forEach((line, i) => {
+                    decodeDxfText(formatSlopeAnnotationText(e.text, e.layer)).split('\n').forEach((line, i) => {
                         ctx.fillText(line, 0, i * size * 1.2);
                     });
                     ctx.restore();
@@ -1214,9 +1242,29 @@ const dxfViewer = {
 function resizeDxfCanvas() {
     const canvas = document.getElementById('cad-canvas');
     const wrap = document.getElementById('cad-viewer-wrap');
-    canvas.width = wrap.clientWidth;
-    canvas.height = wrap.clientHeight;
-    if (dxfViewer.bbox) dxfViewer.render();
+    const oldW = canvas.width, oldH = canvas.height;
+    const newW = wrap.clientWidth, newH = wrap.clientHeight;
+    // 도면이 로드된 상태에서 캔버스 크기만 바꾸고 scale/pan을 그대로 두면(예전
+    // 방식), 열었을 땐 창에 꽉 차 보이던 도면이 팝업 창을 최대화하거나 창
+    // 크기를 조절할 때마다 캔버스만 커지고 도면은 이전 픽셀 크기 그대로 남아
+    // "화면이 멀리서 축소된 것처럼" 보이는 문제가 있었다(실사용 중 확인됨).
+    // 그래서 크기가 바뀌기 직전 화면 중심의 월드좌표를 기억해뒀다가, 크기가
+    // 바뀐 뒤에도 그 좌표가 새 캔버스 중심에 오도록, 그리고 도면이 이전과 같은
+    // 비율로 화면을 채우도록 scale/pan을 함께 비례 조정한다.
+    if (dxfViewer.bbox && oldW > 0 && oldH > 0 && (newW !== oldW || newH !== oldH)) {
+        const [cx, cy] = dxfViewer._toWorld(oldW / 2, oldH / 2);
+        const k = Math.min(newW / oldW, newH / oldH);
+        canvas.width = newW;
+        canvas.height = newH;
+        dxfViewer.scale *= k;
+        dxfViewer.panX = newW / 2 - cx * dxfViewer.scale;
+        dxfViewer.panY = newH / 2 - cy * dxfViewer.scale;
+        dxfViewer.render();
+    } else {
+        canvas.width = newW;
+        canvas.height = newH;
+        if (dxfViewer.bbox) dxfViewer.render();
+    }
 }
 
 function initDxfCanvas() {
@@ -1706,6 +1754,53 @@ function detectDxfEncoding(bytes) {
     return DXF_CODEPAGE_TO_ENCODING[m[1].toUpperCase()] || 'utf-8';
 }
 
+// dxf-parser@1.1.2는 그룹코드 값을 읽을 때 전부 trim()해버린다(라이브러리 자체
+// 동작 — 직접 소스 확인함). 그런데 일부 텍스트는 일부러 끝에 공백을 넣어
+// 가운데정렬 중심점을 옮겨두는 방식으로 그 뒤에 붙는 다른 텍스트(예: ATTRIB
+// 측점값)와 겹치지 않게 배치한다 — 실제 파일(000801100000P.dxf, MATCH_F 블록)
+// 로 확인: 원문은 "MATCH LINE STA.     "(끝에 공백 5칸)인데 dxf-parser를
+// 거치면 "MATCH LINE STA."로 공백이 사라져, 가운데정렬 중심점이 뒤로 밀리면서
+// "0+000" 측점 텍스트와 겹쳐 보였다(사용자 스크린샷으로 확인된 버그). 이
+// 함수는 원본 텍스트를 핸들(그룹코드 5, dxf-parser도 그대로 entity.handle에
+// 넣어준다)로 다시 훑어서 trim되지 않은 원래 값을 따로 모아두고, 아래
+// loadDxfFile에서 파싱 결과에 되돌려 붙인다.
+function buildUntrimmedTextByHandle(text) {
+    const lines = text.split(/\r\n|\r|\n/);
+    const map = {};
+    let i = 0;
+    let curHandle = null;
+    let curText;
+    const flush = () => {
+        if (curHandle != null && curText !== undefined) map[curHandle] = curText;
+        curHandle = null;
+        curText = undefined;
+    };
+    while (i + 1 < lines.length) {
+        const code = lines[i].trim();
+        const value = lines[i + 1];
+        if (code === '0') {
+            flush();
+        } else if (code === '5') {
+            curHandle = value.trim();
+        } else if (code === '1') {
+            curText = value.replace(/\r$/, '');
+        }
+        i += 2;
+    }
+    flush();
+    return map;
+}
+
+function restoreUntrimmedText(dxf, untrimmedByHandle) {
+    const patch = (e) => {
+        if (e && e.handle && e.text !== undefined && untrimmedByHandle[e.handle] !== undefined) {
+            e.text = untrimmedByHandle[e.handle];
+        }
+    };
+    (dxf.entities || []).forEach(patch);
+    Object.values(dxf.blocks || {}).forEach((b) => (b.entities || []).forEach(patch));
+}
+
 async function loadDxfFile(url, filename) {
     currentDxfFileUrl = url;
     currentDxfFileName = filename;
@@ -1722,6 +1817,9 @@ async function loadDxfFile(url, filename) {
         const text = new TextDecoder(detectDxfEncoding(bytes)).decode(bytes);
         try {
             const dxf = new DxfParser().parseSync(text);
+            try {
+                restoreUntrimmedText(dxf, buildUntrimmedTextByHandle(text));
+            } catch (err) { /* 실패해도 기본 도면은 그대로 보여준다(trim된 텍스트로라도 표시) */ }
             try {
                 dxf.entities = (dxf.entities || []).concat(extractUnsupportedEntities(text));
             } catch (err) { /* 보충 파싱 실패해도 기본 도면은 그대로 보여준다 */ }
@@ -1745,11 +1843,115 @@ async function loadDxfFile(url, filename) {
     }
 }
 
-// DXF 레이어명 한글 해석(비공식) — 이 CAD 레이어명(예: CL-LOTT, CA-ALGN-STSM)을
-// 설명하는 공식 문서는 국토부 표준·이 프로젝트 어디에도 없다(직접 확인함 —
-// 지적재조사 측량 CAD 도구의 벤더 내부 규칙으로 추정). 접두어 패턴(CL=지적선
-// Cadastral Line류, CA=중심선형 Alignment류, CX=기타 경계)을 근거로 추정해 붙인
-// 것이라 확정된 해석이 아니다 — 참고용 힌트로만 표시한다.
+// 실제 업로드된 CAD 파일(server/uploads/routes 밑 DXF 108개)의 레이어명을
+// 전부 뽑아 분석한 결과 182종이 나왔다 — 아래 두 그룹만 이 사전에 넣었다:
+//
+// (1) DXF_LAYER_OFFICIAL_HINTS: "영문자+숫자7자리" 형식(예: A0013110,
+//     C0076117) 레이어코드 중, 아래 두 공식 문서 중 하나와 코드가 완전히
+//     일치하는 것들. 추정이 아니라 확정값이다.
+//       - govLayerMap.js의 GOV_LAYER_MAP 49종(국토부 「도로대장공간정보」
+//         표준 정의서 v2.3, 이 앱이 이미 알고 있음) — 4종 일치
+//         (C0076117=측구, C0223367=가로등, C0493376=신호등, D0023372=가로수)
+//       - 국가법령정보센터(law.go.kr)에서 내려받은 국토지리정보원
+//         "수치지도 지형지물 표준코드(안)" 원본 엑셀(680개 코드 전체 수록,
+//         xlrd로 직접 파싱해 대조 — 육안 판독이 아니라 원본 셀 값을 그대로
+//         가져온 것) — 75종 일치. 사용자가 국토정보 표준코드 범례 이미지를
+//         제공해준 것을 계기로 원본 문서를 찾아 대조했다.
+// (2) DXF_LAYER_KOREAN_HINTS: 이 CAD 레이어명(예: CL-LOTT, CA-ALGN-STSM)을
+//     설명하는 공식 문서는 국토부 표준·이 프로젝트 어디에도 없다(직접
+//     확인함 — 지적재조사 측량 CAD 도구의 벤더 내부 규칙으로 추정). 접두어
+//     패턴(CL=지적선 Cadastral Line류, CA=중심선형 Alignment류, CC=횡단면
+//     Cross-section류, CD=배수 Drainage류, CF=구조물 Facility류, CM=노면
+//     표시/안전시설 Marking류, CR=도면 참고표기 Reference류, CS=철근
+//     Steel-rebar류, CV=격자 grid, CX=도곽/기타 경계)를 근거로 추정해
+//     붙인 것이라 확정된 해석이 아니다 — 참고용 힌트로만 표시한다.
+//
+// 나머지("영문자+숫자7자리" 형식 중 위 두 문서 어디에도 없는 것, 그리고
+// AE134/AEC007/SB101/TITLE/TJ/KRB007 등 뚜렷한 패턴이 없는 것들)은 일부러
+// 안 넣었다 — 근거 없이 추정하면 오히려 오해를 줄 수 있다고 판단했다.
+const DXF_LAYER_OFFICIAL_HINTS = {
+    // govLayerMap.js GOV_LAYER_MAP과 일치 (도로대장 v2.3)
+    'C0076117': '측구',
+    'C0223367': '가로등',
+    'C0493376': '신호등',
+    'D0023372': '가로수',
+    // 국토지리정보원 수치지도 지형지물 표준코드(안)와 일치
+    'A0013110': '도로(미분류)',
+    'A0013112': '일반국도',
+    'A0013116': '군도',
+    'A0013117': '면리간도로',
+    'A0013118': '부지안도로',
+    'A0023119': '소로',
+    'A0023210': '도로중심선(미분류)',
+    'A0023212': '도로중심선(일반국도)',
+    'A0023216': '도로중심선(군도)',
+    'A0023217': '도로중심선(면리간도로)',
+    'A0033327': '자전거도로',
+    'A0043325': '횡단보도',
+    'A0071211': '철교',
+    'A0073340': '다리(미분류)',
+    'A0143411': '버스정류장',
+    'A0151111': '보통철도',
+    'A0160024': '철도부지선',
+    'B0014111': '주택외건물',
+    'B0014112': '주택',
+    'B0014113': '연립주택',
+    'B0014116': '무벽건물',
+    'B0014118': '가건물',
+    'B0014311': '공장',
+    'B0024120': '담장(미분류)',
+    'B0024127': '문주',
+    'C0052211': '콘크리트제방(상단)',
+    'C0052212': '콘크리트제방(하단)',
+    'C0062243': '보',
+    'C0076116': '암거',
+    'C0220205': '보조지지주',
+    'C0226232': '방범등',
+    'C0236241': '전화주',
+    'C0236242': '전력주',
+    'C0246344': '맨홀(전기)',
+    'C0246347': '맨홀(통신선)',
+    'C0413422': '안내표지',
+    'C0413423': '지시표지',
+    'C0413424': '규제표지',
+    'C0413425': '주의표지',
+    'C0423365': '주유소',
+    'C0513369': '도로반사경',
+    'D0015211': '논',
+    'D0015212': '밭',
+    'D0015213': '과수원',
+    'D0025111': '지류계',
+    'E0022112': '세류',
+    'E0022115': '하천중심선',
+    'E0032111': '실폭하천',
+    'E0042326': '유수방향',
+    'E0052114': '호수, 저수지',
+    'F0017111': '주곡선(볼록지)',
+    'F0017114': '계곡선(볼록지)',
+    'F0017121': '주곡선(오목지)',
+    'F0017131': '등고수치',
+    'F0027132': '표고점수치',
+    'F0027217': '표고점',
+    'F0037221': '성토(상단)',
+    'F0037222': '절토(상단)',
+    'F0037223': '성토(하단)',
+    'F0047224': '콘크리트옹벽(상단)',
+    'F0047225': '콘크리트옹벽(하단)',
+    'G0018117': '동계(행정경계)',
+    'G0022313': '습지',
+    'G0022323': '습지기호',
+    'H0017334': '도곽',
+    'H0027133': '삼각점수치',
+    'H0027134': '수준점수치',
+    'H0027135': '통합기준점수치',
+    'H0027312': '수준점',
+    'H0049114': '다리(지명주기)',
+    'H0049131': '하천(지명주기)',
+    'H0049140': '건물(지명주기, 미분류)',
+    'H0049160': '시설물(지명주기, 미분류)',
+    'H0049224': '면(지명주기)',
+    'H0049226': '자연부락',
+};
 const DXF_LAYER_KOREAN_HINTS = {
     'CA-ALGN-CNTL': '선형 기준점',
     'CA-ALGN-HMS1': '선형 각도 표기 1',
@@ -1757,15 +1959,73 @@ const DXF_LAYER_KOREAN_HINTS = {
     'CA-ALGN-STSM': '측점(스테이션)',
     'CA-ALGN-SUBL': '선형 보조선',
     'CA-ALGN-TEXT': '선형 문자',
+    'CA-BORD-MEDN': '중앙분리대 경계',
+    'CA-BORD-ROAD': '도로 경계',
+    'CA-BORD-WALK': '보도 경계',
     'CA-MACL': '주 중심선',
     'CA-MISC-SYMB': '기타 기호',
     'CADISTM': '거리 표시',
+    'CADISTS': '거리 표시(보조)',
+    'CC-BEDF': '기초',
+    'CC-CNTL': '횡단 기준점',
+    'CC-CUTT': '절토',
+    'CC-DIML': '치수선',
+    'CC-DIMT': '치수 문자',
+    'CC-FILL': '성토',
+    'CC-GRND': '지반(지형)',
+    'CC-GSTR': '지반 구조',
+    'CC-GSTR-DICH': '지반 구조(배수로)',
+    'CC-PAVE': '포장',
+    'CC-STRU-MISC': '구조물 기타',
+    'CC-TEXT': '횡단 문자',
+    'CC-TEXT-HMS4': '횡단 문자(각도표기 4)',
+    'CC-XXXX': '횡단 기타',
+    'CD-BOXC-WATR': '박스형 수로',
+    'CD-DRAN-PIPE': '배수관',
+    'CD-SDLL-TYP0': '측구(배수로) 유형0-1',
+    'CD-SDLU-TYP0': '측구(배수로) 유형0-2',
+    'CF-BLDG-BUST': '건물',
+    'CF-RTWL-CONC': '콘크리트 옹벽',
+    'CF-RTWL-STON': '석축형 옹벽',
     'CL-ADMN-NAME': '행정구역 명칭',
     'CL-ADMN-TOWN': '행정구역(읍면동) 경계',
     'CL-BOND-ROAD': '도로 경계선',
     'CL-LOTL': '지번선',
     'CL-LOTT': '지번 텍스트',
-    'CX-BORD-LIN1': '테두리(도곽)선',
+    'CM-LEAD': '인출선',
+    'CM-MISC': '기타',
+    'CM-RDGS': '도로 기하',
+    'CM-RDMK': '노면 표시',
+    'CM-RDMK-LAND': '노면 표시(육상)',
+    'CM-RDMK-WALK': '노면 표시(보도)',
+    'CM-RDSB': '노면 표시 기호',
+    'CM-RDSB-PATT-PAT1': '노면 표시 패턴 1',
+    'CM-RDSB-PATT-PAT5': '노면 표시 패턴 5',
+    'CM-SFTY-GFNC': '안전시설(가드펜스)',
+    'CM-SFTY-GRAL': '안전시설(가드레일)',
+    'CM-SFTY-GWAL': '안전시설(가드월)',
+    'CM-SFTY-SLID': '안전시설(미끄럼방지)',
+    'CM-SFTY-STON': '안전시설(석재 방호)',
+    'CM-TRAN-SIGN': '교통 표지판',
+    'CR-BRDG-NEWC': '신설 교량',
+    'CR-GRID-VERT': '수직 격자',
+    'CR-GRND': '지반(참고)',
+    'CR-GSCL-LINE': '그래픽 축척 선',
+    'CR-GSCL-MISC': '그래픽 축척 기타',
+    'CR-GSCL-TEXT': '그래픽 축척 문자',
+    'CR-MISC': '기타',
+    'CR-TABL-LIN1': '표 선 1',
+    'CR-TABL-TEX1': '표 문자 1',
+    'CR-TABL-TEX2': '표 문자 2',
+    'CR-TEXT': '참고 문자',
+    'CR-TEXT-HMS6': '참고 문자(각도표기 6)',
+    'CS-RBAR-SYMB': '철근 기호',
+    'CV-GRID-LINE': '격자 선',
+    'CV-GRID-TEXT': '격자 문자',
+    'CX-BORD-LIN1': '테두리(도곽)선 1',
+    'CX-BORD-LIN2': '테두리(도곽)선 2',
+    'CX-BORD-TEX1': '테두리(도곽) 문자 1',
+    'CX-BORD-TEX3': '테두리(도곽) 문자 3',
     'CX-MISC': '기타',
 };
 
@@ -1781,12 +2041,24 @@ function renderDxfLayerList() {
         const color = rgbIntToHex(dxfViewer.layers[name].color) || '#888';
         const row = document.createElement('label');
         row.className = 'dxf-layer-row';
-        const hint = DXF_LAYER_KOREAN_HINTS[name];
-        const hintHtml = hint
-            ? `<span class="dxf-layer-hint" title="공식 자료가 없어 이름 패턴으로 추정한 해석입니다">${escapeHtml(hint)}</span>`
-            : '';
+        // 국토부 표준코드와 코드 자체가 일치하는 건 확정값이라 다른 문구로
+        // 구분해서 보여준다(추정 힌트와 헷갈리지 않게).
+        const officialHint = DXF_LAYER_OFFICIAL_HINTS[name];
+        const estimatedHint = DXF_LAYER_KOREAN_HINTS[name];
+        let hintHtml = '';
+        if (officialHint) {
+            hintHtml = `<span class="dxf-layer-hint dxf-layer-hint-official" title="국토부/국토지리정보원 공식 표준 레이어코드와 일치 확인됨">${escapeHtml(officialHint)}</span>`;
+        } else if (estimatedHint) {
+            hintHtml = `<span class="dxf-layer-hint" title="공식 자료가 없어 이름 패턴으로 추정한 해석입니다">${escapeHtml(estimatedHint)}</span>`;
+        }
+        // 체크박스는 항상 checked로 하드코딩돼 있었다 — _SLOPE처럼 로드 시점에
+        // layerVisible이 false(동결 레이어)로 시작하는 레이어도 목록에서는 항상
+        // "켜짐"으로 보여서, 실제로는 안 그려지는데 체크박스만 켜진 것처럼
+        // 보이는 불일치가 있었다(실제 렌더링 자체는 render()의 layerVisible
+        // 체크를 그대로 따라 맞게 숨겨졌지만, 화면상 체크박스 상태가 거짓말).
+        const visible = dxfViewer.layerVisible[name] !== false;
         row.innerHTML = `
-            <input type="checkbox" checked>
+            <input type="checkbox" ${visible ? 'checked' : ''}>
             <span class="dxf-layer-swatch" style="background:${color};"></span>
             <span>${escapeHtml(decodeDxfText(name))}</span>${hintHtml}
         `;

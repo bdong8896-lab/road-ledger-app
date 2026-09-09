@@ -351,6 +351,10 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     color: var(--text-muted); font-size: 0.72rem; font-style: italic;
     padding: 1px 6px; border-radius: 999px; background: rgba(255,255,255,0.06);
 }
+.dxf-layer-hint-official {
+    color: var(--accent); font-style: normal; font-weight: 600;
+    background: rgba(120, 180, 255, 0.12);
+}
 
 #left-toolbar {
     position: absolute; top: 16px; left: 16px; z-index: 50;
