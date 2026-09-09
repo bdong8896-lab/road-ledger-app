@@ -1,0 +1,1231 @@
+:root {
+    --accent: #2e6fae;
+    --accent-hover: #3a85e0;
+    --accent-dark: #1a4a7a;
+    --panel-dark: #121418;
+    --panel-mid: #1e222a;
+    --panel-light: #252a38;
+    --panel-sidebar: #1a1e26;
+    --border-dim: rgba(255,255,255,0.08);
+    --border-med: rgba(255,255,255,0.12);
+    --text-primary: #e0e6f4;
+    --text-secondary: #b4bccc;
+    --text-muted: #8b98ac;
+    --scrollbar-thumb: #4c566e;
+    --scrollbar-thumb-hover: #3a85e0;
+    --radius-sm: 0.4rem;
+    --radius-md: 0.75rem;
+    --radius-lg: 1rem;
+    --transition: 0.18s ease;
+    font-size: 15px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; background: var(--panel-dark); color: var(--text-primary); }
+
+/* ===== 스크롤바 (다크 테마 대비 눈에 띄게) ===== */
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: padding-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+#app { display: flex; width: 100vw; height: 100vh; overflow: hidden; }
+
+/* ===== 지도 + 분할화면 ===== */
+#left-pane { flex: 1; display: flex; height: 100%; min-width: 0; }
+#map-container { position: relative; flex: 1; height: 100%; min-width: 0; }
+#map { width: 100%; height: 100%; }
+
+#splitter {
+    display: none; width: 8px; flex-shrink: 0; cursor: col-resize;
+    background: var(--panel-mid); align-items: center; justify-content: center; color: var(--text-muted);
+}
+#splitter:hover { background: var(--accent-dark); color: #fff; }
+#right-pane { display: none; width: 0; flex-shrink: 0; height: 100%; position: relative; overflow: hidden; }
+#sat_map, #roadview-wrap, #file-preview-div, #cctv-preview-div { width: 100%; height: 100%; display: none; }
+#file-preview-div { background: #2b2f38; overflow-y: auto; flex-direction: column; }
+
+/* 로드뷰 중 "시설물 선택" 모드로 지도의 시설물을 클릭하면, 로드뷰를 그대로
+   유지한 채 위쪽에 정보/첨부파일 패널을 붙여서 같이 볼 수 있게 한다(정보가
+   먼저 눈에 띄어야 해서 로드뷰보다 위에 둔다 — 처음엔 아래였다가 요청으로
+   순서를 바꿈). 로드뷰를 끄고 파일 미리보기로 전환하는 기존 방식과는 별개의
+   레이아웃이다. 둘 사이 높이는 #roadview-panel-resizer를 드래그해서 조절한다
+   (file-preview-div의 facility-info-resizer와 같은 패턴 — pointer capture로
+   로드뷰 위젯이 마우스 이벤트를 가로채도 드래그가 끊기지 않게 한다). */
+#roadview-wrap { flex-direction: column; }
+#roadview-wrap #roadview-div { width: 100%; flex: 1 1 auto; min-height: 0; }
+#roadview-facility-panel {
+    display: none; flex-direction: column; flex: 0 0 42%; min-height: 0;
+    background: #2b2f38; overflow: hidden;
+}
+#roadview-panel-resizer {
+    display: none; flex-shrink: 0; height: 9px; cursor: row-resize; background: var(--panel-mid);
+    align-items: center; justify-content: center; color: var(--text-muted);
+    font-size: 0.7rem; transition: var(--transition); border-top: 1px solid var(--border-dim);
+}
+#roadview-panel-resizer:hover, #roadview-panel-resizer.active { background: var(--accent-dark); color: #fff; }
+#roadview-facility-panel-header {
+    flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 8px 12px; background: #21252e; color: #fff;
+    font-size: 0.85rem; font-weight: 700;
+}
+#roadview-facility-panel-close {
+    flex-shrink: 0; background: transparent; border: none; color: var(--text-muted);
+    cursor: pointer; padding: 3px 6px; border-radius: var(--radius-sm); font-size: 0.85rem;
+}
+#roadview-facility-panel-close:hover { background: var(--panel-light); color: #fff; }
+#roadview-facility-panel-body { flex: 1; min-height: 0; overflow-y: auto; }
+#roadview-facility-panel-body .facility-info-bar { background: #21252e; padding: 12px 16px 14px; }
+#roadview-facility-panel-body .fib-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+#roadview-facility-panel-body .fib-badge {
+    flex-shrink: 0; background: var(--fib-accent, #556); color: #11141a; font-weight: 800;
+    font-size: 0.74rem; letter-spacing: 0.02em; padding: 4px 11px; border-radius: 999px;
+}
+#roadview-facility-panel-body .fib-name { color: #fff; font-weight: 700; font-size: 1.02rem; word-break: break-all; }
+#roadview-facility-panel-body .fib-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+#roadview-facility-panel-body .fib-field {
+    background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 7px 10px 8px;
+}
+#roadview-facility-panel-body .fib-k { color: #8a93a3; font-size: 0.68rem; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#roadview-facility-panel-body .fib-v { color: #eef1f6; font-size: 0.86rem; font-weight: 600; word-break: break-all; line-height: 1.35; }
+#roadview-facility-panel-body .fm-file-list-title { padding: 12px 14px 6px; color: #fff; font-weight: 700; font-size: 0.9rem; }
+#roadview-facility-panel-body .fm-gallery { display: flex; flex-direction: column; }
+#roadview-facility-panel-body .fm-gallery-item { border-top: 1px solid rgba(255,255,255,0.08); padding: 10px 14px 16px; }
+#roadview-facility-panel-body .fm-gallery-item-label { display: flex; align-items: center; gap: 10px; color: #cfd6e0; font-size: 0.82rem; margin-bottom: 8px; }
+#roadview-facility-panel-body .fm-gallery-item-label span:first-child { flex-shrink: 0; color: #7fb0ff; font-weight: 700; }
+#roadview-facility-panel-body .fm-gallery-item-label span:last-child { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#roadview-facility-panel-body .facility-file-media { min-height: 0; }
+
+/* #roadview-facility-select-btn 자체는 항상 .toolbar-dropdown-menu button 기본
+   스타일을 따르고, 보이고/숨기는 건 부모 #roadview-facility-select-menu의
+   display를 로드뷰 on/off에 맞춰 JS(initRoadview)가 토글한다. */
+#file-preview-div .facility-file-media { flex: 1; min-height: 0; overflow-y: auto; }
+#file-preview-div .facility-info-bar {
+    flex-shrink: 0; max-height: 260px; overflow-y: auto; background: #21252e;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.3); padding: 12px 16px 14px;
+}
+#file-preview-div .facility-info-resizer {
+    flex-shrink: 0; height: 9px; cursor: row-resize; background: var(--panel-mid);
+    display: flex; align-items: center; justify-content: center; color: var(--text-muted);
+    font-size: 0.7rem; transition: var(--transition); border-top: 1px solid var(--border-dim);
+}
+#file-preview-div .facility-info-resizer:hover,
+#file-preview-div .facility-info-resizer.active { background: var(--accent-dark); color: #fff; }
+#file-preview-div .fib-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+#file-preview-div .fib-badge {
+    flex-shrink: 0; background: var(--fib-accent, #556); color: #11141a; font-weight: 800;
+    font-size: 0.74rem; letter-spacing: 0.02em; padding: 4px 11px; border-radius: 999px;
+}
+#file-preview-div .fib-name { color: #fff; font-weight: 700; font-size: 1.02rem; word-break: break-all; }
+#file-preview-div .fib-fields {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px;
+}
+#file-preview-div .fib-field {
+    background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 7px 10px 8px;
+}
+#file-preview-div .fib-k {
+    color: #8a93a3; font-size: 0.68rem; margin-bottom: 3px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+#file-preview-div .fib-v { color: #eef1f6; font-size: 0.86rem; font-weight: 600; word-break: break-all; line-height: 1.35; }
+#file-preview-div .fm-file-list-title {
+    padding: 12px 14px 6px; color: #fff; font-weight: 700; font-size: 0.9rem;
+}
+/* 시설물 첨부파일이 여러 개일 때(예: 원본사진+표지사진+보고서) 하나씩 클릭해서
+   골라야 했던 것을, PDF가 열자마자 바로 전체 내용이 보이는 것처럼 전부 이어서
+   바로 렌더링해 보여준다(요청사항). */
+#file-preview-div .fm-gallery { display: flex; flex-direction: column; }
+#file-preview-div .fm-gallery-item {
+    border-top: 1px solid rgba(255,255,255,0.08); padding: 10px 14px 16px;
+}
+#file-preview-div .fm-gallery-item-label {
+    display: flex; align-items: center; gap: 10px; color: #cfd6e0; font-size: 0.82rem; margin-bottom: 8px;
+}
+#file-preview-div .fm-gallery-item-label span:first-child { flex-shrink: 0; color: #7fb0ff; font-weight: 700; }
+#file-preview-div .fm-gallery-item-label span:last-child {
+    flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#cctv-preview-div { background: #000; flex-direction: column; }
+#cctv-preview-div .cctv-title { padding: 8px 12px; background: #111; color: #fff; font-size: 0.85rem; flex-shrink: 0; }
+#cctv-preview-div video { flex: 1; width: 100%; min-height: 0; background: #000; }
+
+/* ===== 왼쪽 사이드바 (도면/CAD 뷰어) ===== */
+/* 지도 폭의 절반 크기가 기본값이 되도록 계산: 전체 폭 - 우측 사이드바(400px)를
+   [좌측 사이드바 1 : 지도 2] 비율로 나눔 → 좌측 사이드바 = (전체폭 - 400px) / 3 */
+:root { --left-sidebar-width: clamp(320px, calc((100vw - 400px) / 3), 900px); }
+#left-sidebar {
+    width: var(--left-sidebar-width); flex-shrink: 0; height: 100%; background: var(--panel-sidebar);
+    display: flex; flex-direction: column; border-right: 1px solid var(--border-dim);
+    transition: width var(--transition); overflow: hidden; position: relative;
+}
+#left-sidebar.collapsed { width: 0; transition: width var(--transition); }
+#left-sidebar.resizing { transition: none; }
+
+#left-sidebar-resizer {
+    position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 40;
+}
+#left-sidebar-resizer:hover, #left-sidebar-resizer.active { background: var(--accent-dark); }
+
+#leftSidebarToggle {
+    position: fixed; top: 50%; left: var(--left-sidebar-width); transform: translateY(-50%);
+    width: 22px; height: 48px; background: var(--panel-mid); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary);
+    box-shadow: 2px 0 8px rgba(0,0,0,0.3); z-index: 500; transition: left var(--transition);
+}
+#leftSidebarToggle.resizing { transition: none; }
+#leftSidebarToggle:hover { color: var(--text-primary); background: var(--accent-dark); }
+#leftSidebarToggle.collapsed { left: 0; }
+#leftSidebarToggle.collapsed i { transform: rotate(180deg); }
+
+#left-sidebar-header {
+    padding: 14px 16px; border-bottom: 1px solid var(--border-dim);
+    font-weight: 700; font-size: 1.05rem; flex-shrink: 0; white-space: nowrap;
+}
+#left-sidebar-header i { color: var(--accent); margin-right: 6px; }
+
+#route-detail-row { display: flex; flex: 1; min-height: 120px; border-bottom: 1px solid var(--border-dim); overflow: hidden; }
+
+#route-info-panel { width: 128px; flex-shrink: 0; padding: 10px 10px; border-right: 1px solid var(--border-dim); overflow-y: auto; text-align: center; }
+#route-info-panel .list-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+#route-info-panel .info-row { margin-bottom: 4px; display: block; }
+#route-info-panel .info-label {
+    display: block; min-width: 0; font-size: 0.68rem; padding: 4px 2px 2px;
+    color: var(--text-muted); text-align: center;
+}
+#route-info-panel .info-value { display: block; font-size: 0.78rem; padding: 2px 2px 5px; word-break: break-all; text-align: center; }
+#route-export-btn {
+    background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+    padding: 2px 4px; border-radius: var(--radius-sm); transition: var(--transition); font-size: 0.85rem;
+}
+#route-export-btn:hover { background: var(--accent-dark); color: #fff; }
+
+#route-file-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+/* 툴바/상태바는 이제 #cad-viewer-wrap 안에 떠 있는 오버레이다(도면 위에 겹쳐
+   보임) — 예전엔 뷰어 위에 별도 줄로 자리를 차지해서 그만큼 도면이 작았다.
+   좁은 사이드바에서는 버튼이 다 안 들어가 두 줄로 줄바꿈될 수 있는데, 그때
+   상태바가 겹치지 않도록 툴바+상태바를 한 wrapper(#cad-overlay-controls)로
+   묶어서 그 wrapper 하나만 절대위치시키고 내부는 그냥 세로로 쌓는다 —
+   상태바 위치를 따로 계산할 필요가 없다. */
+#cad-overlay-controls {
+    position: absolute; top: 8px; left: 8px; right: 8px; z-index: 5;
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+}
+#cad-toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 5px 8px;
+    max-width: 100%; box-sizing: border-box;
+    background: rgba(22, 26, 34, 0.88); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: var(--radius-sm); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    backdrop-filter: blur(3px);
+}
+#cad-toolbar button {
+    background: transparent; border: none; color: var(--text-secondary);
+    width: 28px; height: 28px; border-radius: var(--radius-sm); cursor: pointer;
+}
+#cad-toolbar button:hover { background: var(--accent-dark); color: #fff; }
+#cad-toolbar button.active { background: var(--accent); color: #fff; }
+.cad-toolbar-divider { width: 1px; height: 20px; background: rgba(255,255,255,0.15); margin: 0 2px; }
+
+#cad-status-bar {
+    display: flex; align-items: center; gap: 10px; padding: 4px 10px;
+    max-width: 100%; box-sizing: border-box;
+    background: rgba(22, 26, 34, 0.88); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: var(--radius-sm); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    backdrop-filter: blur(3px); min-height: 20px;
+}
+#cad-filename {
+    font-size: 0.72rem; color: var(--text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px;
+}
+#cad-measure-result { margin-left: auto; font-size: 0.75rem; color: var(--accent-hover); font-weight: 700; }
+
+#cad-viewer-wrap {
+    position: relative; height: 350px; flex-shrink: 0; background: #1a1a1a;
+    margin: 10px 12px; border-radius: var(--radius-md); overflow: hidden;
+    border: 1px solid var(--border-med);
+}
+#cad-canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+#cad-canvas:active { cursor: grabbing; }
+#cad-empty-msg {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #999; font-size: 1.7rem; font-weight: 700; text-align: center; pointer-events: none; padding: 0 20px;
+}
+#cad-empty-msg span { font-size: 0.72rem; font-weight: 400; color: #bbb; margin-top: 8px; }
+
+#route-file-tabs { display: flex; border-bottom: 1px solid var(--border-dim); flex-shrink: 0; }
+.route-tab-button {
+    flex: 1; background: transparent; border: none; color: var(--text-secondary); padding: 8px 2px;
+    font-size: 0.7rem; cursor: pointer; border-bottom: 2px solid transparent;
+}
+.route-tab-button:hover { color: var(--text-primary); }
+.route-tab-button.active { color: var(--accent-hover); border-bottom-color: var(--accent); }
+
+/* "도면종류" 탭 안의 평면도/용지도/매설물도/구조물도 하위탭 — 위 route-tab-button
+   보다 한 단계 더 작은 2차 탭이라는 걸 표현하려고 배경을 살짝 넣고 글씨를 더
+   줄였다. #route-file-tabs와 같은 부모 밑에서 "도면종류"가 선택됐을 때만 보인다
+   (JS의 initRouteFileTabs()가 hidden 속성을 토글). */
+#route-drawing-type-tabs {
+    display: flex; gap: 4px; padding: 6px 10px; background: var(--panel-light);
+    border-bottom: 1px solid var(--border-dim); flex-shrink: 0;
+}
+/* 위 규칙의 display:flex가 ID 선택자라 브라우저 기본 [hidden]{display:none}보다
+   우선순위가 높아서, JS가 hidden 속성을 정확히 껐다 켜도 화면에서는 계속
+   보이고 있었다(진짜 원인 — "도로" 탭에서 하위탭이 안 사라지던 문제).
+   [hidden]까지 같이 걸어서 이 규칙 쪽 우선순위를 더 높여야 실제로 숨겨진다. */
+#route-drawing-type-tabs[hidden] {
+    display: none;
+}
+.route-drawing-type-btn {
+    flex: 1; background: transparent; border: 1px solid var(--border-dim); border-radius: var(--radius-sm);
+    color: var(--text-secondary); padding: 4px 2px; font-size: 0.68rem; cursor: pointer;
+}
+.route-drawing-type-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+.route-drawing-type-btn.active { color: #fff; background: var(--accent-dark); border-color: var(--accent-dark); }
+
+#route-file-list { padding: 8px 12px; overflow-y: auto; flex: 1; min-height: 50px; }
+#route-file-upload-row { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border-dim); flex-shrink: 0; }
+#route-file-upload-row input[type=file] { flex: 1; font-size: 0.75rem; color: var(--text-secondary); min-width: 0; }
+#route-upload-btn { width: auto; padding: 6px 14px; margin-top: 0; }
+
+#route-drawings-zip-row { display: flex; gap: 6px; padding: 0 12px 10px; flex-shrink: 0; }
+#route-drawings-zip-row input[type=file] { flex: 1; font-size: 0.75rem; color: var(--text-secondary); min-width: 0; }
+#route-drawings-zip-btn { width: auto; padding: 6px 10px; margin-top: 0; font-size: 0.76rem; white-space: nowrap; }
+
+#route-facility-files { margin-top: 8px; border-top: 1px dashed var(--border-dim); padding-top: 8px; }
+#route-facility-files .rff-header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 0.78rem; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;
+}
+#route-facility-files .rff-close { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 2px; }
+#route-facility-files .rff-close:hover { color: var(--text-primary); }
+#route-facility-files .rff-row {
+    display: flex; align-items: center; gap: 8px; font-size: 0.76rem; padding: 5px 0; cursor: pointer;
+    color: var(--text-secondary); border-bottom: 1px solid var(--border-dim);
+}
+#route-facility-files .rff-row span:first-child { flex-shrink: 0; color: var(--accent-hover); }
+#route-facility-files .rff-row span:last-child {
+    flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#route-facility-files .rff-row:hover { color: var(--text-primary); }
+#route-facility-files .rff-empty { font-size: 0.76rem; color: var(--text-secondary); padding: 4px 0; }
+
+#dxf-layer-panel {
+    border-top: 1px solid var(--border-dim); padding: 10px 12px; height: 160px;
+    flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden;
+}
+#dxf-layer-panel .list-header { flex-shrink: 0; }
+#dxf-layer-list { flex: 1; min-height: 0; overflow-y: auto; }
+.dxf-layer-row { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; padding: 3px 0; cursor: pointer; flex-wrap: wrap; }
+.dxf-layer-row input { accent-color: var(--accent); }
+.dxf-layer-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
+.dxf-layer-hint {
+    color: var(--text-muted); font-size: 0.72rem; font-style: italic;
+    padding: 1px 6px; border-radius: 999px; background: rgba(255,255,255,0.06);
+}
+
+#left-toolbar {
+    position: absolute; top: 16px; left: 16px; z-index: 50;
+    background: var(--panel-mid); border-radius: var(--radius-md);
+    display: flex; flex-direction: column; padding: 6px; gap: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+#left-toolbar button {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    background: transparent; border: none; color: var(--text-secondary);
+    padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer;
+    font-size: 0.7rem; transition: var(--transition);
+}
+#left-toolbar button:hover { background: var(--panel-light); color: var(--text-primary); }
+#left-toolbar button.active { background: var(--accent); color: #fff; }
+.toolbar-divider { height: 1px; background: var(--border-dim); margin: 4px 2px; }
+
+.toolbar-dropdown-wrapper { position: relative; display: flex; }
+.toolbar-dropdown-wrapper > button { flex: 1; }
+.toolbar-dropdown-menu {
+    position: absolute; top: 0; left: calc(100% + 8px); z-index: 60;
+    background: var(--panel-mid); border-radius: var(--radius-md); padding: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4); display: flex; flex-direction: column; gap: 2px; min-width: 130px;
+}
+.toolbar-dropdown-menu button {
+    display: flex; align-items: center; gap: 8px; background: transparent; border: none;
+    color: var(--text-secondary); padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer;
+    font-size: 0.8rem; white-space: nowrap; transition: var(--transition); text-align: left;
+}
+.toolbar-dropdown-menu button:hover { background: var(--panel-light); color: var(--text-primary); }
+.toolbar-dropdown-menu button.active { background: var(--accent); color: #fff; }
+
+#map-bottom-bar {
+    position: absolute; bottom: 12px; left: 16px; z-index: 50;
+    display: flex; align-items: center; gap: 8px;
+}
+#map-scale {
+    background: rgba(18,20,24,0.8); color: var(--text-secondary);
+    padding: 4px 10px; border-radius: var(--radius-sm); font-size: 0.8rem;
+}
+#map-measure-toolbar {
+    display: flex; align-items: center; gap: 2px; background: rgba(18,20,24,0.8);
+    border-radius: var(--radius-sm); padding: 3px;
+}
+#map-measure-toolbar button {
+    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+    background: transparent; border: none; color: var(--text-secondary);
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 0.78rem; transition: var(--transition);
+}
+#map-measure-toolbar button:hover { background: var(--panel-light); color: var(--text-primary); }
+#map-measure-toolbar button.active { background: var(--accent); color: #fff; }
+#measure-toolbar-toggle i { transition: var(--transition); }
+#map-measure-toolbar.collapsed #measure-toolbar-toggle i { transform: rotate(180deg); }
+#measure-toolbar-buttons { display: flex; gap: 2px; }
+#map-measure-toolbar.collapsed #measure-toolbar-buttons { display: none; }
+
+.measure-tooltip {
+    background: rgba(20,20,24,0.92); color: #00e5ff; border: 1px solid #00e5ff;
+    border-radius: 4px; padding: 2px 8px; font-size: 0.76rem; font-weight: 700;
+    white-space: nowrap; pointer-events: none;
+}
+.measure-tooltip.measure-tooltip-done { color: #fff; border-color: rgba(255,255,255,0.4); }
+
+/* ===== 지도 클릭 팝업 ===== */
+#click-popup {
+    display: none; position: absolute; min-width: 220px; max-width: 340px;
+    background: #ffffff; color: #222; border-radius: var(--radius-md);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35); padding: 14px 16px 12px; z-index: 100;
+    font-size: 0.85rem; text-align: center;
+}
+#click-popup::after {
+    content: ''; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%);
+    border-width: 8px 8px 0; border-style: solid; border-color: #ffffff transparent transparent;
+}
+#click-popup-area { font-weight: 700; color: #1a1a1a; margin-bottom: 4px; }
+#click-popup-addr { color: #555; font-size: 0.8rem; margin-bottom: 10px; line-height: 1.4; }
+#click-popup-buttons { display: flex; gap: 6px; }
+#click-popup-buttons button {
+    flex: 1; border: none; border-radius: var(--radius-sm); padding: 7px 4px;
+    font-size: 0.78rem; font-weight: 700; cursor: pointer; transition: var(--transition);
+}
+#popup-info-btn, #popup-analysis-btn { background: var(--accent); color: #fff; }
+#popup-info-btn:hover, #popup-analysis-btn:hover { background: var(--accent-hover); }
+#popup-close-btn { background: #e5e8ee; color: #555; }
+#popup-close-btn:hover { background: #d3d8e2; }
+
+/* ===== 부속시설 호버(마우스오버) 정보창 =====
+   두 가지 모드로 쓴다 — 개별 시설물(점 등) 위에서는 fhp-title만(종류 이름
+   한 줄), 구간 강조선(routeHighlightLayer) 위에서는 fhp-subtitle+fhp-grid로
+   전체 부속시설 개수 그리드를 보여준다. */
+#facility-hover-popup {
+    display: none; position: absolute; pointer-events: none;
+    background: rgba(30, 42, 58, 0.94); color: #eef2f8; border-radius: var(--radius-sm);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4); padding: 8px 14px; z-index: 90;
+    font-size: 0.8rem;
+}
+#facility-hover-popup.mode-single { white-space: nowrap; padding: 6px 12px; }
+#facility-hover-popup.mode-single #fhp-title { font-weight: 700; }
+#facility-hover-popup.mode-grid { min-width: 300px; }
+#facility-hover-popup.mode-grid #fhp-title { font-weight: 800; font-size: 0.95rem; text-align: center; margin-bottom: 2px; }
+#fhp-subtitle { display: none; text-align: center; color: #a8bad0; font-size: 0.72rem; margin-bottom: 8px; }
+#facility-hover-popup.mode-grid #fhp-subtitle { display: block; }
+#fhp-grid { display: none; grid-template-columns: 1fr 1fr; gap: 2px 14px; }
+#facility-hover-popup.mode-grid #fhp-grid { display: grid; }
+#fhp-grid .fhp-item { display: flex; justify-content: space-between; padding: 1px 0; }
+#fhp-grid .fhp-item span:last-child { color: #ffd166; font-weight: 700; margin-left: 6px; }
+
+#cctv-hover-popup {
+    display: none; position: absolute; pointer-events: none; white-space: nowrap;
+    background: #ffffff; color: #222; border-radius: var(--radius-sm);
+    border: 1.5px solid #ff3b30; box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+    padding: 6px 12px; z-index: 95; font-size: 0.8rem; text-align: center;
+}
+#cctv-hover-popup::after {
+    content: ''; position: absolute; left: 50%; bottom: -7px; transform: translateX(-50%);
+    border-width: 7px 7px 0; border-style: solid; border-color: #ff3b30 transparent transparent;
+}
+#cctv-hp-title { font-weight: 800; color: #ff3b30; font-size: 0.78rem; }
+#cctv-hp-title i { margin-right: 4px; }
+#cctv-hp-name { font-weight: 700; color: #1a1a1a; margin-top: 2px; }
+
+/* ===== 국가교통정보도(도로) 호버(마우스오버) 정보창 =====
+   facility-hover-popup과 같은 카드 언어(어두운 배경+그리드)를 쓰되, 배지
+   색은 그 선분의 등급색(ROAD_RANK_COLORS, roadnet.js의 지도 선 색과 동일)을
+   그대로 가져와서 "이 팝업이 지금 가리키는 선"이 한눈에 연결되게 한다. */
+#roadnet-hover-popup {
+    display: none; position: absolute; pointer-events: none; min-width: 170px;
+    background: rgba(30, 42, 58, 0.94); color: #eef2f8; border-radius: var(--radius-sm);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4); padding: 8px 14px; z-index: 92; font-size: 0.8rem;
+}
+#rnhp-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#rnhp-badge {
+    flex-shrink: 0; background: var(--rnhp-accent, #556); color: #11141a; font-weight: 800;
+    font-size: 0.7rem; letter-spacing: 0.02em; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+#rnhp-name { font-weight: 700; color: #fff; white-space: nowrap; }
+#rnhp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; }
+#rnhp-grid .rnhp-item { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; white-space: nowrap; }
+#rnhp-grid .rnhp-item span:first-child { color: #a8bad0; }
+#rnhp-grid .rnhp-item span:last-child { color: #ffd166; font-weight: 700; }
+
+/* ===== 사이드바 ===== */
+:root { --sidebar-width: 400px; }
+#sidebar {
+    width: var(--sidebar-width); flex-shrink: 0; height: 100%; background: var(--panel-sidebar);
+    display: flex; flex-direction: column; border-left: 1px solid var(--border-dim);
+    position: relative; transition: width var(--transition);
+}
+#sidebar.collapsed { width: 0; overflow: hidden; }
+#sidebar.resizing { transition: none; }
+
+#sidebar-resizer {
+    position: absolute; top: 0; left: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 40;
+}
+#sidebar-resizer:hover, #sidebar-resizer.active { background: var(--accent-dark); }
+
+/* #app의 형제로 이동시켜, 사이드바가 접혀도(overflow:hidden에 잘리지 않고) 항상 보이게 함 */
+#sidebarToggle {
+    position: fixed; top: 50%; right: var(--sidebar-width); transform: translateY(-50%);
+    width: 22px; height: 48px; background: var(--panel-mid); border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary);
+    box-shadow: -2px 0 8px rgba(0,0,0,0.3); z-index: 500; transition: right var(--transition);
+}
+#sidebarToggle.resizing { transition: none; }
+#sidebarToggle:hover { color: var(--text-primary); background: var(--accent-dark); }
+#sidebarToggle.collapsed { right: 0; }
+#sidebarToggle.collapsed i { transform: rotate(180deg); }
+
+#sidebar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--border-dim);
+}
+#sidebar-title { font-weight: 700; font-size: 1.05rem; }
+#sidebar-title i { color: var(--accent); margin-right: 6px; }
+#user-info { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; color: var(--text-secondary); }
+#logout-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
+#logout-btn:hover { color: var(--text-primary); }
+#admin-mode-toggle {
+    background: transparent; border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-muted); cursor: pointer; font-size: 0.9rem; padding: 4px 7px; transition: var(--transition);
+}
+#admin-mode-toggle:hover { color: var(--text-primary); border-color: var(--text-muted); }
+#admin-mode-toggle.active { background: #b4381f; border-color: #b4381f; color: #fff; }
+body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
+
+/* ===== 레이어 패널 ===== */
+#layer-panel { border-bottom: 1px solid var(--border-dim); flex-shrink: 0; }
+.layer-panel-title { display: flex; align-items: center; cursor: pointer; user-select: none; }
+.layer-panel-caret { margin-left: auto; transition: transform var(--transition); font-size: 0.75rem; }
+#layer-panel.collapsed .layer-panel-caret { transform: rotate(-90deg); }
+#layer-panel.collapsed #layer-panel-body { display: none; }
+/* 다른 탭(데이터보기 트리, CAD 레이어 패널)과 같은 언어로 맞췄다: 행에
+   호버 배경 + 둥근 모서리, 종류를 나타내는 아이콘/색상 스와치, 자식 그룹은
+   왼쪽 세로선으로 소속을 표시. */
+#layer-panel-body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 1px; }
+.layer-toggle-row {
+    display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-primary);
+    cursor: pointer; padding: 6px 8px; border-radius: var(--radius-sm); transition: var(--transition);
+}
+.layer-toggle-row:hover { background: var(--panel-light); }
+.layer-toggle-row input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+.layer-toggle-icon { width: 14px; text-align: center; color: var(--text-muted); font-size: 0.8rem; flex-shrink: 0; }
+.layer-toggle-swatch {
+    width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+    background: var(--swatch-color, var(--text-muted)); border: 1px solid rgba(255,255,255,0.3);
+}
+
+/* 국가교통정보도(도로)만 등급별로 켜고 끌 수 있게 펼침 그룹으로 만든 것 —
+   나머지 기본 레이어 항목은 그냥 .layer-toggle-row 단일 체크박스 그대로. */
+.layer-toggle-row-main {
+    display: flex; align-items: center; padding: 0 8px 0 0; border-radius: var(--radius-sm); transition: var(--transition);
+}
+.layer-toggle-row-main:hover { background: var(--panel-light); }
+.layer-toggle-row-main label {
+    display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-primary);
+    cursor: pointer; flex: 1; padding: 6px 0 6px 8px;
+}
+.layer-toggle-row-main label input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+.layer-toggle-expand-btn {
+    flex-shrink: 0; background: transparent; border: none; color: var(--text-muted);
+    cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 0.75rem; transition: var(--transition);
+}
+.layer-toggle-expand-btn:hover { background: rgba(255,255,255,0.12); color: var(--text-primary); }
+.layer-toggle-expand-btn i { display: inline-block; transition: transform var(--transition); }
+.layer-toggle-expand-btn.open i { transform: rotate(90deg); }
+.layer-toggle-subgroup {
+    display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 20px; padding: 4px 0 4px 8px;
+    border-left: 2px solid var(--border-dim);
+}
+.layer-toggle-subgroup[hidden] { display: none; }
+.layer-toggle-subgroup label {
+    display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary);
+    cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); transition: var(--transition);
+}
+.layer-toggle-subgroup label:hover { background: var(--panel-light); color: var(--text-primary); }
+.layer-toggle-subgroup label input { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; flex-shrink: 0; }
+
+/* ===== 사이드바 탭 (데이터보기/검색보기) ===== */
+#sidebar-tabs { display: flex; border-bottom: 1px solid var(--border-dim); flex-shrink: 0; }
+#sidebar-tabs .tab-button {
+    flex: 1; min-width: 0; background: transparent; border: none; color: var(--text-secondary);
+    padding: 12px 2px; font-size: 0.85rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+    border-bottom: 2px solid transparent; transition: var(--transition);
+}
+#sidebar-tabs .tab-button i { margin-right: 5px; }
+#sidebar-tabs.admin-tabs-visible .tab-button { font-size: 0.68rem; padding: 12px 1px; }
+#sidebar-tabs.admin-tabs-visible .tab-button i { margin-right: 2px; }
+#sidebar-tabs .tab-button:hover { color: var(--text-primary); }
+#sidebar-tabs .tab-button.active { color: var(--accent-hover); border-bottom-color: var(--accent); }
+.sidebar-tab-content { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+/* ===== 데이터보기 탭: 접이식 섹션(도로대장/사용자도로관리) ===== */
+.collapsible-section { flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--border-dim); }
+.collapsible-section.collapsed { flex: 0 0 auto; }
+.collapsible-section.collapsed > *:not(.list-header) { display: none; }
+.list-header.collapsible-header { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.list-header.collapsible-header .section-caret { font-size: 0.7rem; transition: transform var(--transition); }
+.collapsible-section.collapsed .section-caret { transform: rotate(-90deg); }
+
+/* 데이터보기 탭 대분류(도로대장/시설물/기본 레이어/사용자도로관리) 헤더 공통 —
+   카테고리마다 색이 다른 아이콘 배지를 달아 한눈에 구분되게 하고, 펼쳐진
+   대분류는 좌측에 그 색 강조선이 붙는다. */
+.category-header {
+    padding: 11px 14px; margin: 8px 8px 4px; border-radius: var(--radius-md);
+    background: var(--panel-mid); gap: 10px; transition: var(--transition);
+}
+.category-header:hover { background: var(--panel-light); }
+.category-icon {
+    width: 28px; height: 28px; border-radius: var(--radius-sm); flex-shrink: 0;
+    background: var(--cat-color, var(--accent)); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 0.82rem;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+.category-label { font-weight: 700; font-size: 0.88rem; color: var(--text-primary); flex: 1; }
+.collapsible-section:not(.collapsed) > .category-header,
+#layer-panel:not(.collapsed) > .category-header {
+    background: var(--panel-light);
+    box-shadow: inset 3px 0 0 var(--cat-color, var(--accent));
+}
+
+/* ===== 도로대장 트리 (데이터보기) ===== */
+#ledger-tree-header { flex-shrink: 0; }
+#ledger-tree { flex: 1; overflow-y: auto; padding: 6px 12px 10px; }
+.tree-node { user-select: none; }
+.tree-node-label {
+    display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: var(--radius-sm);
+    cursor: pointer; font-size: 0.85rem; color: var(--text-primary); transition: var(--transition);
+}
+.tree-node-label:hover { background: var(--panel-light); }
+.tree-node-label .tree-caret { width: 12px; font-size: 0.7rem; color: var(--text-muted); transition: transform var(--transition); }
+.tree-node.open > .tree-node-label .tree-caret { transform: rotate(90deg); }
+.tree-node-label .tree-count { margin-left: auto; color: var(--text-muted); font-size: 0.75rem; }
+.tree-children { margin-left: 18px; display: none; }
+.tree-node.open > .tree-children { display: block; }
+.tree-leaf > .tree-node-label { color: var(--text-secondary); }
+.tree-leaf > .tree-node-label:hover { background: var(--accent-dark); color: #fff; }
+.tree-leaf.selected > .tree-node-label { background: var(--accent); color: #fff; }
+#ledger-tree .tree-empty { color: var(--text-muted); text-align: center; margin-top: 30px; font-size: 0.85rem; }
+.tree-node-empty { color: var(--text-muted); font-size: 0.78rem; padding: 4px 8px; }
+
+#ledger-tree-toolbar {
+    flex-shrink: 0; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border-dim);
+}
+#ledger-tree-toolbar button {
+    flex: 1; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-secondary); padding: 7px 0; cursor: pointer; transition: var(--transition); font-size: 0.85rem;
+}
+#ledger-tree-toolbar button:hover { background: var(--accent-dark); color: #fff; border-color: var(--accent-dark); }
+
+.tree-node-label .tree-delete-btn {
+    display: none; margin-left: 6px; background: transparent; border: none; color: inherit;
+    opacity: 0.7; cursor: pointer; font-size: 0.78rem; padding: 2px 4px;
+}
+.tree-node-label .tree-delete-btn:hover { opacity: 1; color: #ff5b57; }
+body.admin-mode .tree-node-label .tree-delete-btn { display: inline-flex; }
+
+.tree-node-label .tree-facility-toggle-group {
+    margin-left: auto; flex-shrink: 0; display: flex; gap: 2px;
+}
+.tree-node-label .tree-facility-toggle {
+    flex-shrink: 0; background: transparent; border: none;
+    color: var(--text-muted); cursor: pointer; padding: 2px 5px; border-radius: var(--radius-sm);
+    font-size: 0.8rem; opacity: 0.75; transition: var(--transition);
+}
+.tree-node-label .tree-facility-toggle:hover { opacity: 1; background: var(--panel-light); color: var(--text-primary); }
+.tree-node-label .tree-facility-toggle.active { opacity: 1; color: var(--accent-hover); }
+.tree-node-label .tree-facility-toggle.group-main.active { color: #ffb648; }
+.tree-node-label .tree-facility-toggle.group-aux.active { color: var(--accent-hover); }
+
+/* ===== 부속시설(데이터보기 탭, 주요시설물/부대시설로 그룹핑) ===== */
+/* 트리와 첨부파일 목록을 #route-facility-body 하나로 묶어 스크롤 영역을
+   단일화한다 — 둘을 따로 overflow:auto 시키면 각자에게 배분되는 flex 높이가
+   내용보다 작아질 때 넘친 부분이 서로 다른 형제 섹션(기본 레이어 등) 위로
+   겹쳐 보이는 문제가 있었다. */
+#route-facility-header { flex-shrink: 0; }
+#route-facility-body { flex: 1; min-height: 0; overflow-y: auto; }
+#route-facility-tree { padding: 6px 12px 10px; }
+#route-facility-tree .tree-empty { color: var(--text-muted); text-align: center; margin-top: 20px; font-size: 0.82rem; }
+.facility-leaf > .tree-node-label { cursor: default; color: var(--text-secondary); }
+.facility-leaf.rf-clickable > .tree-node-label { cursor: pointer; }
+.facility-leaf.rf-clickable > .tree-node-label:hover { background: var(--accent-dark); color: #fff; }
+.facility-leaf.rf-clickable > .tree-node-label:hover .tree-count { color: #fff; }
+.facility-leaf .tree-node-label .facility-vis-toggle {
+    flex-shrink: 0; margin-left: 6px; background: transparent; border: none;
+    color: var(--accent-hover); cursor: pointer; padding: 2px 5px; border-radius: var(--radius-sm);
+    font-size: 0.78rem; opacity: 0.85; transition: var(--transition);
+}
+.facility-leaf .tree-node-label .facility-vis-toggle:hover { opacity: 1; background: rgba(255,255,255,0.15); }
+.facility-leaf .tree-node-label .facility-vis-toggle.hidden-state { color: var(--text-muted); opacity: 0.55; }
+#route-facility-section #route-facility-files { margin: 8px 16px 10px; }
+
+#save-btn { display: none; }
+body.admin-mode #save-btn { display: block; }
+
+#search-section { display: flex; gap: 8px; padding: 12px 16px; }
+#searchInput {
+    flex: 1; background: var(--panel-light); border: 1px solid var(--border-med);
+    border-radius: var(--radius-sm); color: var(--text-primary); padding: 8px 10px; font-size: 0.9rem;
+}
+
+#search-category-tabs { display: flex; gap: 4px; padding: 0 16px 10px; }
+.sc-tab-button {
+    flex: 1; background: var(--panel-light); border: none; color: var(--text-secondary);
+    padding: 6px 2px; font-size: 0.78rem; border-radius: var(--radius-sm); cursor: pointer; transition: var(--transition);
+}
+.sc-tab-button:hover { color: var(--text-primary); }
+.sc-tab-button.active { background: var(--accent); color: #fff; font-weight: 700; }
+
+#search-results-wrapper { flex: 1; overflow-y: auto; padding: 0 16px; }
+.search-result-item {
+    padding: 8px 10px; background: var(--panel-light); border-radius: var(--radius-sm);
+    margin-bottom: 6px; cursor: pointer; font-size: 0.85rem; transition: var(--transition);
+}
+.search-result-item:hover { background: var(--accent-dark); }
+.search-result-item .sr-grade { color: var(--accent-hover); font-weight: 700; margin-right: 6px; }
+.search-result-item .sr-sub {
+    margin-top: 3px; font-size: 0.74rem; color: var(--text-secondary);
+    display: flex; justify-content: space-between; gap: 8px;
+}
+.search-result-item .sr-id {
+    color: var(--text-muted); flex-shrink: 0; max-width: 55%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.search-result-item mark.sr-hl { background: none; color: #ff5b57; font-weight: 700; }
+.search-result-item:hover mark.sr-hl { color: #ff8a87; }
+
+.sr-section { margin-bottom: 14px; }
+.sr-section-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 0.82rem; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;
+}
+.sr-section-header b { color: var(--accent-hover); font-weight: 800; margin: 0 2px; }
+.sr-section-header .sr-more { color: var(--text-secondary); font-size: 0.74rem; font-weight: 400; cursor: pointer; }
+.sr-section-header .sr-more:hover { color: var(--accent-hover); }
+.sr-section-empty { color: var(--text-muted); font-size: 0.78rem; padding: 4px 2px 8px; }
+
+#search-results-pager {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 10px 16px; border-top: 1px solid var(--border-dim); font-size: 0.8rem; color: var(--text-secondary);
+}
+#search-results-pager button {
+    background: var(--panel-light); border: none; color: var(--text-secondary); width: 26px; height: 26px;
+    border-radius: var(--radius-sm); cursor: pointer;
+}
+#search-results-pager button:hover:not(:disabled) { background: var(--accent-dark); color: #fff; }
+#search-results-pager button:disabled { opacity: 0.35; cursor: default; }
+
+#parcel-panel { flex: 1; overflow-y: auto; padding: 12px 16px; }
+#parcel-empty-msg { color: var(--text-muted); text-align: center; margin-top: 40px; line-height: 1.7; }
+
+#analysisview-tab { overflow-y: auto; padding: 12px 16px; }
+#analysis-empty-msg { color: var(--text-muted); text-align: center; margin-top: 40px; line-height: 1.7; }
+#az-addr { word-break: break-all; }
+
+/* ===== 변경이력(감사 로그, 관리자 전용) ===== */
+#auditlogview-tab { padding: 12px 16px; }
+#audit-log-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#audit-log-header button { background: transparent; border: none; color: var(--text-secondary); cursor: pointer; }
+#audit-log-header button:hover { color: var(--accent-hover); }
+#audit-log-filter-row { margin-bottom: 10px; }
+#audit-log-action-filter {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); font-size: 0.8rem; padding: 5px 8px;
+}
+#audit-log-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.audit-log-row { background: var(--panel-light); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.82rem; }
+.audit-log-row .alr-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.audit-log-row .alr-badge {
+    font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 999px; flex-shrink: 0;
+    background: var(--accent-dark); color: #fff;
+}
+.audit-log-row .alr-badge.action-delete { background: #d9534f; }
+.audit-log-row .alr-badge.action-bulk_import { background: #7c5cbf; }
+.audit-log-row .alr-summary { flex: 1; min-width: 0; }
+.audit-log-row .alr-meta { color: var(--text-muted); font-size: 0.72rem; }
+#audit-log-pagination {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 10px 0; font-size: 0.8rem; color: var(--text-secondary);
+}
+#audit-log-pagination button {
+    background: var(--panel-light); border: none; color: var(--text-secondary); width: 26px; height: 26px;
+    border-radius: var(--radius-sm); cursor: pointer;
+}
+#audit-log-pagination button:hover:not(:disabled) { background: var(--accent-dark); color: #fff; }
+#audit-log-pagination button:disabled { opacity: 0.35; cursor: default; }
+
+/* ===== 일괄등록 (관리자 전용, 레이아웃만) ===== */
+#bulkview-tab { overflow-y: auto; padding: 12px 16px; }
+#bulk-mode-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.bulk-mode-btn {
+    flex: 1; background: var(--panel-light); border: none; color: var(--text-secondary);
+    padding: 7px 4px; font-size: 0.8rem; border-radius: var(--radius-sm); cursor: pointer; transition: var(--transition);
+}
+.bulk-mode-btn:hover { color: var(--text-primary); }
+.bulk-mode-btn.active { background: var(--accent); color: #fff; font-weight: 700; }
+#bulk-incoming-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
+#bulk-incoming-select-all-label { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; }
+#bulk-incoming-toolbar #bulk-incoming-refresh-btn { width: auto; font-size: 0.76rem; padding: 5px 10px; }
+#bulk-incoming-list { margin-bottom: 10px; max-height: 240px; overflow-y: auto; }
+#bulk-incoming-list .bulk-incoming-row {
+    display: flex; align-items: center; gap: 8px; background: var(--panel-light); border: 1px solid transparent;
+    border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 6px; font-size: 0.82rem; cursor: pointer; transition: var(--transition);
+}
+#bulk-incoming-list .bulk-incoming-row:hover { border-color: var(--border-med); }
+#bulk-incoming-list .bulk-incoming-row.selected { border-color: var(--accent); background: var(--accent-dark); color: #fff; }
+#bulk-incoming-list .bulk-incoming-row input[type="checkbox"] { flex-shrink: 0; cursor: pointer; }
+#bulk-incoming-list .bulk-incoming-row i { color: var(--accent-hover); flex-shrink: 0; }
+#bulk-incoming-list .bulk-incoming-row.selected i { color: #fff; }
+#bulk-incoming-list .bulk-incoming-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bulk-incoming-list .bulk-incoming-meta { color: var(--text-muted); font-size: 0.72rem; flex-shrink: 0; }
+#bulk-incoming-list .bulk-incoming-row.selected .bulk-incoming-meta { color: rgba(255,255,255,0.8); }
+#bulk-incoming-list .bulk-empty { color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 10px 0; }
+#bulk-incoming-batch-sigungu-row { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 10px; }
+#bulk-incoming-batch-sigungu-input {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 7px 9px; font-size: 0.85rem;
+}
+#bulk-incoming-batch-buttons { display: flex; gap: 8px; margin-bottom: 10px; }
+#bulk-incoming-batch-buttons button { flex: 1; }
+#bulk-incoming-batch-log { max-height: 200px; overflow-y: auto; font-size: 0.78rem; }
+#bulk-incoming-batch-log .bib-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: var(--radius-sm); margin-bottom: 4px; background: var(--panel-light); }
+#bulk-incoming-batch-log .bib-row.ok i { color: #3ecf6e; }
+#bulk-incoming-batch-log .bib-row.error { color: #ff5b57; }
+#bulk-incoming-batch-log .bib-row.error i { color: #ff5b57; }
+#bulk-incoming-batch-log .bib-row.pending i { color: var(--text-muted); animation: bulk-spin 1s linear infinite; }
+#bulk-incoming-batch-log .bib-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bulk-notice, #bulk-notice-incoming, #bulk-notice-route-drawings {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: 0.78rem; padding: 8px 10px; margin-bottom: 14px; line-height: 1.6;
+}
+#bulk-notice i, #bulk-notice-incoming i, #bulk-notice-route-drawings i { color: var(--accent-hover); margin-right: 4px; }
+#bulk-dropzone, #bulk-route-drawings-dropzone {
+    border: 2px dashed var(--border-med); border-radius: var(--radius-md); padding: 28px 12px;
+    text-align: center; color: var(--text-muted); cursor: pointer; transition: var(--transition); font-size: 0.85rem;
+}
+#bulk-dropzone i, #bulk-route-drawings-dropzone i { font-size: 1.8rem; color: var(--accent-hover); display: block; margin-bottom: 10px; }
+#bulk-dropzone:hover, #bulk-dropzone.dragover,
+#bulk-route-drawings-dropzone:hover, #bulk-route-drawings-dropzone.dragover { border-color: var(--accent); background: var(--panel-light); color: var(--text-primary); }
+
+#bulk-route-drawings-route-row { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px; }
+#bulk-route-drawings-route-select {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 7px 9px; font-size: 0.85rem;
+}
+#bulk-route-drawings-file-name { font-size: 0.8rem; color: var(--text-secondary); margin: 8px 0; word-break: break-all; }
+#bulk-route-drawings-status { font-size: 0.82rem; color: var(--text-muted); margin-top: 8px; }
+#bulk-route-drawings-result { margin-top: 10px; font-size: 0.82rem; }
+.bulk-rd-result-ok { color: var(--accent-hover); font-weight: 700; margin-bottom: 4px; }
+.bulk-rd-result-warn { color: #ffb020; font-weight: 700; margin-bottom: 4px; }
+.bulk-rd-unmatched-list {
+    margin: 0; padding-left: 18px; color: var(--text-muted); max-height: 160px; overflow-y: auto;
+    font-family: monospace; font-size: 0.76rem;
+}
+#bulk-or-divider { text-align: center; color: var(--text-muted); font-size: 0.74rem; margin: 10px 0; }
+#bulk-folder-picker-label {
+    display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%;
+    box-sizing: border-box; cursor: pointer; font-size: 0.82rem;
+}
+#bulk-file-list { margin-top: 12px; }
+#bulk-file-list .bulk-file-row {
+    display: flex; align-items: center; gap: 8px; background: var(--panel-light); border-radius: var(--radius-sm);
+    padding: 7px 10px; margin-bottom: 6px; font-size: 0.82rem;
+}
+#bulk-file-list .bulk-file-row i { color: var(--accent-hover); }
+#bulk-file-list .bulk-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bulk-file-list .bulk-file-size { color: var(--text-muted); font-size: 0.74rem; flex-shrink: 0; }
+#bulk-file-list .bulk-file-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
+#bulk-file-list .bulk-file-remove:hover { color: #ff5b57; }
+#bulk-file-list .bulk-empty { color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 10px 0; }
+
+#bulk-upload-status { margin-top: 8px; font-size: 0.82rem; color: var(--text-muted); text-align: center; }
+#bulk-upload-status .bulk-spinner, #bulk-review-result .bulk-spinner, .bulk-spinner { animation: bulk-spin 1s linear infinite; }
+#bulk-upload-status .bulk-spinner, #bulk-review-result .bulk-spinner { margin-right: 5px; }
+@keyframes bulk-spin { to { transform: rotate(360deg); } }
+
+/* 오류는 진행상황 텍스트(#bulk-upload-status)와 분리된 별도 박스로 보여준다
+   — 진행중 메시지와 섞이지 않고 눈에 띄게. #bulk-review-warnings와 같은 스타일. */
+#bulk-upload-error, #bulk-review-error {
+    background: rgba(255, 91, 87, 0.1); border: 1px solid rgba(255, 91, 87, 0.4); border-radius: var(--radius-sm);
+    padding: 8px 10px; font-size: 0.8rem; color: #ff8a86; margin-top: 8px; line-height: 1.6; display: none;
+}
+#bulk-upload-error i, #bulk-review-error i { margin-right: 4px; }
+#bulk-upload-error.show, #bulk-review-error.show { display: block; }
+
+/* 검수/등록 처리 중엔 모래시계(대기) 커서를 보여준다. */
+#bulkview-tab.bulk-loading, #bulkview-tab.bulk-loading * { cursor: wait !important; }
+
+/* 도면(DXF) 로딩 중 모래시계 커서 — index.html(사이드바 내장형)과
+   cad-popup.html(전체화면 팝업) 둘 다 #cad-viewer-wrap을 공유하므로 이
+   규칙 하나로 양쪽 다 적용된다. */
+#cad-viewer-wrap.cad-loading, #cad-viewer-wrap.cad-loading * { cursor: wait !important; }
+
+/* 노선 파일 다운로드처럼 트리거 버튼 위치가 화면마다 다른 작업은 body
+   전체에 모래시계 커서를 건다. */
+body.app-busy, body.app-busy * { cursor: wait !important; }
+
+#bulk-review-panel .list-header { margin-top: 0; }
+#bulk-review-meta {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    padding: 10px 12px; font-size: 0.82rem; line-height: 1.7; margin-bottom: 12px;
+}
+#bulk-review-meta .meta-row { display: flex; justify-content: space-between; gap: 8px; }
+#bulk-review-meta .meta-label { color: var(--text-muted); }
+#bulk-review-meta .crs-bad { color: #ff5b57; font-weight: 700; }
+#bulk-review-sigungu-row { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px; }
+#bulk-review-sigungu-input {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 7px 9px; font-size: 0.85rem;
+}
+#bulk-incoming-folder-row { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px; }
+#bulk-incoming-folder-input {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 7px 9px; font-size: 0.85rem;
+}
+#bulk-review-layers { margin-bottom: 12px; max-height: 260px; overflow-y: auto; }
+#bulk-review-layers .layer-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-sm);
+    font-size: 0.8rem; border-bottom: 1px solid var(--border-dim);
+}
+#bulk-review-layers .layer-row .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bulk-review-layers .layer-row .layer-count { color: var(--text-muted); flex-shrink: 0; }
+#bulk-review-layers .layer-row.has-warning { color: #ffb020; }
+#bulk-review-layers .layer-row.has-warning i { color: #ffb020; }
+#bulk-review-warnings {
+    background: rgba(255, 91, 87, 0.1); border: 1px solid rgba(255, 91, 87, 0.4); border-radius: var(--radius-sm);
+    padding: 8px 10px; font-size: 0.78rem; color: #ff8a86; margin-bottom: 12px; line-height: 1.6; display: none;
+}
+#bulk-review-warnings.show { display: block; }
+#bulk-review-buttons { display: flex; gap: 8px; }
+#bulk-review-buttons .btn-squared { flex: 1; }
+#bulk-review-buttons .btn-outline { flex-shrink: 0; }
+#bulk-review-result { margin-top: 10px; font-size: 0.82rem; text-align: center; color: var(--accent-hover); }
+
+.info-row { display: flex; border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 6px; border: 1px solid var(--border-dim); }
+.info-label {
+    min-width: 84px; background: linear-gradient(180deg, #1e3a5f, #162d4a); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; padding: 8px 4px;
+}
+.info-value { flex: 1; background: var(--panel-light); padding: 8px 10px; font-size: 0.88rem; word-break: break-all; }
+#road-rank-select {
+    flex: 1; background: var(--panel-light); border: none;
+    color: var(--text-primary); padding: 8px 10px; font-size: 0.88rem; font-family: inherit;
+}
+#road-rank-hint { color: var(--text-muted); font-size: 0.74rem; margin: -2px 0 8px; line-height: 1.5; }
+
+#zoning-analysis-section { margin: 10px 0; }
+#analysis-select-row { display: flex; gap: 8px; }
+#analysis-type-select {
+    flex: 1; background: var(--panel-light); border: 1px solid var(--border-med);
+    border-radius: var(--radius-sm); color: var(--text-primary); padding: 0 8px; font-size: 0.85rem;
+}
+#analysis-select-row .btn-squared { flex: 0 0 80px; margin-top: 0; }
+#zoning-analysis-result {
+    margin-top: 8px; background: var(--panel-light); border-radius: var(--radius-sm);
+    padding: 10px; font-size: 0.82rem;
+}
+#zoning-analysis-result .za-total {
+    text-align: center; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; font-size: 0.88rem;
+}
+#zoning-analysis-result table { width: 100%; border-collapse: collapse; }
+#zoning-analysis-result th {
+    text-align: left; color: var(--text-muted); font-size: 0.72rem; font-weight: 700;
+    padding: 4px 6px; border-bottom: 1px solid var(--border-med);
+}
+#zoning-analysis-result td { padding: 6px; border-bottom: 1px solid var(--border-dim); vertical-align: middle; }
+#zoning-analysis-result .za-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+#zoning-analysis-result .za-empty { text-align: center; color: var(--text-muted); padding: 10px 0; }
+
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin: 14px 0; }
+.field-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--text-secondary); }
+.field-grid .field-full { grid-column: 1 / -1; }
+.field-grid input, .field-grid select, .field-grid textarea {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 6px 8px; font-size: 0.85rem; font-family: inherit;
+}
+.field-grid input:disabled, .field-grid select:disabled, .field-grid textarea:disabled {
+    background: transparent; color: var(--text-secondary); border-color: var(--border-dim); cursor: default;
+}
+
+.btn-squared {
+    width: 100%; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 10px 0; font-weight: 700; cursor: pointer; transition: var(--transition); margin-top: 6px;
+}
+.btn-squared:hover { background: var(--accent-hover); }
+.btn-squared:active { transform: scale(0.98); }
+
+#save-status { text-align: center; font-size: 0.8rem; margin-top: 6px; min-height: 1.2em; color: var(--accent-hover); }
+
+#file-section { margin-top: 20px; border-top: 1px solid var(--border-dim); padding-top: 12px; }
+.list-header { font-weight: 700; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px; }
+#file-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.file-item {
+    display: flex; align-items: center; justify-content: space-between; background: var(--panel-light);
+    border-radius: var(--radius-sm); padding: 6px 10px; font-size: 0.82rem;
+}
+.file-item .file-cat { color: var(--accent-hover); font-weight: 700; margin-right: 6px; }
+.file-item .file-name {
+    color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; cursor: pointer;
+}
+.file-item .file-name:hover { color: var(--accent-hover); text-decoration: underline; }
+.file-item .file-dl-btn { background: transparent; border: none; font: inherit; color: var(--text-secondary); margin-left: 8px; text-decoration: none; cursor: pointer; }
+.file-item .file-dl-btn:hover { color: var(--accent-hover); }
+.file-item .file-dl-btn:disabled { opacity: 0.6; }
+.file-item .file-dl-btn .bulk-spinner { margin-right: 0; }
+.file-item .file-del-btn { display: none; background: transparent; border: none; color: #d9534f; cursor: pointer; margin-left: 8px; }
+body.admin-mode .file-item .file-del-btn { display: inline-flex; }
+.file-dwg-badge {
+    flex-shrink: 0; font-size: 0.68rem; font-weight: 700; padding: 2px 6px;
+    border-radius: 999px; margin-left: 6px; white-space: nowrap;
+}
+.file-dwg-badge-ok { background: rgba(58,133,224,0.18); color: var(--accent-hover); }
+.file-dwg-badge-none { background: rgba(255,255,255,0.06); color: var(--text-muted); }
+
+/* "도면종류" 탭에서 500m 구간 표 위에 얹는 노선 전체 파일(TOP/CON) 요약 줄 —
+   .file-item과 비슷하지만 다운로드/삭제 버튼을 .rs-name-dl-btn/.rs-file-del-btn을
+   그대로 재사용해서 관리자모드에서만 보이게 한다(도로 탭 표와 동일한 규칙). */
+.route-whole-file-row {
+    display: flex; align-items: center; gap: 6px; background: var(--panel-light);
+    border-radius: var(--radius-sm); padding: 6px 10px; margin-bottom: 6px; font-size: 0.82rem;
+}
+.route-whole-file-row .rwf-no { color: var(--accent-hover); font-weight: 700; flex-shrink: 0; width: 26px; text-align: center; }
+.route-whole-file-row .rwf-name { color: var(--text-primary); flex: 1; cursor: pointer; }
+.route-whole-file-row .rwf-name:hover { color: var(--accent-hover); text-decoration: underline; }
+
+/* "도로" 탭 — 파일이 아니라 이 호선의 구간 목록(구간 고르기)을 보여준다.
+   고른 구간이 currentRoute가 되고 "도면" 탭 등이 그 구간 기준으로 바뀐다. */
+.route-section-pick-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--panel-light); border-radius: var(--radius-sm); padding: 8px 10px;
+    margin-bottom: 4px; font-size: 0.85rem; cursor: pointer; border: 1px solid transparent;
+}
+.route-section-pick-row:hover { border-color: var(--accent-dark); }
+.route-section-pick-row.active { border-color: var(--accent); background: rgba(58,133,224,0.12); }
+.route-section-pick-row .rsp-name { color: var(--text-primary); font-weight: 700; }
+.route-section-pick-row.active .rsp-name { color: var(--accent-hover); }
+.route-section-pick-row .rsp-range { color: var(--text-secondary); font-size: 0.8rem; }
+
+/* "도로" 탭 — 500m 단위 구간 도면을 번호/명칭/시점/종점 표로 보여줌
+   (참고 시스템의 도면뷰어 화면 구성과 동일). */
+.route-seg-table { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; font-size: 0.82rem; }
+.route-seg-row {
+    /* 행마다 독립된 grid라 마지막 칸이 auto(내용에 맞춰 늘어남)면 헤더("도면"
+       2글자)와 데이터행(구간번호 버튼, 관리자모드면 삭제 아이콘까지)의 폭이
+       서로 달라져서 앞의 시점/종점 칸까지 전부 밀려 안 맞아 보였다(실측으로
+       확인: 헤더 rs-range left=222, 데이터행 rs-range left=204). 마지막 칸을
+       고정폭으로 바꿔서 헤더와 모든 데이터행이 항상 같은 칸 너비를 쓰게
+       고정했다. P/Y 한 글자 대신 구간번호(앞자리 0 뺀 짧은 형태, "1"/"12" 등)를
+       보여주게 되면서 버튼 폭이 조금 늘 수 있어 90px→104px로 같이 늘렸다(호선
+       전체보기처럼 여러 구간의 파일이 한 줄에 같이 나올 때 버튼이 2개 이상일
+       수 있음) — 명칭(rs-name) 칸이 잘리지 않도록 원래보다는 적게만 늘림.
+       ※ 이 grid는 행마다 독립적이라 값 하나만 바꿔도 반드시 아래 헤더 규칙의
+       grid-template-columns도 같이 바꿔야 한다(하나의 표처럼 보이지만 실제로는
+       공유 grid가 아님). */
+    display: grid; grid-template-columns: 26px 1fr 44px 44px 104px; align-items: center;
+    gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm);
+}
+.route-seg-row:not(.route-seg-header) { background: var(--panel-light); }
+/* 지도에서 클릭으로 고른 500m 섹터에 해당하는 행 — outline은 grid 레이아웃에
+   영향을 주지 않아서 border 대신 이걸 쓴다. */
+.route-seg-row.sector-selected { outline: 2px solid var(--accent); outline-offset: -2px; background: rgba(58,133,224,0.22); }
+.route-seg-row.sector-selected .rs-no { color: var(--accent-hover); }
+.route-seg-header { color: var(--text-muted); font-size: 0.7rem; font-weight: 700; padding: 2px 8px; }
+.route-seg-row .rs-no { color: var(--accent-hover); font-weight: 700; text-align: center; }
+.route-seg-row .rs-name { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.route-seg-row .rs-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.rs-name-dl-btn {
+    display: none; flex-shrink: 0; background: transparent; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 0.72rem; padding: 0 2px;
+}
+.rs-name-dl-btn:hover { color: var(--accent-hover); }
+body.admin-mode .rs-name-dl-btn { display: inline-flex; }
+.route-seg-row .rs-range {
+    /* "정보" 탭(#infoview-tab)의 .field-grid input 값 글자와 동일하게 맞춤
+       — 그쪽은 font-size:0.85rem에 자간 조정이 전혀 없는 평범한 텍스트라,
+       여기도 tabular-nums/letter-spacing 같은 별도 조정을 걷어내고 크기만
+       맞췄다(전에 넣었던 letter-spacing이 오히려 다르게 보이던 원인이었음). */
+    text-align: right; font-size: 0.85rem; color: var(--text-secondary);
+}
+.route-seg-row .rs-files { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.rs-file-btn {
+    /* 예전엔 P/Y 한 글자만 넣던 자리라 24px 고정폭이었는데, 이제 구간번호
+       (앞자리 0 뺀 짧은 형태, 보통 1~2자리)를 보여줘서 고정폭 대신 내용에
+       맞춰 늘어나게 바꿨다. */
+    background: var(--accent-dark); color: #fff; border: none; border-radius: var(--radius-sm);
+    min-width: 20px; height: 20px; padding: 0 4px; font-size: 0.68rem; font-weight: 700; cursor: pointer;
+}
+.rs-file-btn:hover { background: var(--accent-hover); }
+.rs-file-del-btn { display: none; background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.7rem; padding: 0 2px; }
+.rs-file-del-btn:hover { color: #ff5b57; }
+body.admin-mode .rs-file-del-btn { display: inline-flex; }
+
+#route-upload-status { font-size: 0.76rem; color: var(--text-muted); margin: 4px 0; min-height: 1em; }
+#file-upload-row { display: flex; gap: 6px; }
+#file-upload-row select { background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm); color: var(--text-primary); }
+#file-upload-row input[type=file] { flex: 1; font-size: 0.78rem; color: var(--text-secondary); }
+#upload-btn { width: auto; padding: 6px 14px; margin-top: 0; }
+
+/* ===== 로그인 ===== */
+#login-overlay {
+    position: fixed; inset: 0; background: var(--panel-dark); display: flex;
+    align-items: center; justify-content: center; z-index: 1000;
+}
+#login-box {
+    background: var(--panel-mid); border-radius: var(--radius-lg); padding: 40px 36px;
+    width: 320px; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+#login-title { font-size: 1.4rem; font-weight: 800; }
+#login-subtitle { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px; }
+#login-error { color: #ff6b6b; font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#login-box input {
+    width: 100%; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 10px 12px; margin-bottom: 10px; font-size: 0.9rem;
+}
+#login-box button {
+    width: 100%; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 11px 0; font-weight: 700; cursor: pointer; margin-top: 6px; transition: var(--transition);
+}
+
+/* ===== 도면 뷰어 팝업창 (cad-popup.html) — 큰 화면 레이아웃 =====
+   왼쪽 사이드바용 CSS(#cad-viewer-wrap 고정높이, #route-info-panel 좁은폭 등)를
+   body.cad-popup-page 스코프로 덮어써서, 같은 id들을 캔버스는 크게/정보는 넓게 재배치한다. */
+body.cad-popup-page {
+    margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--panel-dark); color: var(--text-primary);
+}
+body.cad-popup-page #cad-toolbar button { width: 34px; height: 34px; }
+
+body.cad-popup-page #popup-main {
+    flex: 1; display: flex; min-height: 0;
+}
+body.cad-popup-page #popup-canvas-col {
+    flex: 1; min-width: 0; position: relative; background: var(--panel-mid);
+}
+body.cad-popup-page #cad-viewer-wrap {
+    position: absolute; inset: 12px; height: auto; margin: 0;
+}
+body.cad-popup-page #popup-side-col {
+    width: 420px; flex-shrink: 0; overflow-y: auto; padding: 16px;
+    border-left: 1px solid var(--border-dim); background: var(--panel-sidebar);
+}
+body.cad-popup-page #popup-side-col > div { margin-bottom: 18px; }
+
+body.cad-popup-page #route-info-panel { width: auto; padding: 0; border-right: none; }
+body.cad-popup-page #route-info-panel .info-row { display: flex; margin-bottom: 6px; }
+body.cad-popup-page #route-info-panel .info-label { min-width: 84px; font-size: 0.8rem; padding: 8px 4px; }
+body.cad-popup-page #route-info-panel .info-value { font-size: 0.88rem; padding: 8px 10px; }
+
+body.cad-popup-page #route-file-panel { min-width: 0; }
+body.cad-popup-page #route-file-list { max-height: 260px; padding: 8px 0 0; }
+
+/* 팝업(전체 도면 보기)의 사이드 칼럼(#popup-side-col)은 그 자체가 세로
+   스크롤이라, 레이어 목록만 따로 220px로 잘라 안에서 또 스크롤시킬 필요가
+   없다 — 자연스러운 높이로 다 펼쳐서 아래 빈 공간을 그대로 쓰게 한다. */
+body.cad-popup-page #dxf-layer-panel { height: auto; border-top: none; padding: 0; }
+body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
+#login-box button:hover { background: var(--accent-hover); }
+
+/* ===== 사용자도로관리 트리 (데이터보기, 구간 트리 아래) ===== */
+#issue-tree-header { flex-shrink: 0; }
+#issue-tree { flex: 1; overflow-y: auto; padding: 6px 12px 10px; }
+#issue-tree .tree-empty { color: var(--text-muted); text-align: center; margin-top: 30px; font-size: 0.85rem; }
+#issue-tree-toolbar {
+    flex-shrink: 0; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border-dim);
+}
+#issue-tree-toolbar button {
+    flex: 1; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-secondary); padding: 7px 0; cursor: pointer; transition: var(--transition); font-size: 0.85rem;
+}
+#issue-tree-toolbar button:hover { background: var(--accent-dark); color: #fff; border-color: var(--accent-dark); }
+
+/* ===== 사용자도로관리 등록/수정 모달 ===== */
+/* 화면을 가리는 중앙 팝업 대신, 지도가 최대한 많이 보이도록 좌측에 고정
+   도킹한다(배경 어둡게 깔지 않고, 카드 바깥 영역은 클릭이 지도로 그대로
+   통과하도록 pointer-events를 뺀다). */
+#issue-modal-overlay {
+    position: fixed; top: 0; left: 0; bottom: 0; background: transparent; display: flex;
+    align-items: stretch; justify-content: flex-start; z-index: 1100; pointer-events: none;
+}
+#issue-modal-card {
+    background: var(--panel-mid); border-radius: 0; border-right: 1px solid var(--border-dim);
+    width: 380px; max-width: calc(100vw - 40px); height: 100%; display: flex; flex-direction: column;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.5); pointer-events: auto;
+}
+#issue-modal-header {
+    display: flex; align-items: center; justify-content: space-between; padding: 16px 18px;
+    border-bottom: 1px solid var(--border-dim); flex-shrink: 0;
+}
+#issue-modal-title { font-weight: 700; font-size: 1rem; }
+#issue-modal-close-btn {
+    background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem;
+    padding: 4px; border-radius: var(--radius-sm);
+}
+#issue-modal-close-btn:hover { color: var(--text-primary); background: var(--panel-light); }
+#issue-modal-body { padding: 16px 18px; overflow-y: auto; flex: 1; min-height: 0; }
+#issue-modal-body .field-grid { margin: 0 0 10px; }
+#issue-modal-body label.field-full { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px; }
+#issue-modal-body input, #issue-modal-body select, #issue-modal-body textarea {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 7px 9px; font-size: 0.85rem; font-family: inherit; resize: vertical;
+}
+#im-created-at { color: var(--text-muted); }
+#issue-dropzone {
+    border: 2px dashed var(--border-med); border-radius: var(--radius-md); padding: 22px 12px;
+    text-align: center; color: var(--text-muted); cursor: pointer; transition: var(--transition); font-size: 0.85rem;
+}
+#issue-dropzone i { font-size: 1.6rem; color: var(--accent-hover); display: block; margin-bottom: 8px; }
+#issue-dropzone:hover, #issue-dropzone.dragover { border-color: var(--accent); background: var(--panel-light); color: var(--text-primary); }
+#issue-file-list { margin-top: 10px; }
+#issue-file-list .issue-file-row {
+    display: flex; align-items: center; gap: 8px; background: var(--panel-light); border-radius: var(--radius-sm);
+    padding: 7px 10px; margin-bottom: 6px; font-size: 0.82rem;
+}
+#issue-file-list .issue-file-row i { color: var(--accent-hover); }
+#issue-file-list .issue-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+#issue-file-list .issue-file-name:hover { color: var(--accent-hover); text-decoration: underline; }
+#issue-file-list .issue-file-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
+#issue-file-list .issue-file-remove:hover { color: #ff5b57; }
+#issue-modal-status { text-align: center; font-size: 0.8rem; margin-top: 4px; min-height: 1.2em; color: var(--accent-hover); }
+#issue-modal-footer {
+    display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--border-dim); flex-shrink: 0;
+}
+#issue-modal-footer-spacer { flex: 1; }
+#issue-modal-footer .btn-squared { width: auto; padding: 9px 18px; }
+.btn-outline {
+    background: transparent; border: 1px solid var(--border-med); color: var(--text-secondary);
+    border-radius: var(--radius-sm); padding: 9px 16px; font-weight: 600; cursor: pointer; transition: var(--transition);
+}
+.btn-outline:hover { background: var(--panel-light); color: var(--text-primary); }
+.btn-danger {
+    background: transparent; border: 1px solid rgba(255, 91, 87, 0.4); color: #ff5b57;
+    border-radius: var(--radius-sm); padding: 9px 16px; font-weight: 600; cursor: pointer; transition: var(--transition);
+}
+.btn-danger:hover { background: rgba(255, 91, 87, 0.12); }
+
+#issue-editroute-bar {
+    position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 60;
+    background: var(--panel-mid); border: 1px solid var(--border-med); border-radius: var(--radius-md);
+    padding: 10px 14px; display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+#issue-editroute-bar span { font-size: 0.82rem; color: var(--text-secondary); white-space: nowrap; }
+#issue-editroute-bar .btn-squared { width: auto; padding: 7px 14px; font-size: 0.85rem; }
+#issue-editroute-bar .btn-outline { padding: 7px 14px; font-size: 0.85rem; }

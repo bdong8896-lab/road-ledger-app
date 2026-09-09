@@ -1,0 +1,16 @@
+node_modules/
+.env
+.env.production
+env.production
+.vscode/
+public-dist/
+server/logs/
+server/uploads/*
+!server/uploads/.gitkeep
+backups/
+*.dump
+
+# 실제 비밀번호가 그대로 적혀있는 개인 작업 메모 — 배포 가이드 본문
+# (deploy/서버배포_가이드.txt)과 달리 이 둘은 특정 PC/사이트의 실제 값이 남아있어 제외.
+배포전작업.txt
+deploy/신안 오류사항.txt

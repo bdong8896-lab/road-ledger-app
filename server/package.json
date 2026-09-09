@@ -1,0 +1,27 @@
+{
+  "name": "road-ledger-server",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "seed-admin": "node db/seed-admin.js",
+    "build:dist": "node build-dist.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^9.0.1",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "iconv-lite": "^0.7.3",
+    "multer": "^2.0.0",
+    "pg": "^8.11.5",
+    "proj4": "^2.21.0"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^5.6.0"
+  }
+}
