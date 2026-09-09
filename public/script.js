@@ -724,7 +724,9 @@ function openCctvPreview(name, url) {
     if (!isSplitOpen) toggleSplitView();
     document.getElementById('sat_map').style.display = 'none';
     document.getElementById('roadview-wrap').style.display = 'none';
-    document.getElementById('file-preview-div').style.display = 'none';
+    // display:none만으로는 안 되고 비워야 한다 — 360도 영상이 열려있었다면 그
+    // 렌더 루프가 컨테이너의 DOM 이탈(isConnected===false)을 감지해야 멈춘다.
+    document.getElementById('file-preview-div').innerHTML = '';
 
     const cctvDiv = document.getElementById('cctv-preview-div');
     cctvDiv.style.display = 'flex';
@@ -1432,6 +1434,17 @@ async function saveParcel() {
 const PREVIEWABLE_IMAGE_EXT = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
 const PREVIEWABLE_VIDEO_EXT = ['mp4', 'webm', 'ogg', 'ogv', 'mov', 'm4v'];
 
+// 파일명이 "..._360.mp4"처럼 "_360"으로 끝나면 360도(equirectangular) 촬영 영상으로
+// 간주한다 — 500m 구간 도면의 파일명 규칙(routeFileNaming.js)과 같은 방식으로,
+// 별도 업로드 폼/토글 없이 파일명만으로 구분한다.
+function is360Video(originalName) {
+    const ext = (originalName.split('.').pop() || '').toLowerCase();
+    if (!PREVIEWABLE_VIDEO_EXT.includes(ext)) return false;
+    const base = originalName.slice(0, -(ext.length + 1));
+    return /_360$/i.test(base);
+}
+let video360Seq = 0;
+
 // 파일 하나를 그 확장자에 맞는 미리보기 HTML로 바꾼다(이미지=img, PDF=iframe,
 // 영상=video, 그 외=다운로드 안내) — openFilePreview(파일 1개를 전체화면으로)와
 // openFacilityMarkerFiles(시설물에 첨부파일이 여러 개일 때 전부 쭉 이어서)가
@@ -1447,6 +1460,13 @@ function buildFilePreviewMediaHtml(originalName, viewUrl, downloadUrl, sizeStyle
         return `<iframe src="${viewUrl}" style="${sizeStyle}border:none;"></iframe>`;
     }
     if (PREVIEWABLE_VIDEO_EXT.includes(ext)) {
+        if (is360Video(originalName)) {
+            // Three.js videosphere는 DOM에 실제로 꽂힌 뒤에야 초기화할 수 있어(캔버스
+            // 크기를 컨테이너 기준으로 재야 함), 여기서는 컨테이너만 반환하고
+            // innerHTML 대입 직후 initVideo360Containers()가 찾아서 띄운다.
+            const id = `v360-${video360Seq++}`;
+            return `<div id="${id}" class="video360-container" data-src="${viewUrl}" data-autoplay="${autoplay ? '1' : '0'}" style="${sizeStyle}background:#000;position:relative;overflow:hidden;"></div>`;
+        }
         return `<video src="${viewUrl}" controls${autoplay ? ' autoplay' : ''} style="${sizeStyle}background:#000;display:block;"></video>`;
     }
     return `
@@ -1457,6 +1477,136 @@ function buildFilePreviewMediaHtml(originalName, viewUrl, downloadUrl, sizeStyle
         </div>`;
 }
 
+// ---------- 360도 영상 뷰어 (Three.js videosphere) ----------
+// buildFilePreviewMediaHtml이 만들어둔 .video360-container(들)를 실제 DOM에 꽂은
+// 직후 호출한다 — 렌더러 크기를 컨테이너 실측 크기로 잡아야 하므로 문자열 단계
+// (buildFilePreviewMediaHtml)에서는 초기화할 수 없다.
+function initVideo360Containers(rootEl) {
+    if (typeof THREE === 'undefined') return; // CDN 로드 실패 시에도 나머지 화면은 그대로 동작
+    rootEl.querySelectorAll('.video360-container').forEach((el) => {
+        createVideo360Player(el, el.dataset.src, el.dataset.autoplay === '1');
+    });
+}
+
+// 구체 안쪽에 영상을 입히고, 드래그로 시야(경도/위도)를 돌려볼 수 있게 한다.
+// OrbitControls 애드온을 별도로 더 받아오는 대신(안쪽에서 둘러보는 용도라 궤도
+// 회전용 OrbitControls와는 성격이 달라 어차피 안 맞음), three.js 파노라마 예제와
+// 같은 방식으로 포인터 드래그 -> lon/lat 갱신 -> camera.lookAt()을 직접 구현한다.
+function createVideo360Player(container, src, autoplay) {
+    const video = document.createElement('video');
+    video.src = src;
+    video.loop = true;
+    video.muted = true; // 브라우저 자동재생 정책상 처음엔 무조건 음소거 상태여야 함
+    video.playsInline = true;
+    video.crossOrigin = 'anonymous';
+
+    const width = container.clientWidth || 640;
+    const height = container.clientHeight || 360;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, width / height, 1, 1100);
+    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    geometry.scale(-1, 1, 1); // 안쪽 면이 보이게 뒤집는다(바깥에서 보는 지구본이 아니라 안에서 보는 하늘/사방)
+    const texture = new THREE.VideoTexture(video);
+    const material = new THREE.MeshBasicMaterial({ map: texture });
+    scene.add(new THREE.Mesh(geometry, material));
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // devicePixelRatio를 안 정해주면 캔버스가 항상 배율 1로만 그려져서, 고해상도
+    // (레티나/윈도우 확대배율 125~150% 등) 화면에서 원본 <video>보다 눈에 띄게
+    // 흐리게 보인다 — 화질이 나빠 보인다는 문제의 원인.
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setSize(width, height);
+    container.appendChild(renderer.domElement);
+
+    // 컨트롤 오버레이 — 구체 뷰 위에는 네이티브 <video controls>를 얹을 수 없어
+    // 재생/음소거/전체화면만 최소한으로 직접 만든다.
+    const controlsBar = document.createElement('div');
+    controlsBar.style.cssText = 'position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.45);z-index:2;';
+    controlsBar.innerHTML = `
+        <button type="button" class="v360-play-btn" style="background:none;border:none;color:#fff;cursor:pointer;font-size:1rem;"><i class="fa-solid fa-pause"></i></button>
+        <button type="button" class="v360-mute-btn" style="background:none;border:none;color:#fff;cursor:pointer;font-size:1rem;"><i class="fa-solid fa-volume-xmark"></i></button>
+        <span style="flex:1;"></span>
+        <span style="color:#fff;font-size:0.75rem;align-self:center;"><i class="fa-solid fa-arrows-up-down-left-right"></i> 드래그로 둘러보기</span>
+        <button type="button" class="v360-fullscreen-btn" style="background:none;border:none;color:#fff;cursor:pointer;font-size:1rem;"><i class="fa-solid fa-expand"></i></button>
+    `;
+    container.appendChild(controlsBar);
+
+    const playBtn = controlsBar.querySelector('.v360-play-btn');
+    playBtn.addEventListener('click', () => {
+        if (video.paused) { video.play(); playBtn.innerHTML = '<i class="fa-solid fa-pause"></i>'; }
+        else { video.pause(); playBtn.innerHTML = '<i class="fa-solid fa-play"></i>'; }
+    });
+    const muteBtn = controlsBar.querySelector('.v360-mute-btn');
+    muteBtn.addEventListener('click', () => {
+        video.muted = !video.muted;
+        muteBtn.innerHTML = video.muted ? '<i class="fa-solid fa-volume-xmark"></i>' : '<i class="fa-solid fa-volume-high"></i>';
+    });
+    controlsBar.querySelector('.v360-fullscreen-btn').addEventListener('click', () => {
+        if (container.requestFullscreen) container.requestFullscreen();
+    });
+
+    // 드래그로 경도(lon)/위도(lat) 갱신 — 위도는 카메라가 뒤집히지 않게 ±85도로 제한.
+    let lon = 0, lat = 0, isDragging = false, dragStartX = 0, dragStartY = 0, dragStartLon = 0, dragStartLat = 0;
+    const onPointerDown = (e) => {
+        isDragging = true;
+        dragStartX = e.clientX; dragStartY = e.clientY;
+        dragStartLon = lon; dragStartLat = lat;
+    };
+    const onPointerMove = (e) => {
+        if (!isDragging) return;
+        lon = (dragStartX - e.clientX) * 0.15 + dragStartLon;
+        lat = (e.clientY - dragStartY) * 0.15 + dragStartLat;
+        lat = Math.max(-85, Math.min(85, lat));
+    };
+    const onPointerUp = () => { isDragging = false; };
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+
+    const resizeObserver = new ResizeObserver(() => {
+        const w = container.clientWidth || width;
+        const h = container.clientHeight || height;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+    });
+    resizeObserver.observe(container);
+
+    let rafId = null;
+    function animate() {
+        // 미리보기를 닫거나 다른 파일로 바꾸면 이 컨테이너가 DOM에서 사라진다 —
+        // 매 프레임 확인해서, 사라졌으면 렌더 루프를 멈추고 리소스를 정리한다
+        // (안 그러면 여러 번 열었다 닫을 때마다 백그라운드에 렌더 루프가 쌓임).
+        if (!container.isConnected) {
+            cancelAnimationFrame(rafId);
+            resizeObserver.disconnect();
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+            video.pause();
+            video.src = '';
+            renderer.dispose();
+            geometry.dispose();
+            material.dispose();
+            texture.dispose();
+            return;
+        }
+        rafId = requestAnimationFrame(animate);
+        const phi = THREE.MathUtils.degToRad(90 - lat);
+        const theta = THREE.MathUtils.degToRad(lon);
+        camera.position.set(
+            Math.sin(phi) * Math.cos(theta),
+            Math.cos(phi),
+            Math.sin(phi) * Math.sin(theta)
+        );
+        camera.lookAt(0, 0, 0);
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    if (autoplay) video.play().catch(() => {}); // 자동재생이 브라우저 정책상 막혀도 조용히 무시(재생 버튼으로 시작 가능)
+}
+
 // facilityInfo(선택): { label, name, attributes:[{label,value}] } — 부속시설
 // 파일을 열 때 분할화면 상단에 속성정보 바를 같이 보여주기 위함
 // (openFacilityFileList, cad-viewer.js 참고). 없으면 기존과 동일하게 미리보기만.
@@ -1464,6 +1614,8 @@ function openFilePreview(pnu, fileId, originalName, baseUrl, facilityInfo) {
     if (!isSplitOpen) toggleSplitView();
     document.getElementById('sat_map').style.display = 'none';
     document.getElementById('roadview-wrap').style.display = 'none';
+    document.getElementById('cctv-preview-div').style.display = 'none';
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; } // CCTV 보다가 바로 파일을 열면 스트림이 백그라운드에 계속 흐르지 않게 정지
     const previewDiv = document.getElementById('file-preview-div');
     previewDiv.style.display = 'flex';
 
@@ -1474,6 +1626,7 @@ function openFilePreview(pnu, fileId, originalName, baseUrl, facilityInfo) {
 
     const infoBarHtml = facilityInfo ? buildFacilityInfoBarHtml(facilityInfo) : '';
     previewDiv.innerHTML = withFacilityInfoResizer(infoBarHtml, `<div class="facility-file-media">${mediaHtml}</div>`);
+    initVideo360Containers(previewDiv);
 }
 
 // 속성정보 바가 있을 때만 그 아래에 드래그 리사이저를 끼워 넣는다(정보가
@@ -1588,6 +1741,8 @@ async function openFacilityMarkerFiles(feature) {
     if (!isSplitOpen) toggleSplitView();
     document.getElementById('sat_map').style.display = 'none';
     document.getElementById('roadview-wrap').style.display = 'none';
+    document.getElementById('cctv-preview-div').style.display = 'none';
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
     const previewDiv = document.getElementById('file-preview-div');
     previewDiv.style.display = 'flex';
     const infoBarHtml = facilityInfo ? buildFacilityInfoBarHtml(facilityInfo) : '';
@@ -1622,6 +1777,7 @@ async function openFacilityMarkerFiles(feature) {
             </div>`;
     }
     previewDiv.innerHTML = withFacilityInfoResizer(infoBarHtml, mediaHtml);
+    initVideo360Containers(previewDiv);
 }
 
 // ---------- 주소 검색 ----------
@@ -1973,6 +2129,7 @@ function switchSidebarTab(tabId) {
 let satMap = null;
 let isSplitOpen = false;
 let isDraggingSplit = false;
+let isRightPaneExpanded = false;
 
 function initSplitView() {
     satMap = new ol.Map({
@@ -2045,12 +2202,64 @@ function toggleSplitView() {
         document.querySelectorAll('#file-preview-div video, #cctv-preview-div video').forEach((v) => {
             v.pause(); v.removeAttribute('src'); v.load();
         });
+        // innerHTML을 비워야 한다 — 특히 360도 영상은 컨테이너가 실제로 DOM에서
+        // 사라져야(isConnected === false) 렌더 루프가 스스로 멈춘다(initVideo360Containers
+        // 참고). display:none만으로는 안 보이는 채로 계속 렌더링/재생되며 남아있는다.
+        document.getElementById('file-preview-div').innerHTML = '';
+        document.getElementById('cctv-preview-div').innerHTML = '';
+        // 전체화면 상태로 닫으면 빈 화면이 전체화면으로 남으니 같이 빠져나간다
+        // (fullscreenchange 리스너가 버튼 아이콘/isRightPaneExpanded 정리까지 처리).
+        if (document.fullscreenElement) document.exitFullscreen();
     }
     setTimeout(() => {
         map.updateSize();
         if (satMap) satMap.updateSize();
     }, 220);
 }
+
+// 분할화면 우측 상단의 공용 닫기 버튼(#right-pane-close-btn) — CCTV/로드뷰/도면·
+// 사진 미리보기가 전부 한 슬롯을 같이 쓰는 구조라(toggleSplitView 주석 참고)
+// 패널별로 따로 안 만들고 하나로 그때그때 떠 있는 걸 닫는다. 로드뷰 중이면
+// isRoadviewMode/커서/시설물선택 서브모드까지 되돌려야 해서, 그 정리를 전부
+// 하는 기존 "로드뷰" 툴바 버튼의 클릭 핸들러를 그대로 재사용한다(중복 구현 방지).
+function closeSplitPanel() {
+    if (isRoadviewMode) {
+        document.getElementById('roadview-btn').click();
+        return;
+    }
+    if (isSplitOpen) toggleSplitView();
+}
+
+// 분할화면 우측 상단의 "전체화면" 버튼(#right-pane-expand-btn) — 시설물
+// 속성정보/첨부파일(사진·PDF·영상)처럼 좁은 40% 폭에서는 보기 불편한 내용을
+// 볼 때, 브라우저 Fullscreen API로 지도/트리까지 다 가리고 화면 전체를 쓰게
+// 한다(폭만 넓히던 이전 방식 대신 — 요청사항). #right-pane 자신을 전체화면
+// 대상으로 삼으면 그 안의 닫기/전체화면 버튼도 그대로 같이 뜬다.
+function toggleRightPaneExpand() {
+    const rightPane = document.getElementById('right-pane');
+    if (!document.fullscreenElement) {
+        rightPane.requestFullscreen().catch(() => {});
+    } else {
+        document.exitFullscreen();
+    }
+}
+
+// 전체화면 진입/종료(버튼뿐 아니라 Esc 키로 나가는 경우도 이 이벤트로 잡힌다)
+// 때마다 버튼 아이콘/문구를 맞추고, 지도/캔버스 크기를 다시 잰다.
+document.addEventListener('fullscreenchange', () => {
+    const isFs = !!document.fullscreenElement;
+    isRightPaneExpanded = isFs;
+    const btn = document.getElementById('right-pane-expand-btn');
+    if (btn) {
+        btn.classList.toggle('active', isFs);
+        btn.title = isFs ? '전체화면 종료' : '전체화면으로 보기';
+        btn.innerHTML = isFs ? '<i class="fa-solid fa-compress"></i>' : '<i class="fa-solid fa-expand"></i>';
+    }
+    setTimeout(() => {
+        map.updateSize();
+        if (satMap) satMap.updateSize();
+    }, 220);
+});
 
 // ---------- 카카오 로드뷰 ----------
 // kakao_sdk.js는 index.html에서 <script src="./kakao_sdk.js">로 이미 로드되어 있다
@@ -2232,9 +2441,15 @@ async function openRoadviewFacilityInfo(feature) {
 
     const infoBarHtml = facilityInfo ? buildFacilityInfoBarHtml(facilityInfo) : '';
     document.getElementById('roadview-facility-panel-title').textContent = title;
-    document.getElementById('roadview-facility-panel-body').innerHTML = infoBarHtml + mediaHtml;
+    const roadviewPanelBody = document.getElementById('roadview-facility-panel-body');
+    roadviewPanelBody.innerHTML = infoBarHtml + mediaHtml;
+    initVideo360Containers(roadviewPanelBody);
     document.getElementById('roadview-facility-panel').style.display = 'flex';
     document.getElementById('roadview-panel-resizer').style.display = 'flex';
+    // 이 서브패널 자체 헤더에도 닫기(X)가 있어서, 우측 상단의 분할화면 공용
+    // 닫기 버튼(#right-pane-close-btn)과 같은 자리에서 겹친다 — 열려있는
+    // 동안엔 공용 버튼을 그 아래로 내린다(style.css 참고).
+    document.getElementById('right-pane').classList.add('roadview-facility-open');
 }
 
 // ---------- 로드뷰 도로 가이드(파란선) 오버레이 ----------
@@ -2319,6 +2534,9 @@ function openRoadviewAt(lat, lng) {
     const rvDiv = document.getElementById('roadview-div');
     if (!isSplitOpen) toggleSplitView();
     document.getElementById('sat_map').style.display = 'none';
+    document.getElementById('cctv-preview-div').style.display = 'none';
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+    document.getElementById('file-preview-div').innerHTML = ''; // 360도 영상이 열려있었다면 렌더 루프 정리
     document.getElementById('roadview-wrap').style.display = 'flex';
 
     const rv = new kakao.maps.Roadview(rvDiv);
@@ -2372,6 +2590,7 @@ function closeRoadviewFacilityPanel() {
     document.getElementById('roadview-panel-resizer').style.display = 'none';
     // 다음에 다시 열 때는 기본 비율(42%)로 돌아가게 드래그로 바꿔둔 높이를 지운다.
     document.getElementById('roadview-facility-panel').style.flex = '';
+    document.getElementById('right-pane').classList.remove('roadview-facility-open');
 }
 
 // 로드뷰 시설물 정보 패널과 로드뷰 사이의 드래그 리사이저 — file-preview-div의
@@ -3370,9 +3589,6 @@ function renderRouteFacilityTree(counts) {
         });
         container.appendChild(groupNode.node);
     });
-
-    const section = document.getElementById('route-facility-section');
-    if (section) section.classList.remove('collapsed');
 
     // 이미 전역으로 켜둔 종류가 있으면(다른 구간에서 켰던 것) 지금 보고 있는
     // 구간으로도 그 데이터를 받아와서 지도에 이어서 표시한다.

@@ -35,9 +35,20 @@ function parseRouteQuery(q) {
 
 // road_grade 등 텍스트 필드는 파일 필드보다 뒤에 올 수도 있어(HTML form/브라우저
 // 구현에 따라 순서가 보장 안 됨), multer의 diskStorage.destination()이 req.body를
-// 아직 못 읽는 문제가 생길 수 있다. 그래서 일단 메모리에 버퍼링해 req.body가 전부
-// 채워진 뒤(라우트 핸들러 시점) 직접 디스크에 쓴다.
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+// 아직 못 읽는 문제가 생길 수 있다. 그래서 일단 req.body와 무관한 고정 임시
+// 폴더에 받아뒀다가, req.body가 전부 채워진 뒤(라우트 핸들러 시점) 최종 경로로
+// 옮긴다(fs.renameSync — 같은 드라이브라 실제 복사 없이 이동만 함).
+// 예전엔 메모리 버퍼링(memoryStorage)이었는데, 360도 영상처럼 큰 파일은 그만큼
+// 그대로 Node 프로세스 메모리를 잡아먹어 위험하고 200MB 제한에도 걸렸었다.
+const routeFileTmpDir = path.join(config.uploadDir, 'route-files-tmp');
+fs.mkdirSync(routeFileTmpDir, { recursive: true });
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: routeFileTmpDir,
+        filename: (req, file, cb) => cb(null, `${Date.now()}_${Math.random().toString(36).slice(2)}`),
+    }),
+    limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB — 360도 영상 등 큰 파일 감안
+});
 
 // 노선 도면 일괄 업로드(ZIP)용 — 사진 없이 dxf/dwg만 묶어도 대량이면 수백MB가
 // 될 수 있어(bulkImport.js와 동일한 이유로) 메모리 대신 디스크에 바로 쓴다.
@@ -105,7 +116,10 @@ router.get('/', async (req, res) => {
 
 router.post('/', upload.single('file'), async (req, res) => {
     const route = parseRouteQuery(req.body);
-    if (!route) return res.status(400).json({ error: 'road_grade가 필요합니다.' });
+    if (!route) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: 'road_grade가 필요합니다.' });
+    }
     if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
 
     const category = CATEGORIES.includes(req.body.category) ? req.body.category : '도로';
@@ -116,7 +130,7 @@ router.post('/', upload.single('file'), async (req, res) => {
     const dir = path.join(config.uploadDir, 'routes', routeDirName(route.roadGrade, route.routeNo, route.routeName));
     fs.mkdirSync(dir, { recursive: true });
     const storedPath = path.join(dir, `${Date.now()}_${originalName.replace(/[/\\]/g, '_')}`);
-    fs.writeFileSync(storedPath, req.file.buffer);
+    fs.renameSync(req.file.path, storedPath);
 
     // DWG는 브라우저에서 직접 볼 수 없으니 미리보기용 DXF를 미리 변환해둔다.
     // 변환기가 설정 안 됐거나 실패해도 원본 업로드 자체는 그대로 성공시킨다.

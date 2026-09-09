@@ -180,7 +180,10 @@ function buildRouteWholeFileRow(f) {
         e.stopPropagation();
         if (!confirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
         await fetch(`/api/routes/files/${f.id}`, { method: 'DELETE' });
-        loadRouteFileList();
+        // "도면종류" 탭(loadRouteFileList)뿐 아니라 "도로" 탭(loadRouteSectionPicker,
+        // 구간 목록 아래에 종류별 전체 도면을 같이 보여줌)에서도 이 행이 쓰이므로,
+        // 지금 활성 탭에 맞는 쪽을 다시 그리는 refreshRouteFilePanel()을 쓴다.
+        refreshRouteFilePanel();
     });
     return row;
 }
@@ -288,7 +291,17 @@ function refreshRouteFilePanel() {
 // 나머지 탭이 그 구간 기준으로 파일을 보여주게 한다(요청사항: 도로 탭에서
 // 구간을 골라 도면 탭에서 그 도면을 본다). 구간 목록은 데이터보기 트리와 같은
 // /api/sections/tree를 재사용한다(전용 API 없이도 이미 다 있는 데이터라).
+// 구간 행 클릭 한 번에도 selectSectionForLeftSidebar -> refreshRouteFilePanel
+// 경로와, 그 아래 명시적으로 다시 부르는 loadRouteSectionPicker() 두 경로로
+// 이 함수가 겹쳐 호출된다(기존부터 있던 구조 — 예전엔 매번 같은 tree 데이터로
+// 목록을 그대로 다시 그리기만 해서 겹쳐도 티가 안 났음). 지금은 그 아래에서
+// 전체 도면을 네 번(종류별) 비동기로 더 조회하는데, 구간을 빠르게 넘나들면
+// 먼저 클릭한(오래된) 구간의 응답이 나중에 도착해 최신 화면에 그대로 덧붙여지는
+// 문제가 있었다 — 매 호출마다 토큰을 발급해서, 응답이 왔을 때 그사이 더 최신
+// 호출이 있었으면(토큰 불일치) 그 결과는 버리고 화면에 반영하지 않는다.
+let routeSectionPickerToken = 0;
 async function loadRouteSectionPicker() {
+    const myToken = ++routeSectionPickerToken;
     const listEl = document.getElementById('route-file-list');
     if (!currentRoute) {
         listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;">데이터보기 트리에서 노선을 선택하세요.</div>';
@@ -296,6 +309,7 @@ async function loadRouteSectionPicker() {
     }
     listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;">불러오는 중...</div>';
     const { tree } = await fetch('/api/sections/tree').then((r) => r.json());
+    if (myToken !== routeSectionPickerToken) return; // 기다리는 동안 더 최신 호출이 시작됐으면 여기서 중단
     const roadGrade = currentRoute.road_rank_name || currentRoute.road_grade;
     const gradeGroup = (tree || []).find((g) => g.road_grade === roadGrade);
     const routeGroup = gradeGroup && gradeGroup.routes.find((r) => r.route_no === currentRoute.route_no);
@@ -321,6 +335,48 @@ async function loadRouteSectionPicker() {
             });
             loadRouteSectionPicker(); // active 표시만 다시 그림(선택 갱신)
         });
+        listEl.appendChild(row);
+    });
+
+    await loadWholeDrawingsByTypeBelowSectionList(listEl, myToken);
+}
+
+// "도로" 탭 — 구간을 고르면 그 구간의 평면도/용지도/매설물도/구조물도 각각의
+// "전체"(500m 단위로 안 쪼개진, 구간 전체 단위) 도면이 있는지 종류별로 조회해서
+// 구간 목록 아래에 같이 보여준다 — 원래 "도면" 탭에서 하위탭을 하나씩 눌러가며
+// 찾아야 했던 것을 "도로" 탭 한곳에서 바로 골라 열 수 있게 한다(요청사항).
+// 값은 /api/routes/files?drawing_type=...(classifyDrawingType, routeFileNaming.js)를
+// 그대로 재사용 — 종류별로 없으면(아직 그 종류를 아무도 안 올렸으면) 그 종류는
+// 그냥 건너뛴다.
+const WHOLE_DRAWING_TYPES = ['평면도', '용지도', '매설물도', '구조물도'];
+async function loadWholeDrawingsByTypeBelowSectionList(listEl, myToken) {
+    if (!currentRoute.rdid) return;
+    const results = await Promise.all(
+        WHOLE_DRAWING_TYPES.map(async (type) => {
+            const params = routeQueryParams();
+            params.set('drawing_type', type);
+            const { files } = await fetch('/api/routes/files?' + params.toString()).then((r) => r.json());
+            const whole = (files || []).find((f) => f.seg_no == null);
+            return whole ? { type, file: whole } : null;
+        })
+    );
+    // 네 종류 조회가 진행되는 동안 구간을 또 바꿨으면(더 최신 호출이 시작됐으면)
+    // 이 오래된 결과는 화면에 반영하지 않고 버린다 — 중복/엉뚱한 구간 표시 방지.
+    if (myToken !== routeSectionPickerToken) return;
+    const withFiles = results.filter(Boolean);
+    if (!withFiles.length) return;
+
+    const heading = document.createElement('div');
+    heading.className = 'route-whole-file-heading';
+    heading.textContent = '전체 도면';
+    listEl.appendChild(heading);
+    withFiles.forEach(({ type, file }) => {
+        const row = buildRouteWholeFileRow(file);
+        // buildRouteWholeFileRow는 원래 "전체"라고만 배지를 붙이는데(도면 탭처럼
+        // 이미 종류 하위탭 안이라 구분할 필요가 없었음), 여기는 네 종류가 한
+        // 목록에 섞여 나오니 배지를 실제 종류명으로 바꿔 구분한다.
+        const badge = row.querySelector('.rwf-no');
+        if (badge) badge.textContent = type;
         listEl.appendChild(row);
     });
 }

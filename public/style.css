@@ -44,7 +44,32 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 }
 #splitter:hover { background: var(--accent-dark); color: #fff; }
 #right-pane { display: none; width: 0; flex-shrink: 0; height: 100%; position: relative; overflow: hidden; }
+/* 브라우저 Fullscreen API 대상이 되면(toggleRightPaneExpand) 화면 전체를
+   채운다 — 배경이 안 비치게 명시적으로 칠해준다(안 그러면 기본 흰 배경으로
+   깜빡일 수 있음). */
+#right-pane:fullscreen { width: 100vw !important; height: 100vh !important; background: #11141a; }
 #sat_map, #roadview-wrap, #file-preview-div, #cctv-preview-div { width: 100%; height: 100%; display: none; }
+/* CCTV/로드뷰/도면·사진 미리보기 등 분할화면 네 종류가 전부 이 한 슬롯을
+   같이 쓰는 구조라(script.js toggleSplitView 참고), 패널마다 따로 닫기 버튼을
+   만드는 대신 오른쪽 위에 하나만 떠 있게 하고 그걸 누르면 지금 떠 있는 걸
+   전부 닫는다(closeSplitPanel, script.js). #right-pane이 닫히면 이 버튼도
+   자식이라 같이 안 보이게 되므로 별도 표시/숨김 처리가 필요 없다. */
+#right-pane-close-btn, #right-pane-expand-btn {
+    position: absolute; top: 10px; z-index: 20;
+    background: rgba(0,0,0,0.45); border: none; color: #fff; cursor: pointer;
+    width: 30px; height: 30px; border-radius: 50%; font-size: 0.95rem;
+    display: flex; align-items: center; justify-content: center;
+}
+#right-pane-close-btn { right: 10px; }
+#right-pane-expand-btn { right: 48px; }
+#right-pane-close-btn:hover, #right-pane-expand-btn:hover { background: rgba(0,0,0,0.7); }
+#right-pane-expand-btn.active { background: var(--accent-dark); }
+/* 로드뷰 중 시설물 정보 서브패널(#roadview-facility-panel)이 열리면 그 헤더에도
+   자체 닫기(X)가 있어 같은 자리(우측 상단)에서 겹친다 — 열려있는 동안엔 공용
+   버튼들을 그 헤더 아래로 내린다(openRoadviewFacilityInfo/closeRoadviewFacilityPanel
+   에서 이 클래스를 토글). */
+#right-pane.roadview-facility-open #right-pane-close-btn,
+#right-pane.roadview-facility-open #right-pane-expand-btn { top: 44px; }
 #file-preview-div { background: #2b2f38; overflow-y: auto; flex-direction: column; }
 
 /* 로드뷰 중 "시설물 선택" 모드로 지도의 시설물을 클릭하면, 로드뷰를 그대로
@@ -1007,9 +1032,18 @@ body.admin-mode .file-item .file-del-btn { display: inline-flex; }
     display: flex; align-items: center; gap: 6px; background: var(--panel-light);
     border-radius: var(--radius-sm); padding: 6px 10px; margin-bottom: 6px; font-size: 0.82rem;
 }
-.route-whole-file-row .rwf-no { color: var(--accent-hover); font-weight: 700; flex-shrink: 0; width: 26px; text-align: center; }
+.route-whole-file-row .rwf-no {
+    color: var(--accent-hover); font-weight: 700; flex-shrink: 0; min-width: 26px;
+    text-align: center; font-size: 0.72rem;
+}
 .route-whole-file-row .rwf-name { color: var(--text-primary); flex: 1; cursor: pointer; }
 .route-whole-file-row .rwf-name:hover { color: var(--accent-hover); text-decoration: underline; }
+/* "도로" 탭 — 구간 목록 아래, 그 구간의 평면도/용지도/매설물도/구조물도 "전체"
+   도면 목록 위에 붙는 구분 제목. */
+.route-whole-file-heading {
+    color: var(--text-muted); font-size: 0.7rem; font-weight: 700;
+    padding: 10px 2px 4px; border-top: 1px solid var(--border-dim); margin-top: 8px;
+}
 
 /* "도로" 탭 — 파일이 아니라 이 호선의 구간 목록(구간 고르기)을 보여준다.
    고른 구간이 currentRoute가 되고 "도면" 탭 등이 그 구간 기준으로 바뀐다. */

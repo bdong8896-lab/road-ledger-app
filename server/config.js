@@ -18,6 +18,13 @@ module.exports = {
         password: required('PGPASSWORD', ''),
     },
     sessionSecret: required('SESSION_SECRET', 'dev-only-secret-change-me'),
+    // 로그인 세션 유지시간(시간 단위). 세션은 메모리가 아니라 DB(connect-pg-simple,
+    // session 테이블)에 저장되므로 서버를 재시작해도 이 시간이 지나기 전까지는
+    // 로그인이 풀리지 않는다. 기본 8시간 — 개발 PC에서 매번 다시 로그인하기
+    // 귀찮으면 .env에 SESSION_MAX_AGE_HOURS=720(30일) 같은 값을 넣어 늘릴 수
+    // 있다. 운영 서버는 이 값을 굳이 안 늘리는 게 안전하다(로그인 상태로
+    // 방치된 PC가 오래 남는 것 자체가 위험 요소이므로).
+    sessionMaxAgeHours: Number(required('SESSION_MAX_AGE_HOURS', '8')),
     vworld: {
         apiKey: process.env.VWORLD_API_KEY || '',
         referer: process.env.VWORLD_REFERER || 'http://localhost/',

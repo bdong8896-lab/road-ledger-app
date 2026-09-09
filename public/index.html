@@ -12,6 +12,7 @@
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <script src="https://unpkg.com/dxf-parser@1.1.2/dist/dxf-parser.js"></script>
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 </head>
 <body>
 
@@ -172,6 +173,8 @@
             <i class="fa-solid fa-grip-lines-vertical"></i>
         </div>
         <div id="right-pane">
+            <button id="right-pane-expand-btn" onclick="toggleRightPaneExpand()" title="크게 보기"><i class="fa-solid fa-expand"></i></button>
+            <button id="right-pane-close-btn" onclick="closeSplitPanel()" title="닫기"><i class="fa-solid fa-xmark"></i></button>
             <div id="sat_map"></div>
             <div id="roadview-wrap">
                 <div id="roadview-facility-panel">
