@@ -690,6 +690,57 @@ function openCadPopup() {
 // 미지원(생략): HATCH, DIMENSION 등 — 도면이 일부만 표시될 수 있음
 // dxf-parser가 ACI 256색 팔레트/트루컬러(24bit RGB)를 이미 다 계산해서
 // entity.color/layer.color에 정수(0xRRGGBB)로 넣어준다 — 그걸 그대로 쓴다.
+// LWPOLYLINE/POLYLINE 정점의 그룹코드 42(bulge, "불지")는 그 정점에서 다음
+// 정점까지를 직선이 아니라 원호로 그리라는 뜻이다 — 예전엔 이 값을 무시하고
+// 항상 직선으로만 이어서, 도로 곡선부·연석 모서리 등 실제로는 부드러운 곡선인
+// 부분이 원본보다 각지게 보였다(실제 파일 확인: LWPOLYLINE 정점의 76%가 0이
+// 아닌 bulge를 가짐 — 예를 들어 0.41421356...=tan(22.5˚)는 90˚ 호를 뜻하고,
+// 이런 값이 흔함. 도로 곡선 구간이 전부 이렇게 그려지고 있었다는 뜻).
+//
+// bulge = tan(사잇각/4)라는 DXF 표준 정의와, 반각공식으로 유도되는 항등식
+// "sagitta(현의 중점에서 호까지의 수직거리) = bulge × (현의 길이)/2"(근사가
+// 아니라 정확한 식)를 이용해 호 위의 세 번째 점(현의 중점에서 수직으로
+// sagitta만큼 떨어진 점)을 구한 뒤, 세 점(양 끝점 + 이 중간점)의 외접원을
+// 계산한다 — 호의 방향(시계/반시계)을 부호로 손수 따지다 실수하기 쉬운
+// 방식 대신, 실제로 그 세 점을 지나는 원이라는 사실만으로 항상 올바른
+// 결과가 나오게 만든 것(따로 방향 부호 처리를 할 필요가 없다).
+function circumcircle(ax, ay, bx, by, cx, cy) {
+    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    if (Math.abs(d) < 1e-9) return null; // 세 점이 거의 일직선 — 원을 못 만듦
+    const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d;
+    const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d;
+    return { cx: ux, cy: uy, r: Math.hypot(ax - ux, ay - uy) };
+}
+
+function bulgeArc(x1, y1, x2, y2, bulge) {
+    if (!bulge) return null;
+    const dx = x2 - x1, dy = y2 - y1;
+    const chord = Math.hypot(dx, dy);
+    if (chord < 1e-9) return null;
+    const sagitta = (bulge * chord) / 2;
+    const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+    const nx = -dy / chord, ny = dx / chord; // 진행방향(P1→P2) 기준 왼쪽 단위법선
+    const mx = midX + nx * sagitta, my = midY + ny * sagitta; // 호 위의 중간점
+    const circ = circumcircle(x1, y1, mx, my, x2, y2);
+    if (!circ) return null;
+    return {
+        cx: circ.cx, cy: circ.cy, r: circ.r,
+        a1: Math.atan2(y1 - circ.cy, x1 - circ.cx),
+        a2: Math.atan2(y2 - circ.cy, x2 - circ.cx),
+        aMid: Math.atan2(my - circ.cy, mx - circ.cx),
+    };
+}
+
+function angleNorm01(a) { const t = a % (Math.PI * 2); return t < 0 ? t + Math.PI * 2 : t; }
+
+// a1에서 반시계 방향으로 돌 때 aMid를 먼저 지나 a2에 닿는지(=반시계가 실제
+// 호의 방향인지) 판단한다. bulgeArc()가 만든 세 각(a1/a2/aMid)에만 쓴다.
+function bulgeSweepCCW(a1, a2, aMid) {
+    const span = angleNorm01(a2 - a1);
+    const midOff = angleNorm01(aMid - a1);
+    return midOff <= span;
+}
+
 function rgbIntToHex(n) {
     if (typeof n !== 'number' || !Number.isFinite(n)) return null;
     return '#' + (Math.max(0, n) & 0xffffff).toString(16).padStart(6, '0');
@@ -1067,11 +1118,26 @@ const dxfViewer = {
             case 'LWPOLYLINE':
             case 'POLYLINE': {
                 if (!e.vertices || e.vertices.length === 0) return;
+                const verts = e.vertices;
+                const vCount = verts.length;
+                const segCount = e.shape ? vCount : vCount - 1;
                 ctx.beginPath();
-                e.vertices.forEach((v, i) => {
-                    const [x, y] = this._pt(tf, v.x, v.y);
-                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-                });
+                const [x0, y0] = this._pt(tf, verts[0].x, verts[0].y);
+                ctx.moveTo(x0, y0);
+                for (let i = 0; i < segCount; i++) {
+                    const v1 = verts[i];
+                    const v2 = verts[(i + 1) % vCount];
+                    const arc = v1.bulge ? bulgeArc(v1.x, v1.y, v2.x, v2.y, v1.bulge) : null;
+                    if (arc) {
+                        const [scx, scy] = this._pt(tf, arc.cx, arc.cy);
+                        const ccw = bulgeSweepCCW(arc.a1, arc.a2, arc.aMid);
+                        // 화면 Y축이 반전돼 있어 회전 방향도 반대로 뒤집힌다(ARC 케이스와 동일한 규칙)
+                        ctx.arc(scx, scy, arc.r * radiusScale * this.scale, -(arc.a1 + rot), -(arc.a2 + rot), ccw);
+                    } else {
+                        const [x2, y2] = this._pt(tf, v2.x, v2.y);
+                        ctx.lineTo(x2, y2);
+                    }
+                }
                 if (e.shape) ctx.closePath();
                 ctx.stroke();
                 break;
