@@ -101,8 +101,13 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     cursor: pointer; padding: 3px 6px; border-radius: var(--radius-sm); font-size: 0.85rem;
 }
 #roadview-facility-panel-close:hover { background: var(--panel-light); color: #fff; }
-#roadview-facility-panel-body { flex: 1; min-height: 0; overflow-y: auto; }
-#roadview-facility-panel-body .facility-info-bar { background: #21252e; padding: 12px 16px 14px; }
+/* 속성값(.facility-info-bar)과 첨부자료(.fm-gallery)를 5:5 비율로 나눈다 —
+   예전엔 그냥 한 스크롤 영역에 이어붙여서 속성값 항목 수에 따라 사진 영역이
+   들쭉날쭉했다. flex:0 0 50%로 둘 다 고정해 항상 절반씩 차지하고, 내용이
+   넘치면 각자 안에서만 스크롤된다(file-preview-div의 facility-info-bar와
+   같은 5:5 기본값). */
+#roadview-facility-panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#roadview-facility-panel-body .facility-info-bar { flex: 1 1 50%; min-height: 0; overflow-y: auto; background: #21252e; padding: 12px 16px 14px; }
 #roadview-facility-panel-body .fib-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 #roadview-facility-panel-body .fib-badge {
     flex-shrink: 0; background: var(--fib-accent, #556); color: #11141a; font-weight: 800;
@@ -122,14 +127,17 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #roadview-facility-panel-body .fm-gallery-item-label { display: flex; align-items: center; gap: 10px; color: #cfd6e0; font-size: 0.82rem; margin-bottom: 8px; }
 #roadview-facility-panel-body .fm-gallery-item-label span:first-child { flex-shrink: 0; color: #7fb0ff; font-weight: 700; }
 #roadview-facility-panel-body .fm-gallery-item-label span:last-child { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#roadview-facility-panel-body .facility-file-media { min-height: 0; }
+#roadview-facility-panel-body .facility-file-media { flex: 1 1 50%; min-height: 0; overflow-y: auto; }
 
 /* #roadview-facility-select-btn 자체는 항상 .toolbar-dropdown-menu button 기본
    스타일을 따르고, 보이고/숨기는 건 부모 #roadview-facility-select-menu의
    display를 로드뷰 on/off에 맞춰 JS(initRoadview)가 토글한다. */
 #file-preview-div .facility-file-media { flex: 1; min-height: 0; overflow-y: auto; }
+/* 속성값(.facility-info-bar)과 첨부자료(.facility-file-media) 기본 비율을
+   5:5로 맞춘다 — 드래그 리사이저(initFacilityInfoResizer)로 여전히 조절
+   가능하고, 이건 그 전의 기본값만 바꾼 것(고정 260px였던 걸 %로 변경). */
 #file-preview-div .facility-info-bar {
-    flex-shrink: 0; max-height: 260px; overflow-y: auto; background: #21252e;
+    flex-shrink: 0; max-height: 50%; overflow-y: auto; background: #21252e;
     box-shadow: 0 3px 10px rgba(0,0,0,0.3); padding: 12px 16px 14px;
 }
 #file-preview-div .facility-info-resizer {
