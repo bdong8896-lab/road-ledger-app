@@ -71,13 +71,11 @@ function buildPrefix(section) {
     return `${section.mco_code || '00000'}${year}${section.route_no || ''}${section.sect || ''}`;
 }
 
-async function buildExportZip(rdid) {
-    const { rows: sectionRows } = await pool.query('SELECT * FROM road_sections WHERE rdid = $1', [rdid]);
-    const section = sectionRows[0];
-    if (!section) return null;
-
+// 구간 하나 분량의 SHP/DBF/사진/보고서/도면 엔트리를 zip에 그대로 추가한다.
+// folderPrefix가 있으면(호선/관할 전체 내보내기처럼 구간이 여럿일 때) 그
+// 구간만의 하위 폴더 밑에 넣어 여러 구간이 한 zip 안에서 섞이지 않게 한다.
+async function addSectionToZip(zip, section, folderPrefix) {
     const prefix = buildPrefix(section);
-    const zip = new AdmZip();
     const matchedByTable = new Map(); // table -> [pk값...] (사진/보고서 조회용)
 
     for (const [code, layerDef] of Object.entries(GOV_LAYER_MAP)) {
@@ -103,7 +101,7 @@ async function buildExportZip(rdid) {
 
         const colMeta = await getColumnMeta(table);
         const fields = buildDbfFields(colMeta, rows);
-        const entryBase = `LAYER/신규/${prefix}_${code}_N`;
+        const entryBase = `${folderPrefix}LAYER/신규/${prefix}_${code}_N`;
         zip.addFile(`${entryBase}.dbf`, writeDbf(fields, rows));
         zip.addFile(`${entryBase}.cpg`, Buffer.from('EUC-KR', 'ascii'));
 
@@ -125,28 +123,72 @@ async function buildExportZip(rdid) {
         );
         for (const f of files) {
             if (!fs.existsSync(f.stored_path)) continue; // 디스크에서 파일이 지워졌으면 조용히 건너뜀
-            const destFolder = f.file_kind === '보고서' ? 'LAYER/통합/STR' : 'LAYER/통합/PHOTO';
+            const destFolder = f.file_kind === '보고서' ? `${folderPrefix}LAYER/통합/STR` : `${folderPrefix}LAYER/통합/PHOTO`;
             zip.addLocalFile(f.stored_path, destFolder, safeFileNamePart(f.original_name));
         }
     }
 
-    // '도면종류'(일반 도면)뿐 아니라 '도로'(500m 단위 구간 도면, 도로대장 탭의
-    // "도로" 표에 뜨는 것들)도 실제 납품 폴더에서는 같은 ETC/TOP 안에 함께
-    // 들어있다(58950 폴더 실물로 확인함 — 구간별 도로 도면과 500m 단위 도면이
-    // 같이 있었음). 예전엔 '도면종류'만 조회해서 '도로' 파일이 통째로 빠졌었다.
-    const { rows: drawings } = await pool.query(
+    // '도면종류'(노선 전체 단위 CON/TOP 파일)는 ETC/TOP에 들어간다 — 실제 납품
+    // 폴더(589502026008001/ETC/TOP)로 직접 확인함.
+    const { rows: wholeDrawings } = await pool.query(
         `SELECT original_name, stored_path FROM route_files
-         WHERE section_rdid = $1 AND file_category IN ('도면종류', '도로')`,
-        [rdid]
+         WHERE section_rdid = $1 AND file_category = '도면종류'`,
+        [section.rdid]
     );
-    for (const d of drawings) {
+    for (const d of wholeDrawings) {
         if (!fs.existsSync(d.stored_path)) continue;
-        zip.addLocalFile(d.stored_path, 'ETC/TOP', safeFileNamePart(d.original_name));
+        zip.addLocalFile(d.stored_path, `${folderPrefix}ETC/TOP`, safeFileNamePart(d.original_name));
     }
 
+    // '도로'(500m 단위 구간 도면)는 ETC/TOP이 아니라 500_P/500_Y/500_U라는
+    // 별도의 최상위 폴더에 들어간다 — 실제 원본 납품 폴더(58950/500_P,
+    // 500_Y, 500_U)로 직접 확인함(이전엔 ETC/TOP에 같이 넣었는데 잘못
+    // 대조한 것이었다 — 500_P/500_Y는 노선 전체 묶음이라 folderPrefix로
+    // 구간별 폴더 안에 가두지 않고 zip 최상위에 그대로 둔다).
+    const { rows: segDrawings } = await pool.query(
+        `SELECT original_name, stored_path, seg_variant FROM route_files
+         WHERE section_rdid = $1 AND file_category = '도로'`,
+        [section.rdid]
+    );
+    for (const d of segDrawings) {
+        if (!fs.existsSync(d.stored_path)) continue;
+        const variant = (d.seg_variant || '').toUpperCase();
+        const destFolder = variant === 'P' ? '500_P' : variant === 'Y' ? '500_Y' : '500_U';
+        zip.addLocalFile(d.stored_path, destFolder, safeFileNamePart(d.original_name));
+    }
+}
+
+async function buildExportZip(rdid) {
+    const { rows: sectionRows } = await pool.query('SELECT * FROM road_sections WHERE rdid = $1', [rdid]);
+    const section = sectionRows[0];
+    if (!section) return null;
+
+    const zip = new AdmZip();
+    await addSectionToZip(zip, section, '');
     const zipBuffer = zip.toBuffer();
     const filename = `${safeFileNamePart(section.route_name) || section.rdid}_${section.rdid}.zip`;
     return { zipBuffer, filename };
 }
 
-module.exports = { buildExportZip };
+// 호선 전체(구간이 여럿) 또는 관할 전체를 한 zip으로 묶어 내려받는다 —
+// downloadSectionExport 버튼이 "구간 선택 없이 호선만 선택" 또는 "아무것도
+// 선택 안 함"일 때 쓴다. 구간마다 폴더를 나눠 같은 zip 안에서 섞이지 않게
+// 하는데, 그 폴더명은 실제 원본 납품 폴더(예: "589502026008001")와 같은
+// 관리번호(buildPrefix) 코드를 그대로 쓴다 — 노선명으로 만든 폴더명은
+// 우리가 임의로 붙인 것일 뿐 실제 규격이 아니었다(사용자 지적으로 확인).
+async function buildExportZipMulti(sections, zipLabel) {
+    if (!sections.length) return null;
+    const zip = new AdmZip();
+    const usedFolders = new Set();
+    for (const section of sections) {
+        let folder = buildPrefix(section);
+        if (usedFolders.has(folder)) folder = `${folder}_${section.rdid}`; // 이론상 중복 안 나야 정상이지만 방어적으로 대비
+        usedFolders.add(folder);
+        await addSectionToZip(zip, section, `${folder}/`);
+    }
+    const zipBuffer = zip.toBuffer();
+    const filename = `${safeFileNamePart(zipLabel) || '전체자료'}_${new Date().toISOString().slice(0, 10)}.zip`;
+    return { zipBuffer, filename };
+}
+
+module.exports = { buildExportZip, buildExportZipMulti };

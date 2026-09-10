@@ -8,7 +8,7 @@ const pool = require('../db');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
 const SIGN_NAME_CODES = require('../lib/signNameCodes');
-const { buildExportZip } = require('../lib/sectionExport');
+const { buildExportZip, buildExportZipMulti } = require('../lib/sectionExport');
 const { getTableLabels } = require('../lib/schemaLabels');
 const { buildOfficialLedgerZip } = require('../lib/officialLedgerZip');
 const { logAction } = require('../lib/auditLog');
@@ -418,27 +418,6 @@ router.get('/facility-files/:id', async (req, res) => {
     }
 });
 
-// 노선 하나의 모든 자료(속성+지오메트리+사진+보고서+도면)를 일괄등록 때 받는
-// 것과 같은 SHP/DBF 납품 폴더 구조의 zip으로 내려받는다. 삭제와 달리
-// 비파괴적이라 관리자 전용이 아니라 로그인한 사용자 누구나 가능하다.
-router.get('/:rdid/export', async (req, res) => {
-    const { rdid } = req.params;
-    const { rows } = await pool.query('SELECT sigungu_code FROM road_sections WHERE rdid = $1', [rdid]);
-    if (!rows[0]) return res.status(404).json({ error: '구간을 찾을 수 없습니다.' });
-    if (outsideJurisdiction(req.session.user.sigunguCode, rows[0].sigungu_code)) {
-        return res.status(403).json({ error: '관할 시군구 밖의 구간입니다.' });
-    }
-    try {
-        const result = await buildExportZip(rdid);
-        if (!result) return res.status(404).json({ error: '구간을 찾을 수 없습니다.' });
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
-        res.send(result.zipBuffer);
-    } catch (e) {
-        res.status(500).json({ error: `내보내기 중 오류가 발생했습니다: ${e.message}` });
-    }
-});
-
 // RDID(27자리) 자동 채번: R01(총괄) + 도로등급코드(4) + 관리기관코드(5)
 // + 노선번호(4) + 구간번호(3) + 부여연도(4) + 일련번호(4)
 async function generateRdid(roadRankCode, mcoCode, routeNo, sect) {
@@ -525,23 +504,96 @@ router.get('/all-geoms', async (req, res) => {
     res.json({ items: visible.map((r) => ({ rdid: r.rdid, geom: r.geom })) });
 });
 
-// 도로대장 조서(엑셀) 다운로드 — 로그인 계정의 관할(sigunguCode) 범위 전체를
-// 국토부 표준서식(구간 하나 = 워크북 하나, officialLedgerZip.js)으로 만들어
-// zip 하나로 묶어 내려준다(사람이 결재·보고용으로 바로 여는 문서, GIS 포맷인
-// SHP/DBF 내보내기(:rdid/export)와는 별개). '/:rdid'보다 먼저 등록해야 한다.
-// 예전엔 평범한 표 시트로 된 워크북 하나였다(buildLedgerReportWorkbook,
-// ledgerReport.js) — 시설물별 시트를 서식화하기 전까지는 그쪽 코드를 참고용으로
-// 남겨둔다.
+// 조서/전체자료 다운로드 공용: 좌측 트리에서 무엇을 선택했느냐에 따라 범위를
+// 3단계로 좁힌다 — 구간을 선택했으면(rdid) 그 구간 하나만, 구간 없이 호선만
+// 선택했으면(roadGrade+routeNo) 그 호선의 구간 전부, 아무것도 선택 안 했으면
+// 로그인 계정의 관할 전체. road_grade는 road_sections.road_rank_name과
+// 같은 값(데이터보기 트리가 그 컬럼으로 묶은 것 그대로 route_no와 함께
+// 돌려주는 값, script.js의 currentRoute 참고)이라 road_rank_code 없이도
+// 정확히 매칭된다. rdid/호선 범위도 관할 밖 구간은 조용히 걸러낸다(다른
+// 시군 rdid를 직접 넣어 우회하는 것 방지).
+async function resolveScopedSections(userSigungu, { rdid, roadGrade, routeNo, routeName }) {
+    if (rdid) {
+        const { rows } = await pool.query('SELECT * FROM road_sections WHERE rdid = $1', [rdid]);
+        return rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code));
+    }
+    if (roadGrade && routeNo) {
+        const { rows } = await pool.query(
+            `SELECT * FROM road_sections WHERE road_rank_name = $1 AND route_no = $2
+             ORDER BY sect NULLS LAST`,
+            [roadGrade, routeNo]
+        );
+        return rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code));
+    }
+    const scopedWhere = userSigungu ? 'WHERE sigungu_code = $1 OR sigungu_code IS NULL' : '';
+    const scopedParams = userSigungu ? [userSigungu] : [];
+    const { rows } = await pool.query(
+        `SELECT * FROM road_sections ${scopedWhere}
+         ORDER BY road_rank_code, route_no NULLS LAST, sect NULLS LAST`,
+        scopedParams
+    );
+    return rows;
+}
+
+function scopeParamsFromQuery(q) {
+    return { rdid: q.rdid || '', roadGrade: q.road_grade || '', routeNo: q.route_no || '', routeName: q.route_name || '' };
+}
+
+// 범위(구간 하나/호선 전체/관할 전체)에 맞는 파일명 라벨을 만든다 — 조서와
+// 전체자료 다운로드가 같은 이름 규칙을 쓴다.
+function scopeLabel(sections, { rdid, roadGrade, routeNo }, sigunguName) {
+    if (rdid) {
+        const s = sections[0];
+        return s ? `${s.route_name || s.rdid}_${s.sect ? s.sect + '구간' : s.rdid}` : rdid;
+    }
+    if (roadGrade && routeNo) {
+        const routeName = sections[0] ? sections[0].route_name : '';
+        return `${roadGrade}${routeName ? '_' + routeName : ''}`;
+    }
+    return sigunguName || '전체';
+}
+
+// 도로대장 조서(엑셀) 다운로드 — 국토부 표준서식(구간 하나 = 워크북 하나,
+// officialLedgerZip.js)으로 만들어 zip 하나로 묶어 내려준다(사람이 결재·
+// 보고용으로 바로 여는 문서, GIS 포맷인 SHP/DBF 내보내기(/export)와는 별개).
+// '/:rdid'보다 먼저 등록해야 한다. 예전엔 평범한 표 시트로 된 워크북
+// 하나였다(buildLedgerReportWorkbook, ledgerReport.js) — 시설물별 시트를
+// 서식화하기 전까지는 그쪽 코드를 참고용으로 남겨둔다.
 router.get('/ledger-report', async (req, res) => {
     try {
-        const zipBuffer = await buildOfficialLedgerZip(req.session.user.sigunguCode);
-        const sigunguName = req.session.user.sigunguName || '전체';
-        const filename = `${sigunguName}_도로대장_${new Date().toISOString().slice(0, 10)}.zip`;
+        const scope = scopeParamsFromQuery(req.query);
+        const sections = await resolveScopedSections(req.session.user.sigunguCode, scope);
+        if (!sections.length) return res.status(404).json({ error: '조서를 만들 구간을 찾을 수 없습니다.' });
+        const zipBuffer = await buildOfficialLedgerZip(sections);
+        const label = scopeLabel(sections, scope, req.session.user.sigunguName);
+        const filename = `${label}_도로대장_${new Date().toISOString().slice(0, 10)}.zip`;
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
         res.send(zipBuffer);
     } catch (e) {
         res.status(500).json({ error: `조서 생성 중 오류가 발생했습니다: ${e.message}` });
+    }
+});
+
+// 전체자료(SHP/DBF/사진/보고서/도면) 다운로드 — /ledger-report와 같은 3단계
+// 범위 규칙(구간/호선/관할)을 쓴다. 구간이 하나뿐이면 폴더 없이 바로
+// LAYER/ETC 구조로(buildExportZip), 여럿이면 구간마다 폴더를 나눠 하나의
+// zip으로 묶는다(buildExportZipMulti). '/:rdid'보다 먼저 등록해야 한다.
+router.get('/export', async (req, res) => {
+    try {
+        const scope = scopeParamsFromQuery(req.query);
+        const sections = await resolveScopedSections(req.session.user.sigunguCode, scope);
+        if (!sections.length) return res.status(404).json({ error: '내보낼 구간을 찾을 수 없습니다.' });
+        const label = scopeLabel(sections, scope, req.session.user.sigunguName);
+        const result = sections.length === 1
+            ? await buildExportZip(sections[0].rdid)
+            : await buildExportZipMulti(sections, label);
+        if (!result) return res.status(404).json({ error: '내보낼 구간을 찾을 수 없습니다.' });
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
+        res.send(result.zipBuffer);
+    } catch (e) {
+        res.status(500).json({ error: `내보내기 중 오류가 발생했습니다: ${e.message}` });
     }
 });
 

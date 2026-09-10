@@ -1233,7 +1233,9 @@ const dxfViewer = {
                     ctx.save();
                     ctx.translate(x, y);
                     ctx.rotate(-(angleRad + rot));
-                    ctx.font = `${size}px sans-serif`;
+                    const isNarrowStyle = NARROW_DXF_STYLE_NAMES.has(e.textStyle);
+                    if (isNarrowStyle) ctx.scale(NARROW_DXF_SCALE_X, 1); // romans.shx 근사 — 가로만 압축
+                    ctx.font = `${size}px ${DXF_FONT_FAMILY_BY_STYLE[e.textStyle] || 'sans-serif'}`;
                     // halign 1=가운데, 2=우측(그 외 0/좌측이 기본) — canvas의
                     // textAlign이 그대로 대응돼서 계산 없이 바로 쓸 수 있다.
                     ctx.textAlign = e.halign === 2 ? 'right' : e.halign ? 'center' : 'left';
@@ -1844,16 +1846,31 @@ function detectDxfEncoding(bytes) {
 // 함수는 원본 텍스트를 핸들(그룹코드 5, dxf-parser도 그대로 entity.handle에
 // 넣어준다)로 다시 훑어서 trim되지 않은 원래 값을 따로 모아두고, 아래
 // loadDxfFile에서 파싱 결과에 되돌려 붙인다.
+// dxf-parser는 TEXT/MTEXT의 그룹코드 7(문자 스타일 이름)을 아예 안 읽는다
+// (ATTDEF만 textStyle로 읽어줌 — 라이브러리 소스로 직접 확인함). 그런데
+// 실제 파일은 스타일마다 다른 글꼴(STYLE 테이블 참고: 굴림체/돋움체=한글
+// 고딕 트루타입, Standard=Arial, Legend=Calibri, NGSW/GHS/GHS1=romans.shx
+// — 오토캐드 표준 스트로크 글꼴로 일반 산세리프보다 자간·폭이 훨씬 좁다)를
+// 써서, 지금처럼 전부 "sans-serif" 하나로만 그리면 romans.shx 계열 글자
+// (거리·측점 숫자 등 영문/숫자 위주)가 원본보다 넓게 퍼져 보인다(사용자
+// 지적으로 확인). trim 복원과 같은 방식(핸들로 원문 재조회)으로 스타일
+// 이름도 같이 모은다.
 function buildUntrimmedTextByHandle(text) {
     const lines = text.split(/\r\n|\r|\n/);
-    const map = {};
+    const textMap = {};
+    const styleMap = {};
     let i = 0;
     let curHandle = null;
     let curText;
+    let curStyle;
     const flush = () => {
-        if (curHandle != null && curText !== undefined) map[curHandle] = curText;
+        if (curHandle != null) {
+            if (curText !== undefined) textMap[curHandle] = curText;
+            if (curStyle !== undefined) styleMap[curHandle] = curStyle;
+        }
         curHandle = null;
         curText = undefined;
+        curStyle = undefined;
     };
     while (i + 1 < lines.length) {
         const code = lines[i].trim();
@@ -1864,22 +1881,46 @@ function buildUntrimmedTextByHandle(text) {
             curHandle = value.trim();
         } else if (code === '1') {
             curText = value.replace(/\r$/, '');
+        } else if (code === '7') {
+            curStyle = value.trim();
         }
         i += 2;
     }
     flush();
-    return map;
+    return { textMap, styleMap };
 }
 
-function restoreUntrimmedText(dxf, untrimmedByHandle) {
+function restoreUntrimmedText(dxf, { textMap, styleMap }) {
     const patch = (e) => {
-        if (e && e.handle && e.text !== undefined && untrimmedByHandle[e.handle] !== undefined) {
-            e.text = untrimmedByHandle[e.handle];
-        }
+        if (!e || !e.handle) return;
+        if (e.text !== undefined && textMap[e.handle] !== undefined) e.text = textMap[e.handle];
+        if (styleMap[e.handle] !== undefined) e.textStyle = styleMap[e.handle];
     };
     (dxf.entities || []).forEach(patch);
     Object.values(dxf.blocks || {}).forEach((b) => (b.entities || []).forEach(patch));
 }
+
+// STYLE 테이블에 실제로 적힌 글꼴에 최대한 맞춘 CSS 폰트 — 한글 고딕류는
+// 파일마다 트루타입 폰트명이 있어도 "글꼴명(한글)" ↔ 실제 파일명이 깨져서
+// 오는 경우가 많아(예: "援대┝泥�") 안전하게 계열별로만 묶는다.
+const DXF_FONT_FAMILY_BY_STYLE = {
+    '굴림체': "Gulim, '맑은 고딕', sans-serif",
+    '굴림': "Gulim, '맑은 고딕', sans-serif",
+    '돋움체': "Dotum, '맑은 고딕', sans-serif",
+    'TB_TEXT': "Dotum, '맑은 고딕', sans-serif",
+    'SIGNTXT': "Dotum, '맑은 고딕', sans-serif",
+    'SIGNText': "Dotum, '맑은 고딕', sans-serif",
+    'Legend': 'Calibri, sans-serif',
+    'Standard': 'Arial, sans-serif',
+};
+// romans.shx(오토캐드 표준 스트로크 글꼴) 계열 — 실제 파일에서 이 세 스타일
+// 이름으로 확인됨(STYLE 테이블의 그룹코드 3이 romans.shx). 트루타입 산세리프
+// 대비 글자 폭이 눈에 띄게 좁아서, 어느 시스템에서 봐도 똑같이 보이도록
+// 글꼴 대신 가로 폭 자체를 줄인다(설치된 글꼴에 기대지 않는 방식). 0.75는
+// romans.shx 특유의 좁은 비율을 대략 흉내 낸 값 — 정확한 원본 자간 실측치는
+// 아니다.
+const NARROW_DXF_STYLE_NAMES = new Set(['NGSW', 'GHS', 'GHS1']);
+const NARROW_DXF_SCALE_X = 0.75;
 
 async function loadDxfFile(url, filename) {
     currentDxfFileUrl = url;
@@ -2194,20 +2235,37 @@ function initCadToolbarButtons() {
     if (exportBtn) exportBtn.addEventListener('click', downloadSectionExport);
 }
 
-// 선택된 노선의 모든 자료(속성+지오메트리+사진+보고서+도면)를 일괄등록 때
-// 받는 것과 같은 SHP/DBF 납품 폴더 구조의 zip으로 내려받는다.
+// 조서(script.js의 downloadLedgerReport)와 전체자료 다운로드가 공유하는
+// 3단계 범위 규칙 — 데이터보기 트리에서 구간을 선택했으면 그 구간만
+// (rdid), 구간 없이 호선만 선택했으면(currentRoute.rdid가 빈 문자열인
+// "노선 전체" 모드, selectRouteGroupForLeftSidebar 참고) 그 호선 전체를,
+// 아무것도 선택 안 했으면(currentRoute가 아예 null) 빈 파라미터로 보내
+// 서버가 로그인 계정의 관할 전체로 처리하게 한다(routes/sections.js의
+// resolveScopedSections와 대칭).
+function downloadScopeParams() {
+    if (currentRoute && currentRoute.rdid) return { rdid: currentRoute.rdid };
+    if (currentRoute && currentRoute.route_no) {
+        return {
+            road_grade: currentRoute.road_rank_name || currentRoute.road_grade || '',
+            route_no: currentRoute.route_no || '',
+            route_name: currentRoute.route_name || '',
+        };
+    }
+    return {};
+}
+
+// 선택 범위(구간/호선/관할 전체)의 모든 자료(속성+지오메트리+사진+보고서+도면)를
+// 일괄등록 때 받는 것과 같은 SHP/DBF 납품 폴더 구조의 zip으로 내려받는다.
 // "사용자도로관리"의 GeoJSON 다운로드(downloadIssueGeoJson, script.js)와
 // 같은 fetch→blob→<a download> 방식.
 async function downloadSectionExport() {
-    if (!currentRoute || !currentRoute.rdid) {
-        alert('먼저 데이터보기 트리에서 노선을 선택하세요.');
-        return;
-    }
     // 이 버튼은 index.html/cad-popup.html에서 서로 다른 위치(패널)에 있어
     // 공통으로 잡을 컨테이너가 없으므로 body 전체에 모래시계 커서를 건다.
     document.body.classList.add('app-busy');
     try {
-        const res = await fetch(`/api/sections/${currentRoute.rdid}/export`);
+        const params = new URLSearchParams(downloadScopeParams());
+        const qs = params.toString();
+        const res = await fetch('/api/sections/export' + (qs ? '?' + qs : ''));
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             alert(data.error || '다운로드에 실패했습니다.');
@@ -2219,7 +2277,7 @@ async function downloadSectionExport() {
         a.href = url;
         const cd = res.headers.get('Content-Disposition') || '';
         const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
-        a.download = m ? decodeURIComponent(m[1]) : `${currentRoute.rdid}.zip`;
+        a.download = m ? decodeURIComponent(m[1]) : '전체자료.zip';
         a.click();
         URL.revokeObjectURL(url);
     } finally {

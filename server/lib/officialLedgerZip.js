@@ -1,8 +1,8 @@
-// "관할 전체 도로대장 조서" 다운로드 — 예전엔 관할 내 모든 구간을 표 형태로
-// 하나의 워크북에 몰아 넣었지만(ledgerReport.js), 실제 시군에서 쓰는 조서는
-// 국토부 표준서식으로 "구간 하나 = 워크북 하나"다(officialLedgerForm.js).
-// 그래서 구간마다 서식 워크북을 만들고 sectionExport.js와 같은 방식(adm-zip)으로
-// 묶어서 한 번에 내려준다.
+// 도로대장 조서(구간/호선/관할 전체) 다운로드 — 예전엔 관할 내 모든 구간을
+// 표 형태로 하나의 워크북에 몰아 넣었지만(ledgerReport.js), 실제 시군에서
+// 쓰는 조서는 국토부 표준서식으로 "구간 하나 = 워크북 하나"다
+// (officialLedgerForm.js). 그래서 구간마다 서식 워크북을 만들고
+// sectionExport.js와 같은 방식(adm-zip)으로 묶어서 한 번에 내려준다.
 const ExcelJS = require('exceljs');
 const AdmZip = require('adm-zip');
 const pool = require('../db');
@@ -75,15 +75,10 @@ async function fetchGovSection(section) {
     return rows[0] || null;
 }
 
-async function buildOfficialLedgerZip(sigunguCode) {
-    const scopedWhere = sigunguCode ? 'WHERE sigungu_code = $1 OR sigungu_code IS NULL' : '';
-    const scopedParams = sigunguCode ? [sigunguCode] : [];
-    const { rows: sections } = await pool.query(
-        `SELECT * FROM road_sections ${scopedWhere}
-         ORDER BY road_rank_code, route_no NULLS LAST, sect NULLS LAST`,
-        scopedParams
-    );
-
+// sections: road_sections 행 배열 — 어느 범위(구간 하나/호선 전체/관할 전체)를
+// 내려줄지는 호출부(routes/sections.js)가 미리 걸러서 넘겨준다(이 함수는
+// 그 범위를 몰라도 됨 — 받은 구간들로만 조서를 만든다).
+async function buildOfficialLedgerZip(sections) {
     const zip = new AdmZip();
     const usedNames = new Set();
     for (const section of sections) {

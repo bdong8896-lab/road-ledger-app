@@ -3275,8 +3275,8 @@ function initLedgerTreeToolbar() {
     document.getElementById('fit-all-routes-btn').addEventListener('click', fitAllRegisteredRoutes);
 }
 
-// 관할 전체 도로대장 조서(엑셀) 다운로드 — downloadSectionExport(노선 단위 SHP/DBF)와
-// 달리 특정 노선 선택 없이 항상 관할 전체를 대상으로 한다.
+// 도로대장 조서(엑셀) 다운로드 — downloadSectionExport(전체자료 SHP/DBF)와 같은
+// 3단계 범위(구간/호선/관할 전체, downloadScopeParams·cad-viewer.js 참고)를 쓴다.
 async function downloadLedgerReport() {
     const btn = document.getElementById('ledger-report-btn');
     document.body.classList.add('app-busy');
@@ -3284,7 +3284,9 @@ async function downloadLedgerReport() {
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>';
     try {
-        const res = await fetch('/api/sections/ledger-report');
+        const params = new URLSearchParams(downloadScopeParams());
+        const qs = params.toString();
+        const res = await fetch('/api/sections/ledger-report' + (qs ? '?' + qs : ''));
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             alert(data.error || '조서 생성에 실패했습니다.');
