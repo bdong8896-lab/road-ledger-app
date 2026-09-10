@@ -1919,10 +1919,10 @@ async function runUnifiedSearch(page) {
             wrapEl.innerHTML = `<div style="color:var(--text-muted);padding:8px;">'${escapeHtml(query)}' 검색결과가 없습니다.</div>`;
             return;
         }
-        wrapEl.appendChild(buildSection('명칭', place.total, place.items.map((it) => renderPlaceRow(it, query)), '명칭'));
+        wrapEl.appendChild(buildSection('노선', myroutes.total, myroutes.items.map((it) => renderMyRouteRow(it, query)), '노선'));
         wrapEl.appendChild(buildSection('도로명', road.total, road.items.map((it) => renderAddressRow(it, '도로명', query)), '도로명'));
         wrapEl.appendChild(buildSection('지번', parcel.total, parcel.items.map((it) => renderAddressRow(it, '지번', query)), '지번'));
-        wrapEl.appendChild(buildSection('노선', myroutes.total, myroutes.items.map((it) => renderMyRouteRow(it, query)), '노선'));
+        wrapEl.appendChild(buildSection('명칭', place.total, place.items.map((it) => renderPlaceRow(it, query)), '명칭'));
         return;
     }
 
