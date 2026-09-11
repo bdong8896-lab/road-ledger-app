@@ -852,6 +852,37 @@ const dxfViewer = {
         // 없어 위 규칙만으론 안 잡힘). 필요하면 레이어 목록에서 다시 켤 수 있다.
         if ('TITLE' in this.layerVisible) this.layerVisible.TITLE = false;
         this.bbox = this._computeBBox();
+        this._fitOrRestoreView();
+    },
+
+    // loadDxfFile()이 새 파일을 열기 직전에, 지금 보고 있던 화면 중심의
+    // 월드좌표와 배율을 기억해둔다 — 500m 구간 도면을 보다가 "전체 도면"을
+    // 누르면 늘 전체보기로 리셋돼서 방금 보던 위치를 다시 찾아 확대해야 하는
+    // 불편이 있었다(실사용 중 확인됨). 500m 구간 파일과 노선 전체 파일은
+    // 같은 실세계 좌표계를 쓰기 때문에(둘 다 절대좌표), 새 도면에도 같은
+    // 위치가 있으면 그 위치·배율 그대로 이어서 보여줄 수 있다.
+    captureViewForRestore() {
+        this._pendingRestoreView = null;
+        if (!this.canvas || !this.bbox || !this.canvas.width || !this.canvas.height) return;
+        const [wx, wy] = this._toWorld(this.canvas.width / 2, this.canvas.height / 2);
+        this._pendingRestoreView = { worldX: wx, worldY: wy, scale: this.scale };
+    },
+
+    // 기억해둔 위치가 새로 불러온 도면의 bbox 안에 실제로 있을 때만 그 위치로
+    // 이어서 보여주고(직전 배율 그대로 유지), 아니면(전혀 다른 도면으로
+    // 전환한 경우) 평소처럼 전체보기로 맞춘다.
+    _fitOrRestoreView() {
+        const pending = this._pendingRestoreView;
+        this._pendingRestoreView = null;
+        if (pending && this.bbox && this.canvas &&
+            pending.worldX >= this.bbox.minX && pending.worldX <= this.bbox.maxX &&
+            pending.worldY >= this.bbox.minY && pending.worldY <= this.bbox.maxY) {
+            this.scale = pending.scale;
+            this.panX = this.canvas.width / 2 - pending.worldX * this.scale;
+            this.panY = this.canvas.height / 2 - pending.worldY * this.scale;
+            this.render();
+            return;
+        }
         this.fit();
     },
 
@@ -1923,6 +1954,7 @@ const NARROW_DXF_STYLE_NAMES = new Set(['NGSW', 'GHS', 'GHS1']);
 const NARROW_DXF_SCALE_X = 0.75;
 
 async function loadDxfFile(url, filename) {
+    dxfViewer.captureViewForRestore(); // 새 파일을 받아오기 전, 지금 보던 위치를 기억해둔다
     currentDxfFileUrl = url;
     currentDxfFileName = filename;
     document.getElementById('cad-empty-msg').style.display = 'none';

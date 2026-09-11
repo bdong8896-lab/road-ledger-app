@@ -55,12 +55,22 @@ function obfuscate(code, reservedNames) {
     }).getObfuscatedCode();
 }
 
-function copyRecursive(src, dest) {
+// public/dxf-core는 실제 서비스 코드가 아니라 three-dxf-viewer를 IIFE
+// 번들로 만들어보는 격리된 실험용 서브프로젝트다(package.json에 "public의
+// 나머지 파일들과 배포 파이프라인에는 영향 없음"이라고 직접 적혀 있고,
+// index.html/cad-popup.html 어디서도 실제로 참조하지 않음 — 확인함). 그
+// node_modules만 3,400개가 넘는 파일이라 복사할 때마다 백신 실시간 검사와
+// 겹쳐 몇 분씩 멈춘 것처럼 보이는 원인이었다. 배포 결과물과 무관하니
+// 통째로 건너뛴다.
+const SKIP_TOP_LEVEL_DIRS = new Set(['dxf-core']);
+
+function copyRecursive(src, dest, isTopLevel) {
     fs.mkdirSync(dest, { recursive: true });
     for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        if (isTopLevel && entry.isDirectory() && SKIP_TOP_LEVEL_DIRS.has(entry.name)) continue;
         const s = path.join(src, entry.name);
         const d = path.join(dest, entry.name);
-        if (entry.isDirectory()) copyRecursive(s, d);
+        if (entry.isDirectory()) copyRecursive(s, d, false);
         else fs.copyFileSync(s, d);
     }
 }
@@ -68,7 +78,7 @@ function copyRecursive(src, dest) {
 function build() {
     console.log('[build-dist] public/ -> public-dist/ 생성 중 (원본은 그대로 유지)');
     fs.rmSync(DIST_DIR, { recursive: true, force: true });
-    copyRecursive(SRC_DIR, DIST_DIR);
+    copyRecursive(SRC_DIR, DIST_DIR, true);
 
     const cadViewerSrc = fs.readFileSync(path.join(SRC_DIR, 'cad-viewer.js'), 'utf8');
     const scriptSrc = fs.readFileSync(path.join(SRC_DIR, 'script.js'), 'utf8');

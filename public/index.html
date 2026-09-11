@@ -201,6 +201,9 @@
             <div id="user-info">
                 <span id="user-display-name"></span>
                 <button id="admin-mode-toggle" title="관리자 모드" style="display:none;"><i class="fa-solid fa-user-shield"></i></button>
+                <button class="admin-only-tab" id="accounts-tab-btn" data-tab="accountsview-tab" title="계정관리" onclick="switchSidebarTab('accountsview-tab'); loadAccountsList();" style="display:none;">
+                    <i class="fa-solid fa-users-gear"></i>
+                </button>
                 <button id="logout-btn" title="로그아웃"><i class="fa-solid fa-right-from-bracket"></i></button>
             </div>
         </div>
@@ -478,6 +481,36 @@
             </div>
             <div id="audit-log-list"></div>
             <div id="audit-log-pagination"></div>
+        </div>
+
+        <div id="accountsview-tab" class="sidebar-tab-content" style="display:none;">
+            <div id="accounts-header" class="list-header">
+                <span>계정관리</span>
+                <button id="accounts-new-btn" title="새 계정 추가"><i class="fa-solid fa-user-plus"></i></button>
+            </div>
+            <div id="account-new-form" style="display:none;">
+                <div class="field-grid">
+                    <label>아이디<input type="text" id="acc-username" autocomplete="off"></label>
+                    <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password"></label>
+                    <label>표시 이름<input type="text" id="acc-display-name"></label>
+                    <label>권한
+                        <select id="acc-role">
+                            <option value="user" selected>일반</option>
+                            <option value="admin">관리자</option>
+                        </select>
+                    </label>
+                    <label class="field-full" style="position:relative;">관할 시군구(입력 후 목록에서 선택 — 비우면 전체)
+                        <input type="text" id="acc-sigungu-search" placeholder="예: 장성군, 화성시, 중구" autocomplete="off">
+                        <div id="acc-sigungu-suggest" hidden></div>
+                    </label>
+                </div>
+                <div id="account-new-form-actions">
+                    <button id="account-new-cancel-btn" class="btn-outline">취소</button>
+                    <button id="account-new-save-btn" class="btn-squared">저장</button>
+                </div>
+                <div id="account-new-status"></div>
+            </div>
+            <div id="accounts-list"></div>
         </div>
     </div>
 </div>

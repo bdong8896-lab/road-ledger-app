@@ -129,14 +129,14 @@ function roadNetRankColor(feature) {
 const ROAD_HOVER_HIT_TOLERANCE = 8;
 
 // 로그인한 계정이 특정 시군구 소속이면, 그 지역 범위(EPSG:3857)로 지도를 기본
-// 줌해준다 — VWorld lt_c_adsigg를 sig_cd로 조회해 실측한 값(2026-09-08 확인,
-// 장성군 12840). 시군구 전체를 담당하는 계정을 새로 만들면 여기에 항목을
-// 하나 추가해야 그 계정도 로그인 시 자동 줌이 적용된다(없으면 예전처럼
-// 전국 화면에서 시작 — 동작이 깨지는 게 아니라 그냥 이 표에 없는 것뿐).
-const SIGUNGU_EXTENTS = {
-    '12840': [14091190.35, 4189829.28, 14129396.40, 4230249.25], // 장성군
-    '41590': [14085062.44, 4440971.35, 14155538.66, 4481463.24], // 화성시(4개 행정구 합산 범위)
-};
+// 줌해준다. 예전엔 이 좌표를 여기(프론트엔드 코드)에 시군구마다 하나씩
+// 손으로 추가해야 했는데(의왕시/강화군을 빠뜨려서 자동 줌이 안 됐던 문제로
+// 확인됨), 이제 로그인 응답에 서버가 직접 계산해서 넣어주는
+// currentUser.sigunguExtent를 그대로 쓴다(server/routes/auth.js의
+// findSigunguExtent, VWorld 행정경계를 전국 격자로 미리 훑어 만든
+// lib/sigunguExtents.json 기준) — 새 계정을 만들어도 코드를 더 이상 안
+// 고쳐도 된다. 그 시군구가 이 표에 아직 없으면 null이라 그냥 예전처럼
+// 전국 화면에서 시작한다(동작이 깨지는 게 아님).
 
 // VWorld 경계/노선 WFS 레이어 공통 생성 헬퍼 (시군/읍면동/리경계, 국가교통정보도(도로)용).
 // strokeColor는 고정 색(문자열) 또는 feature별 색을 돌려주는 함수 둘 다 받는다
@@ -489,8 +489,8 @@ function initMap() {
     // visibilityFilter로 도로등급(road_rank)별 개별 on/off를 지원한다(기본 레이어
     // 패널의 펼침 하위 체크박스, initLayerPanel 참고). lt_l_moctlink 자체엔
     // 시군구 코드 속성이 없어서(도로는 여러 시군을 가로지르므로) 행정경계처럼
-    // 속성으로 거를 수 없다 — 대신 로그인 계정의 관할 범위(SIGUNGU_EXTENTS,
-    // 아래 zoom-to-region과 같은 표)와 겹치는 도로만 그린다. 관할이 없는
+    // 속성으로 거를 수 없다 — 대신 로그인 계정의 관할 범위(currentUser.sigunguExtent,
+    // 아래 zoom-to-region과 같은 값)와 겹치는 도로만 그린다. 관할이 없는
     // 계정(전체 관리자)은 예전처럼 전국이 다 보인다.
     // minZoom: 예전엔 13이라 시군 하나를 한눈에 보는 정도의 축소 상태에서 이미
     // 레이어가 사라졌다 — 장성군 전체 경계(lt_c_adsigg)를 지도에 딱 맞게
@@ -506,7 +506,7 @@ function initMap() {
         tileSize: 256,
         visibilityFilter: (feature) => {
             if (!visibleRoadRanks.has(roadNetRankBucket(feature))) return false;
-            const sigunguExtent = currentUser.sigunguCode && SIGUNGU_EXTENTS[currentUser.sigunguCode];
+            const sigunguExtent = currentUser.sigunguExtent;
             if (sigunguExtent && !ol.extent.intersects(sigunguExtent, feature.getGeometry().getExtent())) return false;
             return true;
         },
@@ -553,12 +553,11 @@ function initMap() {
     map.on('singleclick', onMapClick);
     window.addEventListener('resize', () => map.updateSize());
 
-    // 로그인 계정의 관할 시군구를 알고 있으면(SIGUNGU_EXTENTS에 등록된 지역)
-    // 지도를 그 범위로 맞춘다. 관할 읍면동(myRegionEmdLayer)은 이미 항상
-    // 켜져 있으니 여기선 줌만 해주면 된다.
-    const sigunguExtent = currentUser.sigunguCode && SIGUNGU_EXTENTS[currentUser.sigunguCode];
-    if (sigunguExtent) {
-        map.getView().fit(sigunguExtent, { padding: [40, 40, 40, 40], maxZoom: 13 });
+    // 로그인 계정의 관할 시군구 범위(currentUser.sigunguExtent, 서버가 로그인
+    // 응답에 넣어줌)를 알고 있으면 지도를 그 범위로 맞춘다. 관할 읍면동
+    // (myRegionEmdLayer)은 이미 항상 켜져 있으니 여기선 줌만 해주면 된다.
+    if (currentUser.sigunguExtent) {
+        map.getView().fit(currentUser.sigunguExtent, { padding: [40, 40, 40, 40], maxZoom: 13 });
     }
 
     map.getView().on('change:resolution', updateMapScale);
@@ -2629,6 +2628,7 @@ function initAdminMode() {
     const toggleBtn = document.getElementById('admin-mode-toggle');
     const bulkTabBtn = document.getElementById('bulk-tab-btn');
     const auditLogTabBtn = document.getElementById('audit-log-tab-btn');
+    const accountsTabBtn = document.getElementById('accounts-tab-btn');
     if (!currentUser || currentUser.role !== 'admin') return;
 
     toggleBtn.style.display = '';
@@ -2637,8 +2637,13 @@ function initAdminMode() {
         toggleBtn.classList.toggle('active', isOn);
         bulkTabBtn.style.display = isOn ? '' : 'none';
         auditLogTabBtn.style.display = isOn ? '' : 'none';
+        accountsTabBtn.style.display = isOn ? '' : 'none';
         document.getElementById('sidebar-tabs').classList.toggle('admin-tabs-visible', isOn);
-        if (!isOn && (bulkTabBtn.classList.contains('active') || auditLogTabBtn.classList.contains('active'))) {
+        // accounts-tab-btn은 이제 #sidebar-tabs 밖(상단 관리자모드 버튼 옆)에 있어
+        // switchSidebarTab()이 관리하는 .active 표시 대상이 아니다 — 그 탭 내용
+        // 자체가 지금 보이는 중인지로 직접 확인해야 여기서도 정확히 판단된다.
+        const accountsTabVisible = document.getElementById('accountsview-tab').style.display !== 'none';
+        if (!isOn && (bulkTabBtn.classList.contains('active') || auditLogTabBtn.classList.contains('active') || accountsTabVisible)) {
             switchSidebarTab('dataview-tab');
         }
         applySectionFormEditability();
@@ -2646,6 +2651,146 @@ function initAdminMode() {
 
     document.getElementById('audit-log-refresh-btn').addEventListener('click', () => loadAuditLog(1));
     document.getElementById('audit-log-action-filter').addEventListener('change', () => loadAuditLog(1));
+    initAccountsTab();
+}
+
+// ---------- 계정관리(관리자 전용) ----------
+// 새 계정 폼에서 관리자가 시군구명을 검색해 실제로 고른 항목 — 코드를
+// 손으로 입력하게 하지 않고, 고른 것만 신뢰해서 서버로 보낸다(직접 타이핑한
+// 값을 그대로 믿고 코드를 추측하지 않음 — "중구"처럼 같은 이름이 여러
+// 시도에 있어 이름만으로는 하나로 정할 수 없기 때문).
+let selectedAccountSigungu = null; // { code5, sido, sgg, full } | null(전체)
+
+function initAccountsTab() {
+    document.getElementById('accounts-new-btn').addEventListener('click', () => {
+        const form = document.getElementById('account-new-form');
+        form.style.display = form.style.display === 'none' ? '' : 'none';
+        document.getElementById('account-new-status').textContent = '';
+    });
+    document.getElementById('account-new-cancel-btn').addEventListener('click', () => {
+        document.getElementById('account-new-form').style.display = 'none';
+    });
+    document.getElementById('account-new-save-btn').addEventListener('click', createAccount);
+    initAccountSigunguSearch();
+}
+
+function initAccountSigunguSearch() {
+    const input = document.getElementById('acc-sigungu-search');
+    const suggestEl = document.getElementById('acc-sigungu-suggest');
+    let debounceTimer = null;
+
+    input.addEventListener('input', () => {
+        selectedAccountSigungu = null; // 다시 타이핑하기 시작하면 이전 선택은 무효화
+        const q = input.value.trim();
+        clearTimeout(debounceTimer);
+        if (!q) { suggestEl.hidden = true; suggestEl.innerHTML = ''; return; }
+        debounceTimer = setTimeout(async () => {
+            const { items } = await fetch('/api/auth/sigungu-search?q=' + encodeURIComponent(q)).then((r) => r.json());
+            suggestEl.innerHTML = items.length
+                ? items.map((it) => `<div class="acc-sigungu-opt" data-code="${escapeHtml(it.code5)}" data-sgg="${escapeHtml(it.sgg)}" data-full="${escapeHtml(it.full)}">${escapeHtml(it.full)}</div>`).join('')
+                : '<div class="acc-sigungu-empty">일치하는 시군구가 없습니다.</div>';
+            suggestEl.hidden = false;
+        }, 200);
+    });
+    suggestEl.addEventListener('click', (e) => {
+        const opt = e.target.closest('.acc-sigungu-opt');
+        if (!opt) return;
+        selectedAccountSigungu = { code5: opt.dataset.code, sgg: opt.dataset.sgg, full: opt.dataset.full };
+        input.value = opt.dataset.sgg;
+        suggestEl.hidden = true;
+    });
+    document.addEventListener('click', (e) => {
+        if (e.target !== input && !suggestEl.contains(e.target)) suggestEl.hidden = true;
+    });
+}
+
+async function loadAccountsList() {
+    const listEl = document.getElementById('accounts-list');
+    listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오는 중...</div>';
+    let accounts;
+    try {
+        ({ accounts } = await fetch('/api/auth/accounts').then((r) => r.json()));
+    } catch (e) {
+        listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오기 실패</div>';
+        return;
+    }
+    if (!accounts || !accounts.length) {
+        listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">등록된 계정이 없습니다.</div>';
+        return;
+    }
+    listEl.innerHTML = '';
+    accounts.forEach((acc) => listEl.appendChild(buildAccountRow(acc)));
+}
+
+function buildAccountRow(acc) {
+    const row = document.createElement('div');
+    row.className = 'account-row';
+    const isAdmin = acc.role === 'admin';
+    const sigungu = acc.sigungu_name || (acc.sigungu_code ? acc.sigungu_code : '전체');
+    const created = acc.created_at ? new Date(acc.created_at).toLocaleDateString('ko-KR') : '';
+    // audit-log-row(변경이력 탭)와 같은 그리드: 배지 + 본문 한 줄, 그 아래
+    // 흐린 메타 정보 한 줄 — 관리자용 탭들끼리 같은 디자인 언어를 쓰기 위함.
+    row.innerHTML = `
+        <div class="acr-top">
+            <span class="acc-role${isAdmin ? ' acc-role-admin' : ''}">${isAdmin ? '관리자' : '일반'}</span>
+            <span class="acc-username">${escapeHtml(acc.username)}</span>
+            <span class="acc-display-name">${escapeHtml(acc.display_name || '')}</span>
+            <button class="acc-del-btn" title="계정 삭제"><i class="fa-solid fa-trash"></i></button>
+        </div>
+        <div class="acr-meta">관할: ${escapeHtml(sigungu)}${created ? ` · ${escapeHtml(created)} 생성` : ''}</div>
+    `;
+    row.querySelector('.acc-del-btn').addEventListener('click', async () => {
+        if (!confirm(`계정 "${acc.username}"을(를) 삭제하시겠습니까?`)) return;
+        const res = await fetch(`/api/auth/accounts/${acc.id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(data.error || '삭제에 실패했습니다.');
+            return;
+        }
+        loadAccountsList();
+    });
+    return row;
+}
+
+async function createAccount() {
+    const username = document.getElementById('acc-username').value.trim();
+    const password = document.getElementById('acc-password').value;
+    const displayName = document.getElementById('acc-display-name').value.trim();
+    const role = document.getElementById('acc-role').value;
+    const sigunguSearchVal = document.getElementById('acc-sigungu-search').value.trim();
+    const statusEl = document.getElementById('account-new-status');
+    if (!username || !password) {
+        statusEl.textContent = '아이디와 비밀번호를 입력하세요.';
+        return;
+    }
+    // 검색창에 글자는 남아있는데 목록에서 실제로 고르지 않았으면(선택이
+    // 비어있으면) 관할을 짐작해서 보내지 않는다 — 잘못된 코드로 등록되는
+    // 것보다는 저장을 막고 다시 고르게 하는 게 안전하다.
+    if (sigunguSearchVal && !selectedAccountSigungu) {
+        statusEl.textContent = '목록에서 시군구를 선택하세요(비우면 전체 관할).';
+        return;
+    }
+    statusEl.textContent = '저장 중...';
+    const sigunguCode = selectedAccountSigungu ? selectedAccountSigungu.code5 : '';
+    const sigunguName = selectedAccountSigungu ? selectedAccountSigungu.sgg : '';
+    const res = await fetch('/api/auth/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, displayName, role, sigunguCode, sigunguName }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        statusEl.textContent = data.error || '저장에 실패했습니다.';
+        return;
+    }
+    document.getElementById('acc-username').value = '';
+    document.getElementById('acc-password').value = '';
+    document.getElementById('acc-display-name').value = '';
+    document.getElementById('acc-role').value = 'user';
+    document.getElementById('acc-sigungu-search').value = '';
+    selectedAccountSigungu = null;
+    document.getElementById('account-new-form').style.display = 'none';
+    loadAccountsList();
 }
 
 const AUDIT_ACTION_LABELS = { create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록' };
