@@ -2267,13 +2267,16 @@ function initCadToolbarButtons() {
     if (exportBtn) exportBtn.addEventListener('click', downloadSectionExport);
 }
 
-// 조서(script.js의 downloadLedgerReport)와 전체자료 다운로드가 공유하는
-// 3단계 범위 규칙 — 데이터보기 트리에서 구간을 선택했으면 그 구간만
-// (rdid), 구간 없이 호선만 선택했으면(currentRoute.rdid가 빈 문자열인
-// "노선 전체" 모드, selectRouteGroupForLeftSidebar 참고) 그 호선 전체를,
-// 아무것도 선택 안 했으면(currentRoute가 아예 null) 빈 파라미터로 보내
-// 서버가 로그인 계정의 관할 전체로 처리하게 한다(routes/sections.js의
-// resolveScopedSections와 대칭).
+// 전체자료(SHP/DBF) 다운로드가 쓰는 3단계 범위 규칙 — 데이터보기 트리에서
+// 구간을 선택했으면 그 구간만(rdid), 구간 없이 호선만 선택했으면
+// (currentRoute.rdid가 빈 문자열인 "노선 전체" 모드,
+// selectRouteGroupForLeftSidebar 참고) 그 호선 전체를, 아무것도 선택 안
+// 했으면(currentRoute가 아예 null) 빈 파라미터로 보내 서버가 로그인 계정의
+// 관할 전체로 처리하게 한다(routes/sections.js의 resolveScopedSections와
+// 대칭). 조서(엑셀)는 이제 새창 미리보기(script.js의
+// openLedgerReportPreview, 구간 1개 전용)로만 받아서 이 3단계 규칙을 안
+// 쓴다 — 조서의 "전체" 다운로드는 새창 안의 버튼이 항상 관할 전체(zip)만
+// 받고, 호선 전체 단위의 조서 다운로드는 더 이상 없다.
 function downloadScopeParams() {
     if (currentRoute && currentRoute.rdid) return { rdid: currentRoute.rdid };
     if (currentRoute && currentRoute.route_no) {

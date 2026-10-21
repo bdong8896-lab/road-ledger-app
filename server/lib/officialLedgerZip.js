@@ -78,24 +78,32 @@ async function fetchGovSection(section) {
 // sections: road_sections 행 배열 — 어느 범위(구간 하나/호선 전체/관할 전체)를
 // 내려줄지는 호출부(routes/sections.js)가 미리 걸러서 넘겨준다(이 함수는
 // 그 범위를 몰라도 됨 — 받은 구간들로만 조서를 만든다).
+// 구간 하나의 국토부 표준서식 워크북을 만든다 — buildOfficialLedgerZip(zip 여러
+// 구간)과 미리보기(새창에서 구간 1개만 확인, routes/sections.js의
+// /ledger-report-preview)가 이 함수를 공유한다.
+async function buildSectionWorkbook(section) {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = '도로대장시스템';
+    workbook.created = new Date();
+    const gs = await fetchGovSection(section);
+    buildSummarySheets(workbook, section, gs);
+    const facilityData = await fetchByTableMap(FACILITY_TABLES, section);
+    buildFacilitySheets(workbook, section, facilityData);
+    const facilityData2 = await fetchByTableMap(FACILITY_TABLES_2, section);
+    buildRemainingSheets(workbook, section, facilityData2);
+    const { bridges, tunnels } = await fetchByTableMap(
+        { bridges: 'gov_bridge', tunnels: 'gov_tunnel' },
+        section
+    );
+    buildBridgeTunnelSheets(workbook, section, bridges, tunnels);
+    return workbook;
+}
+
 async function buildOfficialLedgerZip(sections) {
     const zip = new AdmZip();
     const usedNames = new Set();
     for (const section of sections) {
-        const workbook = new ExcelJS.Workbook();
-        workbook.creator = '도로대장시스템';
-        workbook.created = new Date();
-        const gs = await fetchGovSection(section);
-        buildSummarySheets(workbook, section, gs);
-        const facilityData = await fetchByTableMap(FACILITY_TABLES, section);
-        buildFacilitySheets(workbook, section, facilityData);
-        const facilityData2 = await fetchByTableMap(FACILITY_TABLES_2, section);
-        buildRemainingSheets(workbook, section, facilityData2);
-        const { bridges, tunnels } = await fetchByTableMap(
-            { bridges: 'gov_bridge', tunnels: 'gov_tunnel' },
-            section
-        );
-        buildBridgeTunnelSheets(workbook, section, bridges, tunnels);
+        const workbook = await buildSectionWorkbook(section);
         const buffer = await workbook.xlsx.writeBuffer();
 
         // 노선(route_name)마다 zip 안에 폴더를 하나씩 만들고, 그 안에 구간별 xlsx를 넣는다.
@@ -113,4 +121,4 @@ async function buildOfficialLedgerZip(sections) {
     return zip.toBuffer();
 }
 
-module.exports = { buildOfficialLedgerZip };
+module.exports = { buildOfficialLedgerZip, buildSectionWorkbook };

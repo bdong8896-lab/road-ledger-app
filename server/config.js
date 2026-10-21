@@ -8,6 +8,21 @@ function required(name, fallback) {
     throw new Error(`Missing required env var: ${name}`);
 }
 
+// 세션 서명 키 — 개발 PC에선 기본값으로 떨어져도 되지만 운영(NODE_ENV=production)에서
+// 키가 없거나 기본값/템플릿 플레이스홀더("<...>") 그대로면 기동을 거부한다. 공개된 기본
+// 키로 돌면 누구나 세션 쿠키를 위조할 수 있다.
+const DEV_SESSION_SECRET = 'dev-only-secret-change-me';
+function sessionSecret() {
+    const v = process.env.SESSION_SECRET;
+    if (process.env.NODE_ENV === 'production') {
+        if (!v || v === DEV_SESSION_SECRET || v.startsWith('<') || v.length < 16) {
+            throw new Error('운영 환경에서는 SESSION_SECRET을 16자 이상의 무작위 값으로 .env에 설정해야 합니다(기본값/플레이스홀더 불가).');
+        }
+        return v;
+    }
+    return v || DEV_SESSION_SECRET;
+}
+
 module.exports = {
     port: Number(required('PORT', '8080')),
     db: {
@@ -17,7 +32,11 @@ module.exports = {
         user: required('PGUSER', 'road_ledger_app'),
         password: required('PGPASSWORD', ''),
     },
-    sessionSecret: required('SESSION_SECRET', 'dev-only-secret-change-me'),
+    sessionSecret: sessionSecret(),
+    // IIS 등 앞단에서 HTTPS로만 서비스하는 운영 환경이면 .env에 COOKIE_SECURE=true — 로그인
+    // 쿠키에 Secure 속성을 붙이고 HSTS 헤더를 보낸다. HTTP로 서비스 중인데 켜면 쿠키가
+    // 안 먹어 로그인이 안 되므로 HTTPS 적용을 마친 뒤에만 켤 것(deploy/서버배포_가이드.txt 14번).
+    cookieSecure: process.env.COOKIE_SECURE === 'true',
     // 로그인 세션 유지시간(시간 단위). 세션은 메모리가 아니라 DB(connect-pg-simple,
     // session 테이블)에 저장되므로 서버를 재시작해도 이 시간이 지나기 전까지는
     // 로그인이 풀리지 않는다. 기본 8시간 — 개발 PC에서 매번 다시 로그인하기

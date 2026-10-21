@@ -14,6 +14,9 @@ module.exports = {
             autorestart: true,
             max_restarts: 10,
             restart_delay: 3000,
+            // 앱이 직접 쓰는 날짜별 운영 로그는 logs/app-YYYY-MM-DD.log(lib/serverLog.js,
+            // 보관기간 지나면 자동 삭제). 아래 두 파일은 PM2가 따로 쌓는 시작/종료·크래시
+            // 출력이라 pm2-logrotate로 로테이션을 걸어야 한다(deploy/서버배포_가이드.txt 13번).
             out_file: './logs/out.log',
             error_file: './logs/error.log',
             time: true,

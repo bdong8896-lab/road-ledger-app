@@ -449,6 +449,32 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #popup-close-btn { background: #e5e8ee; color: #555; }
 #popup-close-btn:hover { background: #d3d8e2; }
 
+/* ===== 건물 레이어 클릭 팝업 ===== (지도 위 다른 팝업들은 흰 카드지만, 이건
+   내용이 속성표라 사이드바 패널들(정보 탭 info-row 등)과 같은 다크 톤 카드로
+   맞춰서 앱 전체 톤과 어울리게 한다) */
+#building-popup {
+    display: none; position: absolute; min-width: 200px; max-width: 340px; max-height: 320px;
+    overflow-y: auto; background: var(--panel-light); color: var(--text-primary); border-radius: var(--radius-md);
+    border: 1px solid var(--border-med); box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+    padding: 10px 12px; z-index: 100; font-size: 0.82rem;
+}
+#building-popup::after {
+    content: ''; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%);
+    border-width: 8px 8px 0; border-style: solid; border-color: var(--panel-light) transparent transparent;
+}
+#building-popup-close-btn {
+    position: absolute; top: 5px; right: 5px; background: transparent; border: none;
+    color: var(--text-muted); cursor: pointer; padding: 3px 6px; border-radius: var(--radius-sm); font-size: 0.85rem;
+}
+#building-popup-close-btn:hover { background: var(--panel-mid); color: #fff; }
+#building-popup-title {
+    font-weight: 700; color: var(--text-primary); margin: 0 20px 6px 0;
+    padding-bottom: 6px; border-bottom: 1px solid var(--border-dim);
+}
+#building-popup-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; }
+#building-popup-grid .bpg-label { color: var(--text-muted); }
+#building-popup-grid .bpg-value { color: var(--text-secondary); word-break: keep-all; overflow-wrap: break-word; text-align: right; }
+
 /* ===== 부속시설 호버(마우스오버) 정보창 =====
    두 가지 모드로 쓴다 — 개별 시설물(점 등) 위에서는 fhp-title만(종류 이름
    한 줄), 구간 강조선(routeHighlightLayer) 위에서는 fhp-subtitle+fhp-grid로
@@ -538,8 +564,8 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #sidebar-title { font-weight: 700; font-size: 1.05rem; }
 #sidebar-title i { color: var(--accent); margin-right: 6px; }
 #user-info { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; color: var(--text-secondary); }
-#logout-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
-#logout-btn:hover { color: var(--text-primary); }
+#logout-btn, #pw-change-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
+#logout-btn:hover, #pw-change-btn:hover { color: var(--text-primary); }
 #admin-mode-toggle {
     background: transparent; border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     color: var(--text-muted); cursor: pointer; font-size: 0.9rem; padding: 4px 7px; transition: var(--transition);
@@ -795,6 +821,17 @@ body.admin-mode #save-btn { display: block; }
     background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     color: var(--text-primary); font-size: 0.8rem; padding: 5px 8px;
 }
+#audit-log-date-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--text-muted); font-size: 0.8rem; }
+#audit-log-date-row input[type="date"] {
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); font-size: 0.78rem; padding: 4px 6px; min-width: 0; flex: 1; color-scheme: dark;
+}
+#audit-log-date-row #audit-log-export-btn {
+    flex-shrink: 0; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 5px 10px; font-size: 0.78rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+}
+#audit-log-date-row #audit-log-export-btn:hover { background: var(--accent-hover); color: #fff; }
+#audit-log-date-row #audit-log-export-btn:disabled { opacity: 0.6; cursor: default; }
 #audit-log-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
 .audit-log-row { background: var(--panel-light); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.82rem; }
 .audit-log-row .alr-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
@@ -804,6 +841,17 @@ body.admin-mode #save-btn { display: block; }
 }
 .audit-log-row .alr-badge.action-delete { background: #d9534f; }
 .audit-log-row .alr-badge.action-bulk_import { background: #7c5cbf; }
+/* 접속·계정 이력 */
+.audit-log-row .alr-badge.action-login { background: #2f9e6a; }
+.audit-log-row .alr-badge.action-login_fail { background: #d9534f; }
+.audit-log-row .alr-badge.action-logout { background: #6b7585; }
+.audit-log-row .alr-badge.action-signup,
+.audit-log-row .alr-badge.action-approve { background: #b8860b; }
+.audit-log-row .alr-badge.action-account_create { background: #2e6fae; }
+.audit-log-row .alr-badge.action-account_delete { background: #a23b3b; }
+.audit-log-row .alr-badge.action-password_change,
+.audit-log-row .alr-badge.action-password_reset { background: #b8860b; }
+.audit-log-row .alr-badge.action-log_export { background: #6b7585; }
 .audit-log-row .alr-summary { flex: 1; min-width: 0; }
 .audit-log-row .alr-meta { color: var(--text-muted); font-size: 0.72rem; }
 #audit-log-pagination {
@@ -1197,6 +1245,49 @@ body.cad-popup-page #route-file-list { max-height: 260px; padding: 8px 0 0; }
 body.cad-popup-page #dxf-layer-panel { height: auto; border-top: none; padding: 0; }
 body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #login-box button:hover { background: var(--accent-hover); }
+#login-box { max-height: 94vh; overflow-y: auto; }
+#login-box button.login-link-btn {
+    background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.82rem; margin-top: 10px;
+}
+#login-box button.login-link-btn:hover { background: transparent; color: var(--text-primary); text-decoration: underline; }
+/* ===== 비밀번호 변경 모달 ===== */
+#pw-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1100;
+}
+#pw-modal.open { display: flex !important; }
+#pw-box {
+    background: var(--panel-mid); border-radius: var(--radius-lg); padding: 32px 30px; width: 320px;
+    text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+#pw-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 4px; }
+#pw-notice { color: var(--text-muted); font-size: 0.78rem; margin-bottom: 14px; min-height: 1em; }
+#pw-error { color: #ff6b6b; font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#pw-box input {
+    width: 100%; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 10px 12px; margin-bottom: 10px; font-size: 0.9rem; box-sizing: border-box;
+}
+#pw-box button {
+    width: 100%; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 11px 0; font-weight: 700; cursor: pointer; margin-top: 6px; transition: var(--transition);
+}
+#pw-box button:hover { background: var(--accent-hover); }
+#pw-box button.pw-link-btn { background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.82rem; margin-top: 10px; }
+#pw-box button.pw-link-btn:hover { background: transparent; color: var(--text-primary); text-decoration: underline; }
+#signup-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 4px; }
+#signup-notice { color: var(--text-muted); font-size: 0.78rem; margin-bottom: 14px; }
+#signup-error { color: #ff6b6b; font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#signup-error.ok { color: #5ad18f; }
+#signup-sigungu-wrap { position: relative; }
+#signup-sigungu-suggest {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: -8px; text-align: left;
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    max-height: 170px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+/* 시군구 검색 자동완성 목록 항목 — 로그인 화면 회원가입(#signup-sigungu-suggest)과
+   계정관리 새 계정 폼(#acc-sigungu-suggest)이 공용(attachSigunguAutocomplete) */
+.sg-opt { padding: 7px 10px; font-size: 0.82rem; cursor: pointer; }
+.sg-opt:hover { background: rgba(255,255,255,0.08); }
+.sg-empty { padding: 7px 10px; font-size: 0.8rem; color: var(--text-muted); }
 
 /* ===== 사용자도로관리 트리 (데이터보기, 구간 트리 아래) ===== */
 #issue-tree-header { flex-shrink: 0; }
@@ -1291,9 +1382,6 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
     background: var(--panel-mid); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     max-height: 180px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
-#acc-sigungu-suggest .acc-sigungu-opt { padding: 6px 10px; font-size: 0.82rem; cursor: pointer; }
-#acc-sigungu-suggest .acc-sigungu-opt:hover { background: var(--panel-light); }
-#acc-sigungu-suggest .acc-sigungu-empty { padding: 6px 10px; font-size: 0.8rem; color: var(--text-muted); }
 #accounts-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1; min-height: 0; }
 .account-row { background: var(--panel-light); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.82rem; }
 .account-row .acr-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
@@ -1304,8 +1392,16 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
     background: var(--panel-mid); color: var(--text-muted);
 }
 .account-row .acc-role.acc-role-admin { background: var(--accent-dark); color: #fff; }
+.account-row .acc-role.acc-role-pending { background: #b8860b; color: #fff; }
+.account-row .acc-approve-btn {
+    flex-shrink: 0; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 2px 8px; font-size: 0.72rem; font-weight: 700; cursor: pointer;
+}
+.account-row .acc-approve-btn:hover { background: var(--accent-hover); }
 .account-row .acc-del-btn { flex-shrink: 0; background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 2px 4px; }
 .account-row .acc-del-btn:hover { color: #ff5b57; }
+.account-row .acc-reset-btn { flex-shrink: 0; background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 2px 4px; }
+.account-row .acc-reset-btn:hover { color: var(--accent-hover); }
 .account-row .acr-meta { color: var(--text-muted); font-size: 0.72rem; }
 
 #issue-editroute-bar {

@@ -13,6 +13,7 @@
 <script src="https://unpkg.com/dxf-parser@1.1.2/dist/dxf-parser.js"></script>
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -20,10 +21,41 @@
     <div id="login-box">
         <div id="login-title">도로대장 시스템</div>
         <div id="login-subtitle">Road Ledger System</div>
-        <div id="login-error"></div>
-        <input type="text" id="login-username" placeholder="아이디" autocomplete="username">
-        <input type="password" id="login-password" placeholder="비밀번호" autocomplete="current-password">
-        <button id="login-submit">로그인</button>
+        <div id="login-form">
+            <div id="login-error"></div>
+            <input type="text" id="login-username" placeholder="아이디" autocomplete="username">
+            <input type="password" id="login-password" placeholder="비밀번호" autocomplete="current-password">
+            <button id="login-submit">로그인</button>
+            <button type="button" id="show-signup-btn" class="login-link-btn">회원가입</button>
+        </div>
+        <div id="signup-form" style="display:none;">
+            <div id="signup-title">회원가입 신청</div>
+            <div id="signup-notice">신청 후 관리자가 승인하면 로그인할 수 있습니다.</div>
+            <div id="signup-error"></div>
+            <input type="text" id="signup-username" placeholder="아이디 (영문/숫자 4~30자)" autocomplete="off" maxlength="30">
+            <input type="password" id="signup-password" placeholder="비밀번호 (8자 이상)" autocomplete="new-password" maxlength="100">
+            <input type="password" id="signup-password2" placeholder="비밀번호 확인" autocomplete="new-password" maxlength="100">
+            <input type="text" id="signup-name" placeholder="이름 (소속/성명)" autocomplete="off" maxlength="50">
+            <div id="signup-sigungu-wrap">
+                <input type="text" id="signup-sigungu" placeholder="소속 시군구 검색 (예: 장성)" autocomplete="off">
+                <div id="signup-sigungu-suggest" hidden></div>
+            </div>
+            <button id="signup-submit">가입 신청</button>
+            <button type="button" id="show-login-btn" class="login-link-btn">로그인으로 돌아가기</button>
+        </div>
+    </div>
+</div>
+
+<div id="pw-modal" style="display:none;">
+    <div id="pw-box">
+        <div id="pw-title">비밀번호 변경</div>
+        <div id="pw-notice"></div>
+        <div id="pw-error"></div>
+        <input type="password" id="pw-current" placeholder="현재 비밀번호" autocomplete="current-password" maxlength="100">
+        <input type="password" id="pw-new" placeholder="새 비밀번호 (8자 이상)" autocomplete="new-password" maxlength="100">
+        <input type="password" id="pw-new2" placeholder="새 비밀번호 확인" autocomplete="new-password" maxlength="100">
+        <button id="pw-submit">변경</button>
+        <button type="button" id="pw-cancel" class="pw-link-btn">취소</button>
     </div>
 </div>
 
@@ -155,6 +187,11 @@
                     <button id="popup-close-btn">닫기</button>
                 </div>
             </div>
+            <div id="building-popup">
+                <button id="building-popup-close-btn" title="닫기"><i class="fa-solid fa-xmark"></i></button>
+                <div id="building-popup-title"></div>
+                <div id="building-popup-grid"></div>
+            </div>
             <div id="facility-hover-popup">
                 <div id="fhp-title"></div>
                 <div id="fhp-subtitle">시설물 개수</div>
@@ -204,6 +241,7 @@
                 <button class="admin-only-tab" id="accounts-tab-btn" data-tab="accountsview-tab" title="계정관리" onclick="switchSidebarTab('accountsview-tab'); loadAccountsList();" style="display:none;">
                     <i class="fa-solid fa-users-gear"></i>
                 </button>
+                <button id="pw-change-btn" title="비밀번호 변경"><i class="fa-solid fa-key"></i></button>
                 <button id="logout-btn" title="로그아웃"><i class="fa-solid fa-right-from-bracket"></i></button>
             </div>
         </div>
@@ -242,7 +280,7 @@
                     <button id="tree-collapse-all-btn" title="전체 접기"><i class="fa-solid fa-angles-up"></i></button>
                     <button id="tree-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
                     <button id="tree-export-btn" title="전체 자료(SHP/DBF/도면 등) 압축 다운로드 — 구간 선택 시 그 구간만, 호선 선택 시 호선 전체, 선택 없으면 관할 전체"><i class="fa-solid fa-file-zipper"></i></button>
-                    <button id="ledger-report-btn" title="도로대장 조서(엑셀) 다운로드 — 구간 선택 시 그 구간만, 호선 선택 시 호선 전체, 선택 없으면 관할 전체"><i class="fa-solid fa-file-excel"></i></button>
+                    <button id="ledger-report-preview-btn" title="도로대장 조서 새창에서 바로 보기(선택 구간/전체 자료 다운로드 포함) — 구간을 하나 선택했을 때만 가능"><i class="fa-solid fa-eye"></i></button>
                 </div>
             </div>
 
@@ -270,7 +308,7 @@
                     <label class="layer-toggle-row"><input type="checkbox" id="layer-cadastral"><i class="fa-solid fa-vector-square layer-toggle-icon"></i> 지적선</label>
                     <div class="layer-toggle-group">
                         <div class="layer-toggle-row-main">
-                            <label><input type="checkbox" id="layer-roadnet" checked><i class="fa-solid fa-road layer-toggle-icon"></i> 국가교통정보도(도로)</label>
+                            <label><input type="checkbox" id="layer-roadnet"><i class="fa-solid fa-road layer-toggle-icon"></i> 국가교통정보도(도로)</label>
                             <button type="button" id="layer-roadnet-expand-btn" class="layer-toggle-expand-btn" title="도로등급별로 펼쳐서 개별 표시"><i class="fa-solid fa-caret-right"></i></button>
                         </div>
                         <div id="layer-roadnet-grades" class="layer-toggle-subgroup" hidden>
@@ -284,6 +322,9 @@
                             <label><input type="checkbox" class="layer-roadnet-grade" data-rank="ETC" checked><span class="layer-toggle-swatch" style="--swatch-color:#8d99ae;"></span> 기타/미분류</label>
                         </div>
                     </div>
+                    <label class="layer-toggle-row"><input type="checkbox" id="layer-zoning"><i class="fa-solid fa-map-location-dot layer-toggle-icon"></i> 용도지역</label>
+                    <label class="layer-toggle-row"><input type="checkbox" id="layer-building"><i class="fa-solid fa-building layer-toggle-icon"></i> 건물</label>
+                    <label class="layer-toggle-row"><input type="checkbox" id="layer-roadcenterline"><span class="layer-toggle-swatch" style="--swatch-color:#8b6f47;"></span> 도로중심선(수치지형도)</label>
                     <label class="layer-toggle-row"><input type="checkbox" id="layer-cctv"><i class="fa-solid fa-video layer-toggle-icon"></i> CCTV</label>
                     <label class="layer-toggle-row"><input type="checkbox" id="layer-sigg"><span class="layer-toggle-swatch" style="--swatch-color:#ff9500;"></span> 시군 경계</label>
                     <label class="layer-toggle-row"><input type="checkbox" id="layer-emd"><span class="layer-toggle-swatch" style="--swatch-color:#5ac8fa;"></span> 읍면동 경계</label>
@@ -467,7 +508,7 @@
 
         <div id="auditlogview-tab" class="sidebar-tab-content" style="display:none;">
             <div id="audit-log-header" class="list-header">
-                <span>변경이력 — 구간 등록/수정/삭제, 일괄등록 처리 기록</span>
+                <span>변경·접속 이력 — 데이터 변경, 로그인/로그아웃, 계정 처리 기록</span>
                 <button id="audit-log-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
             </div>
             <div id="audit-log-filter-row">
@@ -477,7 +518,25 @@
                     <option value="update">수정</option>
                     <option value="delete">삭제</option>
                     <option value="bulk_import">일괄등록</option>
+                    <optgroup label="접속·계정">
+                        <option value="login">로그인</option>
+                        <option value="login_fail">로그인 실패</option>
+                        <option value="logout">로그아웃</option>
+                        <option value="signup">가입 신청</option>
+                        <option value="approve">가입 승인</option>
+                        <option value="account_create">계정 생성</option>
+                        <option value="account_delete">계정 삭제</option>
+                        <option value="password_change">비밀번호 변경</option>
+                        <option value="password_reset">비밀번호 재설정</option>
+                        <option value="log_export">이력 다운로드</option>
+                    </optgroup>
                 </select>
+                <div id="audit-log-date-row">
+                    <input type="date" id="audit-log-from" title="시작일">
+                    <span>~</span>
+                    <input type="date" id="audit-log-to" title="종료일(그날 포함)">
+                    <button id="audit-log-export-btn" title="지금 조건(작업 종류·기간)의 이력을 CSV 텍스트 파일로 저장"><i class="fa-solid fa-file-arrow-down"></i> 다운로드</button>
+                </div>
             </div>
             <div id="audit-log-list"></div>
             <div id="audit-log-pagination"></div>
@@ -491,7 +550,7 @@
             <div id="account-new-form" style="display:none;">
                 <div class="field-grid">
                     <label>아이디<input type="text" id="acc-username" autocomplete="off"></label>
-                    <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password"></label>
+                    <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password" placeholder="8자 이상"></label>
                     <label>표시 이름<input type="text" id="acc-display-name"></label>
                     <label>권한
                         <select id="acc-role">

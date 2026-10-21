@@ -9,6 +9,7 @@ const pool = require('../db');
 const config = require('../config');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const { convertDwgToDxf } = require('../lib/dwgConvert');
+const { sendInlineSafely } = require('../lib/safeInline');
 const { parseStationFilename, classifyDrawingType, DRAWING_TYPES } = require('../lib/routeFileNaming');
 const { bulkUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
 
@@ -192,7 +193,8 @@ router.post('/bulk-zip', uploadZip.single('file'), async (req, res) => {
         });
         res.json(result);
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        console.error('[route-files/bulk-zip]', e);
+        res.status(400).json({ error: '도면을 처리하는 중 오류가 발생했습니다.' });
     } finally {
         fs.unlink(req.file.path, () => {});
     }
@@ -222,9 +224,7 @@ router.get('/:fileId', async (req, res) => {
     }
 
     if (req.query.inline === '1') {
-        const encodedName = encodeURIComponent(downloadName);
-        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedName}`);
-        res.sendFile(path.resolve(targetPath));
+        sendInlineSafely(res, targetPath, downloadName);
     } else {
         res.download(targetPath, downloadName);
     }

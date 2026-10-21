@@ -121,8 +121,9 @@ router.post('/preview', upload.single('file'), async (req, res) => {
         const payload = await buildPreviewPayload(extracted.extractDir, (req.body.incomingFolderName || '').trim(), req.session.user);
         res.json({ uploadId, ...payload });
     } catch (e) {
+        console.error('[bulk-import/preview]', e);
         if (uploadId) cleanup(uploadId);
-        res.status(400).json({ error: e.message });
+        res.status(400).json({ error: '파일을 처리하는 중 오류가 발생했습니다.' });
     } finally {
         fs.unlink(req.file.path, () => {});
     }
@@ -154,8 +155,9 @@ router.post('/preview-folder-upload', uploadFolder.array('files'), async (req, r
         const payload = await buildPreviewPayload(staged.extractDir, (req.body.incomingFolderName || '').trim(), req.session.user);
         res.json({ uploadId, ...payload });
     } catch (e) {
+        console.error('[bulk-import/preview-folder-upload]', e);
         if (uploadId) cleanup(uploadId);
-        res.status(400).json({ error: e.message });
+        res.status(400).json({ error: '파일을 처리하는 중 오류가 발생했습니다.' });
     }
 });
 
@@ -189,8 +191,9 @@ router.post('/preview-from-folder', async (req, res) => {
             ...summarizeForPreview(parsed),
         });
     } catch (e) {
+        console.error('[bulk-import/preview-from-folder]', e);
         if (uploadId) cleanup(uploadId);
-        res.status(400).json({ error: e.message });
+        res.status(400).json({ error: '폴더를 처리하는 중 오류가 발생했습니다.' });
     }
 });
 
@@ -202,14 +205,16 @@ router.post('/:uploadId/confirm', async (req, res) => {
     try {
         extractDir = getExtractDir(uploadId);
     } catch (e) {
-        return res.status(404).json({ error: e.message });
+        console.error('[bulk-import/confirm/getExtractDir]', e);
+        return res.status(404).json({ error: '업로드 정보를 찾을 수 없습니다.' });
     }
 
     let parsed;
     try {
         parsed = await parseDelivery(extractDir);
     } catch (e) {
-        return res.status(400).json({ error: e.message });
+        console.error('[bulk-import/confirm/parseDelivery]', e);
+        return res.status(400).json({ error: '파일을 처리하는 중 오류가 발생했습니다.' });
     }
     if (parsed.blockingWarnings.length && !req.body.acknowledgeUnrecognizedCrs) {
         return res.status(400).json({
@@ -421,7 +426,8 @@ router.post('/:uploadId/confirm', async (req, res) => {
         });
     } catch (e) {
         await client.query('ROLLBACK');
-        res.status(500).json({ error: `저장 중 오류가 발생했습니다: ${e.message}` });
+        console.error('[bulk-import/confirm]', e);
+        res.status(500).json({ error: '저장 중 오류가 발생했습니다.' });
     } finally {
         client.release();
     }

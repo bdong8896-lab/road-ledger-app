@@ -4,6 +4,7 @@ const express = require('express');
 const multer = require('multer');
 const pool = require('../db');
 const config = require('../config');
+const { sendInlineSafely } = require('../lib/safeInline');
 const { requireAuth } = require('../middleware/requireAuth');
 
 const router = express.Router();
@@ -96,9 +97,7 @@ router.get('/:pnu/files/:fileId', async (req, res) => {
 
     // ?inline=1 → 분할화면 미리보기용(브라우저가 바로 렌더링), 그 외 → 강제 다운로드
     if (req.query.inline === '1') {
-        const encodedName = encodeURIComponent(file.original_name);
-        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedName}`);
-        res.sendFile(path.resolve(file.stored_path));
+        sendInlineSafely(res, file.stored_path, file.original_name);
     } else {
         res.download(file.stored_path, file.original_name);
     }

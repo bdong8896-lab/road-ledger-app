@@ -6,19 +6,32 @@
 // 삭제 작업 자체의 응답이 막히거나 Express 4의 unhandled rejection으로
 // 서버가 죽는 일이 없어야 한다 — 그래서 호출부에서 매번 try/catch로 감싸는
 // 대신 여기서 한 번만 감싼다.
+//
+// 데이터 변경(create/update/delete/bulk_import)뿐 아니라 접속·계정 이력
+// (login, login_fail, logout, signup, approve, account_create, account_delete)도
+// 같은 테이블에 남긴다 — 비밀번호 등 비밀값은 summary/detail에 절대 넣지 않는다.
 const pool = require('../db');
 
-async function logAction(client, { action, targetTable, targetId, summary, detail, sigunguCode, user }) {
+// 접속 IP — index.js의 `trust proxy` 설정 덕에 IIS(리버스프록시) 뒤에서도
+// X-Forwarded-For의 실제 접속자 IP가 req.ip로 온다. IPv4-mapped IPv6
+// (::ffff:1.2.3.4)는 보기 좋게 풀어준다.
+function clientIp(req) {
+    const ip = (req && req.ip) || '';
+    return ip.replace(/^::ffff:/, '').slice(0, 45) || null;
+}
+
+async function logAction(client, { action, targetTable, targetId, summary, detail, sigunguCode, user, ip }) {
     const q = client || pool;
     try {
         await q.query(
-            `INSERT INTO audit_log (action, target_table, target_id, summary, detail, sigungu_code, user_id, username)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            `INSERT INTO audit_log (action, target_table, target_id, summary, detail, sigungu_code, user_id, username, ip)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
             [
                 action, targetTable, targetId || null, summary,
                 detail !== undefined ? JSON.stringify(detail) : null,
                 sigunguCode || null,
-                user ? user.id : null, user ? user.username : null,
+                user ? user.id : null, user && user.username ? String(user.username).slice(0, 50) : null,
+                ip || null,
             ]
         );
     } catch (e) {
@@ -26,4 +39,4 @@ async function logAction(client, { action, targetTable, targetId, summary, detai
     }
 }
 
-module.exports = { logAction };
+module.exports = { logAction, clientIp };

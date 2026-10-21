@@ -51,6 +51,7 @@ async function doLogin() {
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
     const errEl = document.getElementById('login-error');
+    errEl.style.color = '';
     errEl.textContent = '';
 
     if (!username || !password) {
@@ -70,11 +71,174 @@ async function doLogin() {
             return;
         }
         currentUser = data.user;
-        document.getElementById('login-overlay').style.display = 'none';
-        document.getElementById('app').style.display = 'flex';
-        await initApp();
+        // 관리자가 재설정해준 임시 비밀번호로 들어온 경우 — 새 비밀번호로 바꿔야만 앱이 열린다
+        // (서버도 그 전까지 다른 API를 막는다).
+        if (currentUser.mustChangePassword) {
+            openPasswordModal({ forced: true, onDone: () => { currentUser.mustChangePassword = false; enterApp(); } });
+            return;
+        }
+        await enterApp();
     } catch (err) {
         errEl.textContent = '서버에 연결할 수 없습니다.';
+    }
+}
+
+async function enterApp() {
+    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    await initApp();
+}
+
+// ---------- 비밀번호 변경 ----------
+let pwModalOnDone = null;
+let pwModalForced = false;
+
+function openPasswordModal({ forced = false, onDone = null } = {}) {
+    pwModalForced = forced;
+    pwModalOnDone = onDone;
+    ['pw-current', 'pw-new', 'pw-new2'].forEach((id) => { document.getElementById(id).value = ''; });
+    document.getElementById('pw-error').textContent = '';
+    document.getElementById('pw-notice').textContent = forced
+        ? '관리자가 재설정한 임시 비밀번호입니다. 새 비밀번호로 변경해야 사용할 수 있습니다.'
+        : '변경하면 다른 기기에서 로그인된 세션은 모두 해제됩니다.';
+    document.getElementById('pw-cancel').textContent = forced ? '로그아웃' : '취소';
+    document.getElementById('pw-modal').classList.add('open');
+    document.getElementById('pw-current').focus();
+}
+
+document.getElementById('pw-change-btn').addEventListener('click', () => openPasswordModal());
+document.getElementById('pw-cancel').addEventListener('click', async () => {
+    if (pwModalForced) {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        location.reload();
+        return;
+    }
+    document.getElementById('pw-modal').classList.remove('open');
+});
+document.getElementById('pw-submit').addEventListener('click', submitPasswordChange);
+document.getElementById('pw-new2').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitPasswordChange(); });
+
+async function submitPasswordChange() {
+    const errEl = document.getElementById('pw-error');
+    errEl.textContent = '';
+    const currentPassword = document.getElementById('pw-current').value;
+    const newPassword = document.getElementById('pw-new').value;
+    const newPassword2 = document.getElementById('pw-new2').value;
+    if (!currentPassword || !newPassword) { errEl.textContent = '현재 비밀번호와 새 비밀번호를 입력하세요.'; return; }
+    if (newPassword.length < 8) { errEl.textContent = '새 비밀번호는 8자 이상이어야 합니다.'; return; }
+    if (newPassword !== newPassword2) { errEl.textContent = '새 비밀번호 확인이 일치하지 않습니다.'; return; }
+    const btn = document.getElementById('pw-submit');
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/auth/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ currentPassword, newPassword }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { errEl.textContent = data.error || '비밀번호 변경에 실패했습니다.'; return; }
+        document.getElementById('pw-modal').classList.remove('open');
+        ['pw-current', 'pw-new', 'pw-new2'].forEach((id) => { document.getElementById(id).value = ''; });
+        if (!pwModalForced) alert('비밀번호가 변경되었습니다.');
+        if (pwModalOnDone) pwModalOnDone();
+    } catch (e) {
+        errEl.textContent = '서버에 연결할 수 없습니다.';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// ---------- 회원가입(신청) — 로그인 화면 ----------
+// 관리자가 계정관리에서 승인하기 전까지는 로그인할 수 없다(서버 /api/auth/signup 참고).
+let selectedSignupSigungu = null;
+
+function showSignupForm(show) {
+    document.getElementById('login-form').style.display = show ? 'none' : '';
+    document.getElementById('signup-form').style.display = show ? '' : 'none';
+    document.getElementById('signup-error').textContent = '';
+    document.getElementById('login-error').textContent = '';
+}
+
+(function initSignup() {
+    document.getElementById('show-signup-btn').addEventListener('click', () => showSignupForm(true));
+    document.getElementById('show-login-btn').addEventListener('click', () => showSignupForm(false));
+    document.getElementById('signup-submit').addEventListener('click', doSignup);
+    attachSigunguAutocomplete(
+        document.getElementById('signup-sigungu'),
+        document.getElementById('signup-sigungu-suggest'),
+        (picked) => { selectedSignupSigungu = picked; }
+    );
+})();
+
+// 시군구 검색 자동완성 — 계정관리 "새 계정"(initAccountSigunguSearch)과 로그인 화면
+// 회원가입이 같이 쓴다(서버도 같은 /api/auth/sigungu-search 하나). onSelect는 목록에서
+// 고르면 {code5, sgg, full}, 다시 타이핑해서 선택이 무효가 되면 null을 받는다.
+function attachSigunguAutocomplete(input, suggestEl, onSelect) {
+    let debounceTimer = null;
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
+    input.addEventListener('input', () => {
+        onSelect(null);
+        const q = input.value.trim();
+        clearTimeout(debounceTimer);
+        if (!q) { suggestEl.hidden = true; suggestEl.innerHTML = ''; return; }
+        debounceTimer = setTimeout(async () => {
+            try {
+                const { items } = await fetch('/api/auth/sigungu-search?q=' + encodeURIComponent(q)).then((r) => r.json());
+                suggestEl.innerHTML = items.length
+                    ? items.map((it) => `<div class="sg-opt" data-code="${escapeHtml(it.code5)}" data-sgg="${escapeHtml(it.sgg)}" data-full="${escapeHtml(it.full)}">${escapeHtml(it.full)}</div>`).join('')
+                    : '<div class="sg-empty">일치하는 시군구가 없습니다.</div>';
+                suggestEl.hidden = false;
+            } catch (e) { suggestEl.hidden = true; }
+        }, 200);
+    });
+    suggestEl.addEventListener('click', (e) => {
+        const opt = e.target.closest('.sg-opt');
+        if (!opt) return;
+        onSelect({ code5: opt.dataset.code, sgg: opt.dataset.sgg, full: opt.dataset.full });
+        input.value = opt.dataset.full;
+        suggestEl.hidden = true;
+    });
+    document.addEventListener('click', (e) => {
+        if (e.target !== input && !suggestEl.contains(e.target)) suggestEl.hidden = true;
+    });
+}
+
+async function doSignup() {
+    const errEl = document.getElementById('signup-error');
+    errEl.className = '';
+    errEl.textContent = '';
+    const username = document.getElementById('signup-username').value.trim();
+    const password = document.getElementById('signup-password').value;
+    const password2 = document.getElementById('signup-password2').value;
+    const displayName = document.getElementById('signup-name').value.trim();
+
+    if (!username || !password || !displayName) { errEl.textContent = '모든 항목을 입력하세요.'; return; }
+    if (password.length < 8) { errEl.textContent = '비밀번호는 8자 이상으로 입력하세요.'; return; }
+    if (password !== password2) { errEl.textContent = '비밀번호 확인이 일치하지 않습니다.'; return; }
+    if (!selectedSignupSigungu) { errEl.textContent = '소속 시군구를 검색해서 목록에서 선택하세요.'; return; }
+
+    const btn = document.getElementById('signup-submit');
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, displayName, sigunguCode: selectedSignupSigungu.code5 }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { errEl.textContent = data.error || '가입 신청에 실패했습니다.'; return; }
+        ['signup-username', 'signup-password', 'signup-password2', 'signup-name', 'signup-sigungu']
+            .forEach((id) => { document.getElementById(id).value = ''; });
+        selectedSignupSigungu = null;
+        showSignupForm(false);
+        const loginErr = document.getElementById('login-error');
+        loginErr.style.color = '#5ad18f';
+        loginErr.textContent = '가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.';
+        setTimeout(() => { loginErr.style.color = ''; }, 8000);
+    } catch (e) {
+        errEl.textContent = '서버에 연결할 수 없습니다.';
+    } finally {
+        btn.disabled = false;
     }
 }
 
@@ -85,7 +249,7 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 
 // ---------- 앱 초기화 ----------
 let map, base, satellite, wfsSource, wfsLayer, clickHighlightLayer;
-let cctvLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, routeHighlightLayer;
+let cctvLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, routeHighlightLayer, zoningAreaLayer, roadCenterlineLayer, buildingLayer;
 let sectionFacilityLayer;
 // 지도에서 클릭으로 고른 500m 섹터(road_sectors) 강조선 — routeHighlightLayer
 // (노선/구간 전체 강조)와 별개 레이어. selectedSector는 { sect, sect_st, sect_ed }.
@@ -254,6 +418,7 @@ async function initApp() {
     initMap();
     initMapMeasure();
     initClickPopup();
+    initBuildingPopup();
     initFacilityHoverPopup();
     initCctvHoverPopup();
     initRoadNetHoverPopup();
@@ -485,8 +650,9 @@ function initMap() {
             String(feature.get('emd_cd') || '').startsWith(currentUser.sigunguCode.slice(0, 4)),
     });
     riLayer = makeBoundaryLayer('lt_c_adri', 'li_kor_nm', '#af52de');
-    // 국가교통정보도(도로)(국가표준노드링크) — 도로대장 시스템의 기본 참조 레이어라 기본값 on.
-    // visibilityFilter로 도로등급(road_rank)별 개별 on/off를 지원한다(기본 레이어
+    // 국가교통정보도(도로)(국가표준노드링크) — 예전엔 기본값 on이었으나, 초기
+    // 구동 시 지도가 복잡해 보인다는 의견으로 기본값 off로 변경(사용자가 필요할
+    // 때 레이어 패널에서 직접 켜는 방식). visibilityFilter로 도로등급(road_rank)별 개별 on/off를 지원한다(기본 레이어
     // 패널의 펼침 하위 체크박스, initLayerPanel 참고). lt_l_moctlink 자체엔
     // 시군구 코드 속성이 없어서(도로는 여러 시군을 가로지르므로) 행정경계처럼
     // 속성으로 거를 수 없다 — 대신 로그인 계정의 관할 범위(currentUser.sigunguExtent,
@@ -497,7 +663,7 @@ function initMap() {
     // fit()했을 때 실측 zoom이 11.36이 나와서(2026-09-04 확인), 그보다 살짝
     // 낮은 10을 기준으로 삼아 시군 하나를 보는 정도까지는 계속 보이게 했다.
     roadNetLayer = makeBoundaryLayer('lt_l_moctlink', 'road_name', roadNetRankColor, {
-        defaultVisible: true, minZoom: 10, minLabelZoom: 15, lineWidth: 2.5,
+        minZoom: 10, minLabelZoom: 15, lineWidth: 2.5,
         // 시군 하나가 보이는 줌까지 그려야 해서 기본 1024px 타일(넓은 지역)로는
         // 촘촘한 곳에서 2000개 상한에 걸려 계속 잘렸다 — 256px로 훨씬 잘게
         // 쪼개 타일 하나당 도로 개수를 상한 밑으로 낮춘다(makeBoundaryLayer
@@ -511,6 +677,18 @@ function initMap() {
             return true;
         },
     });
+
+    zoningAreaLayer = makeZoningLayer();
+
+    // 도로중심선(국토지리정보원 연속수치지형도, lt_l_n3a0020000) — lt_l_moctlink(국가교통정보도)와
+    // 달리 도로등급 속성 없이 순수 형태(중심선)만 있는 참고용 배경 자료. 소로/보행로까지
+    // 포함돼 촘촘해서(실측 확인: 폭 1.5m대 좁은 길도 나옴) roadNetLayer와 같은 이유로
+    // 256px 타일 + minZoom 10을 그대로 적용한다.
+    roadCenterlineLayer = makeBoundaryLayer('lt_l_n3a0020000', 'rdnm', '#8b6f47', {
+        minZoom: 10, lineWidth: 1.5, tileSize: 256,
+    });
+
+    buildingLayer = makeBuildingLayer();
 
     roadviewGuideLayer = createRoadviewGuideLayer();
 
@@ -542,7 +720,7 @@ function initMap() {
 
     map = new ol.Map({
         target: 'map',
-        layers: [base, satellite, wfsLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, cctvLayer, clickHighlightLayer, routeHighlightLayer, sectorHighlightLayer, sectionFacilityLayer, facilityJumpLayer, measureLayer, roadviewGuideLayer, issueVectorLayer],
+        layers: [base, satellite, wfsLayer, zoningAreaLayer, buildingLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, roadCenterlineLayer, cctvLayer, clickHighlightLayer, routeHighlightLayer, sectorHighlightLayer, sectionFacilityLayer, facilityJumpLayer, measureLayer, roadviewGuideLayer, issueVectorLayer],
         view: new ol.View({ center: ol.proj.fromLonLat([127.5, 36.0]), zoom: 7, minZoom: 6, maxZoom: 21 }),
         // OpenLayers 기본 확대/축소 컨트롤(좌상단 흰 배경 +/- 버튼)은 이미 있는
         // 커스텀 좌측 툴바(#left-toolbar)와 중복이라 끈다.
@@ -831,6 +1009,21 @@ async function onMapClick(evt) {
         return;
     }
 
+    // 건물 레이어(buildingLayer)가 켜져 있을 때 건물 클릭 → 속성 팝업.
+    // 레이어가 꺼져 있으면(minZoom 미만 등으로 안 보이는 상태 포함) 아예 검사하지
+    // 않고 지적 클릭으로 넘어간다 — 꺼진 레이어의 피처를 클릭으로 주울 이유가 없다.
+    if (buildingLayer.getVisible()) {
+        const buildingFeature = map.forEachFeatureAtPixel(
+            evt.pixel,
+            (feature) => feature,
+            { layerFilter: (layer) => layer === buildingLayer, hitTolerance: 3 }
+        );
+        if (buildingFeature) {
+            showBuildingPopup(evt.coordinate, buildingFeature.getProperties());
+            return;
+        }
+    }
+
     // 지적선 레이어가 꺼져 있으면(투명) 클릭으로 지적을 선택하지 않는다.
     if (!cadastralLineVisible) return;
 
@@ -922,6 +1115,58 @@ function showClickPopup(coordinate, area, addrText) {
 function hideClickPopup() {
     document.getElementById('click-popup').style.display = 'none';
     if (clickPopupOverlay) clickPopupOverlay.setPosition(undefined);
+}
+
+// ---------- 건물 레이어 클릭 팝업 ----------
+// "분석보기"(필지 클릭 → 건물 종류 선택 → 조회)와 달리, 건물 레이어를 켠 상태에서
+// 건물을 바로 클릭하면 그 건물 속성(lt_c_spbd)을 즉시 팝업으로 보여준다.
+let buildingPopupOverlay = null;
+
+function initBuildingPopup() {
+    buildingPopupOverlay = new ol.Overlay({
+        element: document.getElementById('building-popup'),
+        positioning: 'bottom-center',
+        offset: [0, -12],
+        autoPan: { animation: { duration: 250 } },
+    });
+    map.addOverlay(buildingPopupOverlay);
+    document.getElementById('building-popup-close-btn').addEventListener('click', hideBuildingPopup);
+}
+
+function showBuildingPopup(coordinate, props) {
+    // lt_c_bldginfo엔 주소 필드(rd_nm/buld_no)가 없다 — 건물명, 없으면 동명칭
+    // ("주건축물제1동" 등), 그것도 없으면 "건물"로 표시한다.
+    document.getElementById('building-popup-title').textContent = props.bld_nm || props.dong_nm || '건물';
+    // 실사용자에게 의미 있는 값만: 용도(코드를 건축법 시행령 별표1로 해석),
+    // 층수, 면적, 높이, 건폐율/용적률, 사용승인일자. strct_cd(구조)는 공식
+    // 코드표를 못 찾아 제외(showBuildingPopup 이전 버전 주석 참고 — buld_se_cd와
+    // 같은 이유). pk/bd_mgt_sn/pnu/ufid/geoidn 등 내부 코드류도 제외.
+    const rows = [];
+    const usabilityLabel = buildingUsabilityLabel(props.usability);
+    if (usabilityLabel) rows.push(['용도', usabilityLabel]);
+    const gro = Number(props.grnd_flr) || 0;
+    const und = Number(props.ugrnd_flr) || 0;
+    if (gro || und) rows.push(['층수', `지상 ${gro}층${und ? ` · 지하 ${und}층` : ''}`]);
+    if (props.archarea != null) rows.push(['건축면적', `${Number(props.archarea).toLocaleString()} ㎡`]);
+    if (props.totalarea != null) rows.push(['연면적', `${Number(props.totalarea).toLocaleString()} ㎡`]);
+    if (props.height != null) rows.push(['건물높이', `${props.height} m`]);
+    if (props.bc_rat != null) rows.push(['건폐율', `${props.bc_rat} %`]);
+    if (props.vl_rat != null) rows.push(['용적률', `${props.vl_rat} %`]);
+    if (props.useapr_day) {
+        const d = String(props.useapr_day);
+        const formatted = d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d;
+        rows.push(['사용승인일자', formatted]);
+    }
+    document.getElementById('building-popup-grid').innerHTML = rows.length
+        ? rows.map(([label, value]) => `<div class="bpg-label">${escapeHtml(label)}</div><div class="bpg-value">${escapeHtml(String(value))}</div>`).join('')
+        : '<div class="bpg-value" style="grid-column:1/-1;color:var(--text-muted);">추가 정보 없음</div>';
+    document.getElementById('building-popup').style.display = 'block';
+    buildingPopupOverlay.setPosition(coordinate);
+}
+
+function hideBuildingPopup() {
+    document.getElementById('building-popup').style.display = 'none';
+    if (buildingPopupOverlay) buildingPopupOverlay.setPosition(undefined);
 }
 
 // ---------- 부속시설 호버(마우스오버) 정보창 ----------
@@ -1189,6 +1434,153 @@ const ZONING_COLOR_MAP = [
 function zoningColor(name) {
     const entry = ZONING_COLOR_MAP.find((e) => name.includes(e.keyword));
     return entry ? entry.color : '#cccccc';
+}
+
+// 용도지역 색칠 레이어 — "분석보기"(필지 하나 클릭했을 때만 결과를 보여줌)와
+// 달리, 지도를 훑어보며 전체 용도지역 분포를 항상 볼 수 있게 색칠된 면으로
+// 보여준다. ZONING_LAYERS(용도지역, 6개 WFS 타입)만 쓰고 USE_DISTRICT_LAYERS
+// (용도지구)는 포함하지 않는다(요청사항: "용도지역(지구 제외)"). makeBoundaryLayer는
+// 타입 하나만 받는데 이건 6개를 한 레이어로 합쳐야 해서 별도 함수로 뺐다.
+function makeZoningLayer() {
+    const tileGrid = ol.tilegrid.createXYZ({ tileSize: 1024 });
+
+    async function fetchTypeName(typeName, extent, projection) {
+        const maxFeatures = 1000;
+        const maxPages = 2; // VWorld의 절대 상한(startIndex<=1000) — makeBoundaryLayer와 동일한 이유
+        const maxRetriesPerPage = 2;
+        const collected = [];
+        for (let page = 0; page < maxPages; page++) {
+            let feats = null;
+            for (let attempt = 0; attempt <= maxRetriesPerPage; attempt++) {
+                try {
+                    const params = {
+                        Service: 'WFS', Request: 'GetFeature', Version: '2.0.0',
+                        typeName, outputFormat: 'application/json',
+                        bbox: extent.join(',') + ',' + projection.getCode(),
+                        apiKey: VWORLD_KEY, maxFeatures, startIndex: page * maxFeatures,
+                    };
+                    const url = 'https://api.vworld.kr/req/wfs?' + new URLSearchParams(params).toString();
+                    const data = await scheduleBoundaryFetch(() => vworldFetchJson(url));
+                    feats = new ol.format.GeoJSON().readFeatures(data, { featureProjection: projection });
+                    break;
+                } catch (e) {
+                    if (attempt < maxRetriesPerPage) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+                }
+            }
+            if (feats === null) break;
+            collected.push(...feats);
+            if (feats.length < maxFeatures) break;
+        }
+        return collected;
+    }
+
+    const source = new ol.source.Vector({
+        // 6개 타입을 병렬로 요청(각각은 scheduleBoundaryFetch가 전역 동시요청
+        // 제한을 걸어주므로 병렬로 보내도 폭주로 이어지지 않는다).
+        loader: async function (extent, resolution, projection, success) {
+            const results = await Promise.all(ZONING_LAYERS.map((t) => fetchTypeName(t, extent, projection)));
+            source.addFeatures(results.flat());
+            if (success) success();
+        },
+        strategy: ol.loadingstrategy.tile(tileGrid),
+    });
+
+    return new ol.layer.Vector({
+        source,
+        visible: false,
+        minZoom: 11, // 용도지역 폴리곤은 넓은 지역을 덮어서, 너무 축소된 상태에선 안 그림(전국 단위 과다 로드 방지)
+        style: (feature) => {
+            const name = (feature.get('uname') || '').trim();
+            const color = zoningColor(name);
+            return new ol.style.Style({
+                stroke: new ol.style.Stroke({ color, width: 1 }),
+                fill: new ol.style.Fill({ color: color + '66' }), // 약 40% 투명도
+            });
+        },
+        zIndex: 80, // 경계/도로망(zIndex 90) 아래에 깔려서 선/라벨이 위에 보이게
+    });
+}
+
+// 건물 클릭 팝업용 레이어. 처음엔 BUILDING_LAYERS(lt_c_spbd, "분석보기"가 쓰는
+// 것과 같은 데이터)를 그대로 썼는데, 그건 층수 말고는 쓸만한 속성이 없어서
+// lt_c_bldginfo(건축물정보 — 면적/높이/용도/건폐율/용적률/사용승인일자 등 훨씬
+// 풍부함)로 교체했다. 대신 lt_c_bldginfo엔 주소(rd_nm/buld_no) 필드가 없어서
+// 팝업 제목은 건물명/동명칭 기준으로 바뀐다(showBuildingPopup 참고). "분석보기"
+// 쪽 BUILDING_LAYERS(lt_c_spbd)는 이 변경과 무관하게 그대로 둔다 — 별개 기능.
+//
+// 지도 위에 건물 외곽을 항상 표시하는 참고용 레이어. 타입이 하나뿐이라
+// makeZoningLayer처럼 여러 개를 합칠 필요는 없지만, 건물은 폴리곤을 채워 그려야
+// 해서(makeBoundaryLayer는 선만 그림, 채우기 없음) 별도 함수로 뺐다. 건물은
+// 도심에서 극도로 촘촘하므로(도로보다 훨씬 밀도가 높음) minZoom을 높게(16, 건물이
+// 개별로 구분되는 정도의 확대) 잡고 타일도 256px로 잘게 쪼갠다.
+const BUILDING_INFO_LAYER = 'lt_c_bldginfo';
+
+// 건축법 시행령 [별표 1] 용도별 건축물의 종류(제3조의5 관련) — 법적으로 고정된
+// 분류라 VWorld 버전이 바뀌어도 잘 안 바뀐다. lt_c_bldginfo의 usability 필드
+// 앞 2자리가 이 번호와 대응한다(예: "01000" → 01 → 단독주택). 23의2(국방·군사시설)는
+// 문자가 섞여 코드화하기 애매해서 실제 데이터에서 본 적 없어 생략.
+const BUILDING_USABILITY_MAP = {
+    '01': '단독주택', '02': '공동주택', '03': '제1종 근린생활시설', '04': '제2종 근린생활시설',
+    '05': '문화 및 집회시설', '06': '종교시설', '07': '판매시설', '08': '운수시설',
+    '09': '의료시설', '10': '교육연구시설', '11': '노유자시설', '12': '수련시설',
+    '13': '운동시설', '14': '업무시설', '15': '숙박시설', '16': '위락시설',
+    '17': '공장', '18': '창고시설', '19': '위험물 저장 및 처리 시설', '20': '자동차 관련 시설',
+    '21': '동물 및 식물 관련 시설', '22': '자원순환 관련 시설', '23': '교정시설',
+    '24': '방송통신시설', '25': '발전시설', '26': '묘지 관련 시설', '27': '관광 휴게시설',
+    '28': '장례시설', '29': '야영장 시설',
+};
+function buildingUsabilityLabel(code) {
+    if (!code) return null;
+    const key = String(code).slice(0, 2);
+    return BUILDING_USABILITY_MAP[key] || null;
+}
+
+function makeBuildingLayer() {
+    const typeName = BUILDING_INFO_LAYER;
+    const tileGrid = ol.tilegrid.createXYZ({ tileSize: 256 });
+    const source = new ol.source.Vector({
+        loader: async function (extent, resolution, projection, success) {
+            const maxFeatures = 1000;
+            const maxPages = 2;
+            const maxRetriesPerPage = 2;
+            const allFeatures = [];
+            for (let page = 0; page < maxPages; page++) {
+                let feats = null;
+                for (let attempt = 0; attempt <= maxRetriesPerPage; attempt++) {
+                    try {
+                        const params = {
+                            Service: 'WFS', Request: 'GetFeature', Version: '2.0.0',
+                            typeName, outputFormat: 'application/json',
+                            bbox: extent.join(',') + ',' + projection.getCode(),
+                            apiKey: VWORLD_KEY, maxFeatures, startIndex: page * maxFeatures,
+                        };
+                        const url = 'https://api.vworld.kr/req/wfs?' + new URLSearchParams(params).toString();
+                        const data = await scheduleBoundaryFetch(() => vworldFetchJson(url));
+                        feats = new ol.format.GeoJSON().readFeatures(data, { featureProjection: projection });
+                        break;
+                    } catch (e) {
+                        if (attempt < maxRetriesPerPage) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+                    }
+                }
+                if (feats === null) break;
+                allFeatures.push(...feats);
+                if (feats.length < maxFeatures) break;
+            }
+            source.addFeatures(allFeatures);
+            if (success) success(allFeatures);
+        },
+        strategy: ol.loadingstrategy.tile(tileGrid),
+    });
+    return new ol.layer.Vector({
+        source,
+        visible: false,
+        minZoom: 16,
+        style: new ol.style.Style({
+            stroke: new ol.style.Stroke({ color: '#5a5a5a', width: 1 }),
+            fill: new ol.style.Fill({ color: 'rgba(120,120,120,0.45)' }),
+        }),
+        zIndex: 85, // 용도지역(80) 위, 경계/도로망(90) 아래
+    });
 }
 
 async function runZoningAnalysis() {
@@ -2105,6 +2497,9 @@ function initLayerPanel() {
         cctvLayer.setVisible(e.target.checked);
         if (e.target.checked) refreshCctvMarkers();
     });
+    document.getElementById('layer-zoning').addEventListener('change', (e) => { zoningAreaLayer.setVisible(e.target.checked); });
+    document.getElementById('layer-building').addEventListener('change', (e) => { buildingLayer.setVisible(e.target.checked); });
+    document.getElementById('layer-roadcenterline').addEventListener('change', (e) => { roadCenterlineLayer.setVisible(e.target.checked); });
     document.getElementById('layer-sigg').addEventListener('change', (e) => { siggLayer.setVisible(e.target.checked); });
     document.getElementById('layer-emd').addEventListener('change', (e) => { emdLayer.setVisible(e.target.checked); });
     document.getElementById('layer-ri').addEventListener('change', (e) => { riLayer.setVisible(e.target.checked); });
@@ -2651,6 +3046,9 @@ function initAdminMode() {
 
     document.getElementById('audit-log-refresh-btn').addEventListener('click', () => loadAuditLog(1));
     document.getElementById('audit-log-action-filter').addEventListener('change', () => loadAuditLog(1));
+    document.getElementById('audit-log-from').addEventListener('change', () => loadAuditLog(1));
+    document.getElementById('audit-log-to').addEventListener('change', () => loadAuditLog(1));
+    document.getElementById('audit-log-export-btn').addEventListener('click', downloadAuditLog);
     initAccountsTab();
 }
 
@@ -2675,33 +3073,11 @@ function initAccountsTab() {
 }
 
 function initAccountSigunguSearch() {
-    const input = document.getElementById('acc-sigungu-search');
-    const suggestEl = document.getElementById('acc-sigungu-suggest');
-    let debounceTimer = null;
-
-    input.addEventListener('input', () => {
-        selectedAccountSigungu = null; // 다시 타이핑하기 시작하면 이전 선택은 무효화
-        const q = input.value.trim();
-        clearTimeout(debounceTimer);
-        if (!q) { suggestEl.hidden = true; suggestEl.innerHTML = ''; return; }
-        debounceTimer = setTimeout(async () => {
-            const { items } = await fetch('/api/auth/sigungu-search?q=' + encodeURIComponent(q)).then((r) => r.json());
-            suggestEl.innerHTML = items.length
-                ? items.map((it) => `<div class="acc-sigungu-opt" data-code="${escapeHtml(it.code5)}" data-sgg="${escapeHtml(it.sgg)}" data-full="${escapeHtml(it.full)}">${escapeHtml(it.full)}</div>`).join('')
-                : '<div class="acc-sigungu-empty">일치하는 시군구가 없습니다.</div>';
-            suggestEl.hidden = false;
-        }, 200);
-    });
-    suggestEl.addEventListener('click', (e) => {
-        const opt = e.target.closest('.acc-sigungu-opt');
-        if (!opt) return;
-        selectedAccountSigungu = { code5: opt.dataset.code, sgg: opt.dataset.sgg, full: opt.dataset.full };
-        input.value = opt.dataset.sgg;
-        suggestEl.hidden = true;
-    });
-    document.addEventListener('click', (e) => {
-        if (e.target !== input && !suggestEl.contains(e.target)) suggestEl.hidden = true;
-    });
+    attachSigunguAutocomplete(
+        document.getElementById('acc-sigungu-search'),
+        document.getElementById('acc-sigungu-suggest'),
+        (picked) => { selectedAccountSigungu = picked; }
+    );
 }
 
 async function loadAccountsList() {
@@ -2728,17 +3104,49 @@ function buildAccountRow(acc) {
     const isAdmin = acc.role === 'admin';
     const sigungu = acc.sigungu_name || (acc.sigungu_code ? acc.sigungu_code : '전체');
     const created = acc.created_at ? new Date(acc.created_at).toLocaleDateString('ko-KR') : '';
+    const isPending = acc.status === 'pending';
     // audit-log-row(변경이력 탭)와 같은 그리드: 배지 + 본문 한 줄, 그 아래
     // 흐린 메타 정보 한 줄 — 관리자용 탭들끼리 같은 디자인 언어를 쓰기 위함.
     row.innerHTML = `
         <div class="acr-top">
             <span class="acc-role${isAdmin ? ' acc-role-admin' : ''}">${isAdmin ? '관리자' : '일반'}</span>
+            ${isPending ? '<span class="acc-role acc-role-pending">승인대기</span>' : ''}
             <span class="acc-username">${escapeHtml(acc.username)}</span>
             <span class="acc-display-name">${escapeHtml(acc.display_name || '')}</span>
-            <button class="acc-del-btn" title="계정 삭제"><i class="fa-solid fa-trash"></i></button>
+            ${isPending ? '<button class="acc-approve-btn" title="가입 승인"><i class="fa-solid fa-check"></i> 승인</button>' : ''}
+            ${acc.id !== currentUser.id ? '<button class="acc-reset-btn" title="비밀번호 재설정(임시 비밀번호 지정)"><i class="fa-solid fa-key"></i></button>' : ''}
+            <button class="acc-del-btn" title="${isPending ? '가입 신청 거절(삭제)' : '계정 삭제'}"><i class="fa-solid fa-trash"></i></button>
         </div>
-        <div class="acr-meta">관할: ${escapeHtml(sigungu)}${created ? ` · ${escapeHtml(created)} 생성` : ''}</div>
+        <div class="acr-meta">관할: ${escapeHtml(sigungu)}${created ? ` · ${escapeHtml(created)} ${isPending ? '신청' : '생성'}` : ''}</div>
     `;
+    const resetBtn = row.querySelector('.acc-reset-btn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', async () => {
+            const tmp = prompt(`"${acc.username}"의 임시 비밀번호를 입력하세요(8자 이상).\n그 계정은 이 비밀번호로 로그인한 뒤 새 비밀번호로 바꿔야 하고, 지금 로그인돼 있는 세션은 모두 끊깁니다.`);
+            if (tmp === null) return;
+            const res = await fetch(`/api/auth/accounts/${acc.id}/reset-password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ newPassword: tmp }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) { alert(data.error || '비밀번호 재설정에 실패했습니다.'); return; }
+            alert(`재설정되었습니다. 임시 비밀번호를 "${acc.username}" 사용자에게 안전하게 전달하세요.`);
+        });
+    }
+    const approveBtn = row.querySelector('.acc-approve-btn');
+    if (approveBtn) {
+        approveBtn.addEventListener('click', async () => {
+            if (!confirm(`"${acc.username}" 계정의 가입을 승인하시겠습니까?\n승인하면 관할(${sigungu})의 데이터를 조회할 수 있게 됩니다.`)) return;
+            const res = await fetch(`/api/auth/accounts/${acc.id}/approve`, { method: 'POST' });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                alert(data.error || '승인에 실패했습니다.');
+                return;
+            }
+            loadAccountsList();
+        });
+    }
     row.querySelector('.acc-del-btn').addEventListener('click', async () => {
         if (!confirm(`계정 "${acc.username}"을(를) 삭제하시겠습니까?`)) return;
         const res = await fetch(`/api/auth/accounts/${acc.id}`, { method: 'DELETE' });
@@ -2772,11 +3180,10 @@ async function createAccount() {
     }
     statusEl.textContent = '저장 중...';
     const sigunguCode = selectedAccountSigungu ? selectedAccountSigungu.code5 : '';
-    const sigunguName = selectedAccountSigungu ? selectedAccountSigungu.sgg : '';
     const res = await fetch('/api/auth/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, displayName, role, sigunguCode, sigunguName }),
+        body: JSON.stringify({ username, password, displayName, role, sigunguCode }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -2793,16 +3200,65 @@ async function createAccount() {
     loadAccountsList();
 }
 
-const AUDIT_ACTION_LABELS = { create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록' };
+const AUDIT_ACTION_LABELS = {
+    create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록',
+    login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
+    signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
+    password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
+    log_export: '이력 다운로드',
+};
+
+// 화면 목록과 다운로드가 같은 조건(작업 종류 + 기간)을 쓴다.
+function auditLogFilterParams() {
+    const params = new URLSearchParams();
+    const action = document.getElementById('audit-log-action-filter').value;
+    const from = document.getElementById('audit-log-from').value;
+    const to = document.getElementById('audit-log-to').value;
+    if (action) params.set('action', action);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    return params;
+}
+
+// 지금 조건의 이력을 CSV(텍스트) 파일로 저장 — 서버가 내려받은 사실도 이력에 남긴다.
+async function downloadAuditLog() {
+    const btn = document.getElementById('audit-log-export-btn');
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-hourglass-half"></i> 생성 중';
+    try {
+        const res = await fetch('/api/audit-log/export?' + auditLogFilterParams().toString());
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(data.error || '이력 다운로드에 실패했습니다.');
+            return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
+        a.download = m ? decodeURIComponent(m[1]) : '변경접속이력.csv';
+        a.click();
+        URL.revokeObjectURL(url);
+        loadAuditLog(1); // 방금 남은 "이력 다운로드" 기록까지 목록에 반영
+    } catch (e) {
+        alert('이력 다운로드 중 오류가 발생했습니다.');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
+}
 
 async function loadAuditLog(page) {
     const listEl = document.getElementById('audit-log-list');
-    const action = document.getElementById('audit-log-action-filter').value;
     listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오는 중...</div>';
     let data;
     try {
-        const params = new URLSearchParams({ page: String(page), size: '30' });
-        if (action) params.set('action', action);
+        const params = auditLogFilterParams();
+        params.set('page', String(page));
+        params.set('size', '30');
         data = await fetch('/api/audit-log?' + params.toString()).then((r) => r.json());
     } catch (e) {
         listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오기 실패</div>';
@@ -2828,7 +3284,7 @@ function renderAuditLogRow(item) {
             <span class="alr-badge action-${escapeHtml(item.action)}">${escapeHtml(AUDIT_ACTION_LABELS[item.action] || item.action)}</span>
             <span class="alr-summary">${escapeHtml(item.summary)}</span>
         </div>
-        <div class="alr-meta">${escapeHtml(time)} · ${escapeHtml(item.username || '알 수 없음')}${item.sigungu_code ? ' · ' + escapeHtml(item.sigungu_code) : ''}</div>
+        <div class="alr-meta">${escapeHtml(time)} · ${escapeHtml(item.username || '알 수 없음')}${item.sigungu_code ? ' · ' + escapeHtml(item.sigungu_code) : ''}${item.ip ? ' · IP ' + escapeHtml(item.ip) : ''}</div>
     `;
     return row;
 }
@@ -3416,36 +3872,152 @@ function initLedgerTreeToolbar() {
     });
     document.getElementById('tree-refresh-btn').addEventListener('click', () => loadLedgerTree());
     document.getElementById('tree-export-btn').addEventListener('click', downloadSectionExport);
-    document.getElementById('ledger-report-btn').addEventListener('click', downloadLedgerReport);
+    document.getElementById('ledger-report-preview-btn').addEventListener('click', openLedgerReportPreview);
     document.getElementById('fit-all-routes-btn').addEventListener('click', fitAllRegisteredRoutes);
 }
 
-// 도로대장 조서(엑셀) 다운로드 — downloadSectionExport(전체자료 SHP/DBF)와 같은
-// 3단계 범위(구간/호선/관할 전체, downloadScopeParams·cad-viewer.js 참고)를 쓴다.
-async function downloadLedgerReport() {
-    const btn = document.getElementById('ledger-report-btn');
+// 조서 새창 미리보기 — 다운로드(zip, 여러 구간 가능)와 달리 구간을 정확히
+// 하나 선택했을 때만 된다(currentRoute.rdid가 있는 경우 — cad-viewer.js의
+// downloadScopeParams와 같은 판단 기준). 서버가 돌려준 xlsx 원본을 SheetJS로
+// 브라우저에서 직접 해석해 표(HTML)로 그려서 새 창에 띄운다 — 다운로드 없이
+// "열어서 바로 보기"가 목적이라 파일로 저장되지 않는다.
+async function openLedgerReportPreview() {
+    if (!currentRoute || !currentRoute.rdid) {
+        alert('조서 미리보기는 구간을 하나 선택했을 때만 가능합니다.');
+        return;
+    }
+    // window.open()은 반드시 클릭 핸들러 안에서 await 없이(동기적으로) 바로
+    // 불러야 브라우저 팝업 차단에 안 걸린다 — fetch를 먼저 기다린 뒤에 열면
+    // "사용자 제스처"로 인정 안 돼 실제 사용자 클릭에서도 차단당할 수 있다
+    // (직접 테스트로 확인함). 그래서 창부터 빈 채로 열어 로딩 문구를 띄워두고,
+    // 데이터가 준비되면 그 창에 내용을 채워 넣는 순서로 바꿨다.
+    const win = window.open('', '_blank');
+    if (!win) {
+        alert('팝업이 차단되었습니다 — 브라우저의 팝업 차단을 해제해주세요.');
+        return;
+    }
+    win.document.write('<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>조서 불러오는 중...</title></head><body style="font-family:\'Malgun Gothic\',sans-serif;padding:40px;color:#555;">불러오는 중...</body></html>');
+    win.document.close();
+
+    const btn = document.getElementById('ledger-report-preview-btn');
     document.body.classList.add('app-busy');
     const originalHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>';
     try {
-        const params = new URLSearchParams(downloadScopeParams());
-        const qs = params.toString();
-        const res = await fetch('/api/sections/ledger-report' + (qs ? '?' + qs : ''));
+        const res = await fetch('/api/sections/ledger-report-preview?rdid=' + encodeURIComponent(currentRoute.rdid));
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            win.close();
+            alert(data.error || '조서 생성에 실패했습니다.');
+            return;
+        }
+        const buf = await res.arrayBuffer();
+        const workbook = XLSX.read(buf, { type: 'array' });
+        const sheetNames = workbook.SheetNames;
+        const tabsHtml = sheetNames.map((name, i) =>
+            `<button class="lrp-tab${i === 0 ? ' active' : ''}" data-idx="${i}">${escapeHtml(name)}</button>`
+        ).join('');
+        const panelsHtml = sheetNames.map((name, i) =>
+            `<div class="lrp-panel" data-idx="${i}" style="${i === 0 ? '' : 'display:none;'}">${XLSX.utils.sheet_to_html(workbook.Sheets[name], { editable: false })}</div>`
+        ).join('');
+        const title = `도로대장 조서 - ${currentRoute.route_name || currentRoute.rdid}`;
+        // "선택 구간" 다운로드는 이미 미리보기용으로 받아둔 xlsx(buf)를 그대로
+        // 쓴다(재요청 안 함) — Blob URL로 만들어 팝업 창에 넘기면 된다. opener
+        // 탭(지금 이 탭)이 열려있는 동안은 팝업에서도 그대로 유효하다.
+        const singleBlobUrl = URL.createObjectURL(new Blob([buf], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        }));
+        const singleFileName = `${(currentRoute.route_name || currentRoute.rdid).replace(/[/\\:*?"<>|]/g, '_')}_도로대장_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        // "호선 다운로드"용 쿼리 — downloadScopeParams(cad-viewer.js)의 2번째
+        // 분기(road_grade+route_no)와 같은 규칙. 트리에서 구간을 선택해도
+        // currentRoute에 route_no/road_rank_name이 같이 들어있어(script.js의
+        // sectionInfo 병합 참고) 여기서 그대로 쓸 수 있다.
+        const routeQs = new URLSearchParams({
+            road_grade: currentRoute.road_rank_name || currentRoute.road_grade || '',
+            route_no: currentRoute.route_no || '',
+            route_name: currentRoute.route_name || '',
+        }).toString();
+        win.document.open();
+        win.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+<style>
+  body { margin: 0; font-family: 'Malgun Gothic', sans-serif; background: #e8e8e8; }
+  #lrp-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: #2c2c2c; padding: 8px 8px 0; position: sticky; top: 0; z-index: 10; }
+  #lrp-toolbar-buttons { display: flex; gap: 6px; margin: 0 4px 8px auto; }
+  #lrp-toolbar-buttons button { border: none; border-radius: 4px; padding: 7px 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
+  #lrp-download-selected { background: #2e6fae; color: #fff; }
+  #lrp-download-route { background: #5a7a4a; color: #fff; }
+  #lrp-download-all { background: #4a4a4a; color: #ddd; }
+  #lrp-toolbar-buttons button:disabled { opacity: 0.6; cursor: default; }
+  #lrp-tabs { display: flex; flex-wrap: wrap; gap: 2px; }
+  .lrp-tab { border: none; background: #4a4a4a; color: #ccc; padding: 8px 14px; font-size: 0.82rem; cursor: pointer; border-radius: 4px 4px 0 0; }
+  .lrp-tab.active { background: #e8e8e8; color: #111; font-weight: 700; }
+  .lrp-panel { padding: 16px; overflow-x: auto; }
+  table { border-collapse: collapse; background: #fff; }
+  td, th { border: 1px solid #999; padding: 4px 8px; font-size: 0.82rem; white-space: nowrap; }
+</style></head><body>
+<div id="lrp-toolbar">
+  <div id="lrp-tabs">${tabsHtml}</div>
+  <div id="lrp-toolbar-buttons">
+    <button id="lrp-download-selected" title="지금 보고 있는 이 구간만 xlsx로 저장"><i class="fa-solid fa-file-excel"></i> 선택 구간 다운로드</button>
+    <button id="lrp-download-route" title="이 구간이 속한 호선(${escapeHtml(currentRoute.route_name || '')}) 전체를 zip으로 저장"><i class="fa-solid fa-road"></i> 호선 다운로드</button>
+    <button id="lrp-download-all" title="관할 전체 구간을 국토부 표준서식 zip으로 저장"><i class="fa-solid fa-file-zipper"></i> 전체 자료 다운로드</button>
+  </div>
+</div>
+${panelsHtml}
+<script>
+document.getElementById('lrp-tabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('.lrp-tab');
+    if (!btn) return;
+    document.querySelectorAll('.lrp-tab').forEach((t) => t.classList.toggle('active', t === btn));
+    document.querySelectorAll('.lrp-panel').forEach((p) => { p.style.display = p.dataset.idx === btn.dataset.idx ? '' : 'none'; });
+});
+document.getElementById('lrp-download-selected').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = ${JSON.stringify(singleBlobUrl)};
+    a.download = ${JSON.stringify(singleFileName)};
+    a.click();
+});
+async function lrpDownloadZip(btnId, url, originalLabel, busyLabel, errorLabel) {
+    const btn = document.getElementById(btnId);
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-hourglass-half"></i> ' + busyLabel;
+    try {
+        const res = await fetch(url);
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             alert(data.error || '조서 생성에 실패했습니다.');
             return;
         }
         const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
+        const blobUrl = URL.createObjectURL(blob);
         const cd = res.headers.get('Content-Disposition') || '';
-        const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
+        const m = /filename\\*=UTF-8''([^;]+)/.exec(cd);
+        const a = document.createElement('a');
+        a.href = blobUrl;
         a.download = m ? decodeURIComponent(m[1]) : '도로대장_조서.zip';
         a.click();
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+        alert(errorLabel);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+}
+document.getElementById('lrp-download-route').addEventListener('click', () => {
+    lrpDownloadZip('lrp-download-route', '/api/sections/ledger-report?' + ${JSON.stringify(routeQs)}, '호선 다운로드', '생성 중...', '호선 다운로드 중 오류가 발생했습니다.');
+});
+document.getElementById('lrp-download-all').addEventListener('click', () => {
+    lrpDownloadZip('lrp-download-all', '/api/sections/ledger-report', '전체 자료 다운로드', '생성 중...', '전체 자료 다운로드 중 오류가 발생했습니다.');
+});
+<\/script>
+</body></html>`);
+        win.document.close();
+    } catch (e) {
+        console.error('[ledger-report-preview]', e);
+        alert('조서 미리보기 중 오류가 발생했습니다.');
     } finally {
         document.body.classList.remove('app-busy');
         btn.disabled = false;

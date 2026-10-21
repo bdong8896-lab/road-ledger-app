@@ -13,6 +13,18 @@ CREATE TABLE IF NOT EXISTS accounts (
     sigungu_name  VARCHAR(50),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 로그인 화면의 회원가입(신청)으로 만들어진 계정은 'pending'(관리자 승인 전,
+-- 로그인 불가)으로 시작하고, 관리자가 계정관리에서 승인하면 'active'가 된다.
+-- 기존 계정/관리자가 직접 만든 계정은 전부 'active'(DEFAULT).
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS status VARCHAR(10) NOT NULL DEFAULT 'active';
+DO $$ BEGIN
+    ALTER TABLE accounts ADD CONSTRAINT accounts_status_check CHECK (status IN ('active', 'pending'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- 관리자가 비밀번호를 재설정해준 계정은 임시 비밀번호로 로그인한 직후 본인이 새
+-- 비밀번호로 바꾸기 전까지 다른 기능을 못 쓴다(true). 본인이 바꾸면 false.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
 
 -- ============================================================
 -- 도로(노선/구간) 단위 도로대장 — 국토부 표준의 "01.도로대장총괄" 개념을
@@ -251,5 +263,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
     username      VARCHAR(50),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 접속·계정 이력(로그인 성공/실패/잠금, 로그아웃, 회원가입 신청·승인, 계정
+-- 생성·삭제)도 같은 테이블에 남긴다 — action 값이 늘었을 뿐 구조는 같고,
+-- 접속 IP만 새 컬럼으로 추가했다(데이터 변경 이력 행은 NULL).
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ip VARCHAR(45);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_table, target_id);

@@ -8,9 +8,10 @@ const pool = require('../db');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
 const SIGN_NAME_CODES = require('../lib/signNameCodes');
+const { sendInlineSafely } = require('../lib/safeInline');
 const { buildExportZip, buildExportZipMulti } = require('../lib/sectionExport');
 const { getTableLabels } = require('../lib/schemaLabels');
-const { buildOfficialLedgerZip } = require('../lib/officialLedgerZip');
+const { buildOfficialLedgerZip, buildSectionWorkbook } = require('../lib/officialLedgerZip');
 const { logAction } = require('../lib/auditLog');
 const { decodeCode } = require('../lib/govCodebook');
 
@@ -410,9 +411,7 @@ router.get('/facility-files/:id', async (req, res) => {
         return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
     }
     if (req.query.inline === '1') {
-        const encodedName = encodeURIComponent(file.original_name);
-        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedName}`);
-        res.sendFile(path.resolve(file.stored_path));
+        sendInlineSafely(res, file.stored_path, file.original_name);
     } else {
         res.download(file.stored_path, file.original_name);
     }
@@ -571,7 +570,28 @@ router.get('/ledger-report', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
         res.send(zipBuffer);
     } catch (e) {
-        res.status(500).json({ error: `조서 생성 중 오류가 발생했습니다: ${e.message}` });
+        console.error('[sections/ledger-report]', e);
+        res.status(500).json({ error: '조서 생성 중 오류가 발생했습니다.' });
+    }
+});
+
+// 조서 새창 미리보기 — 다운로드(zip, 구간 여러 개 가능)와 달리 구간 정확히
+// 하나만 받는다(여러 구간이면 파일이 여러 개라 "새창 하나에 바로 보여주기"가
+// 안 됨 — 그런 경우는 기존 zip 다운로드를 쓰게 한다). xlsx 원본 그대로
+// 돌려주고, 실제 표 렌더링(SheetJS)은 프론트(openLedgerReportPreview)가 한다.
+router.get('/ledger-report-preview', async (req, res) => {
+    try {
+        const rdid = (req.query.rdid || '').trim();
+        if (!rdid) return res.status(400).json({ error: '미리보기는 구간을 하나 선택해야 합니다.' });
+        const sections = await resolveScopedSections(req.session.user.sigunguCode, { rdid });
+        if (!sections.length) return res.status(404).json({ error: '조서를 만들 구간을 찾을 수 없습니다.' });
+        const workbook = await buildSectionWorkbook(sections[0]);
+        const buffer = await workbook.xlsx.writeBuffer();
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.send(Buffer.from(buffer));
+    } catch (e) {
+        console.error('[sections/ledger-report-preview]', e);
+        res.status(500).json({ error: '조서 생성 중 오류가 발생했습니다.' });
     }
 });
 
@@ -593,7 +613,8 @@ router.get('/export', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
         res.send(result.zipBuffer);
     } catch (e) {
-        res.status(500).json({ error: `내보내기 중 오류가 발생했습니다: ${e.message}` });
+        console.error('[sections/export]', e);
+        res.status(500).json({ error: '내보내기 중 오류가 발생했습니다.' });
     }
 });
 
@@ -779,7 +800,8 @@ router.delete('/:rdid', requireAdmin, async (req, res) => {
         await client.query('COMMIT');
     } catch (e) {
         await client.query('ROLLBACK');
-        return res.status(500).json({ error: `삭제 중 오류가 발생했습니다: ${e.message}` });
+        console.error('[sections/delete]', e);
+        return res.status(500).json({ error: '삭제 중 오류가 발생했습니다.' });
     } finally {
         client.release();
     }

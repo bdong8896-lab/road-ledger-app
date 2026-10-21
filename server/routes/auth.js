@@ -4,6 +4,7 @@ const pool = require('../db');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const SIGUNGU_CODES = require('../lib/sigunguCodes.json');
 const SIGUNGU_EXTENTS = require('../lib/sigunguExtents.json');
+const { logAction, clientIp } = require('../lib/auditLog');
 
 // 로그인 계정의 관할 시군구 코드로 지도 기본 확대범위(EPSG:3857)를 찾는다 —
 // 예전엔 프론트엔드(script.js)에 시군구 3~4개만 하드코딩해뒀었는데, 새
@@ -19,32 +20,128 @@ function findSigunguExtent(sigunguCode) {
 
 const router = express.Router();
 
+// ---- 로그인 실패 잠금 ----
+// 같은 아이디로 연속 MAX_LOGIN_FAILS번 틀리면 LOCK_MINUTES분 동안 그 아이디의 로그인을
+// 막는다(무차별 대입 방지). 실제로 있는 아이디인지와 무관하게 입력된 아이디 문자열
+// 기준으로 세므로 "잠겼다/안 잠겼다"로 아이디 존재 여부를 알아낼 수도 없다.
+// 메모리에만 두므로 서버를 재시작하면 초기화된다(영구 차단이 필요하면 DB로 옮길 것).
+// 트레이드오프: 남이 일부러 관리자 아이디를 계속 틀려 잠글 수도 있지만 LOCK_MINUTES
+// 뒤에 풀리고 login_fail 이력에 IP가 남는다 — 무한 잠금보다 안전하다고 판단.
+const MAX_LOGIN_FAILS = 5;
+const LOCK_MINUTES = 10;
+const FAIL_WINDOW_MS = 15 * 60 * 1000; // 마지막 실패 후 이 시간이 지나면 횟수 초기화
+const MAX_TRACKED_USERNAMES = 5000;    // 존재하지 않는 아이디를 무한히 보내 메모리를 채우는 것 방지
+const loginFailures = new Map();       // key(소문자 아이디) -> { count, lockedUntil, lastAt }
+const DUMMY_HASH = bcrypt.hashSync('dummy-password-for-timing', 10);
+
+function failureKey(username) {
+    return String(username).trim().toLowerCase().slice(0, 50);
+}
+function lockRemainingMinutes(key) {
+    const rec = loginFailures.get(key);
+    if (!rec || !rec.lockedUntil) return 0;
+    const remainMs = rec.lockedUntil - Date.now();
+    if (remainMs <= 0) { loginFailures.delete(key); return 0; }
+    return Math.ceil(remainMs / 60000);
+}
+// 실패를 기록하고, 이번 실패로 잠겼으면 true.
+function recordLoginFailure(key) {
+    const now = Date.now();
+    let rec = loginFailures.get(key);
+    if (!rec || now - rec.lastAt > FAIL_WINDOW_MS) rec = { count: 0, lockedUntil: 0, lastAt: now };
+    rec.count += 1;
+    rec.lastAt = now;
+    let justLocked = false;
+    if (rec.count >= MAX_LOGIN_FAILS) {
+        rec.lockedUntil = now + LOCK_MINUTES * 60 * 1000;
+        rec.count = 0;
+        justLocked = true;
+    }
+    if (!loginFailures.has(key) && loginFailures.size >= MAX_TRACKED_USERNAMES) {
+        loginFailures.delete(loginFailures.keys().next().value); // 가장 오래된 항목부터 버림
+    }
+    loginFailures.set(key, rec);
+    return justLocked;
+}
+
 router.post('/login', async (req, res) => {
     const { username, password } = req.body || {};
-    if (!username || !password) {
+    if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
         return res.status(400).json({ error: '아이디와 비밀번호를 입력하세요.' });
     }
+    const ip = clientIp(req);
+    const attempted = { id: null, username };
+    const key = failureKey(username);
 
-    const { rows } = await pool.query('SELECT * FROM accounts WHERE username = $1', [username]);
-    const account = rows[0];
-    if (!account) {
-        return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+    // 로그인 전 공개 엔드포인트라 DB 오류 등이 프로세스 밖으로 새면 안 된다.
+    try {
+        const remain = lockRemainingMinutes(key);
+        if (remain > 0) {
+            await logAction(null, {
+                action: 'login_fail', targetTable: 'accounts', summary: `로그인 거부(잠금 중, ${remain}분 남음): ${username}`,
+                user: attempted, ip,
+            });
+            return res.status(429).json({ error: `로그인 시도가 너무 많아 잠겼습니다. ${remain}분 후 다시 시도하세요.` });
+        }
+
+        const { rows } = await pool.query('SELECT * FROM accounts WHERE username = $1', [username]);
+        const account = rows[0];
+        // 없는 아이디도 bcrypt 비교를 한 번 돌려서 응답 시간 차이로 아이디 존재 여부를
+        // 짐작하지 못하게 한다.
+        const ok = await bcrypt.compare(password, account ? account.password_hash : DUMMY_HASH);
+        if (!account || !ok) {
+            const locked = recordLoginFailure(key);
+            await logAction(null, {
+                action: 'login_fail', targetTable: 'accounts',
+                summary: `로그인 실패: ${username}${locked ? ` — ${MAX_LOGIN_FAILS}회 연속 실패로 ${LOCK_MINUTES}분 잠금` : ''}`,
+                user: account ? { id: account.id, username: account.username } : attempted,
+                sigunguCode: account ? account.sigungu_code : null, ip,
+            });
+            if (locked) {
+                return res.status(429).json({ error: `로그인에 ${MAX_LOGIN_FAILS}회 연속 실패해 ${LOCK_MINUTES}분 동안 잠겼습니다.` });
+            }
+            return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+        }
+        // 비밀번호까지 맞은 경우에만 승인 대기 상태를 알려준다(아이디 존재 여부를
+        // 비밀번호 없이 확인하는 통로가 되지 않게).
+        if (account.status === 'pending') {
+            await logAction(null, {
+                action: 'login_fail', targetTable: 'accounts', targetId: String(account.id),
+                summary: `로그인 거부(승인 대기 계정): ${account.username}`,
+                user: { id: account.id, username: account.username }, sigunguCode: account.sigungu_code, ip,
+            });
+            return res.status(403).json({ error: '관리자 승인 대기 중인 계정입니다. 승인 후 로그인할 수 있습니다.' });
+        }
+
+        loginFailures.delete(key);
+        req.session.user = {
+            id: account.id, username: account.username, displayName: account.display_name, role: account.role,
+            sigunguCode: account.sigungu_code, sigunguName: account.sigungu_name,
+            sigunguExtent: findSigunguExtent(account.sigungu_code),
+            // 관리자가 재설정해준 임시 비밀번호로 들어온 경우 — 새 비밀번호로 바꾸기 전까지
+            // 다른 API가 막힌다(middleware/requireAuth.js).
+            mustChangePassword: !!account.must_change_password,
+        };
+        await logAction(null, {
+            action: 'login', targetTable: 'accounts', targetId: String(account.id),
+            summary: `로그인: ${account.username}`,
+            user: { id: account.id, username: account.username }, sigunguCode: account.sigungu_code, ip,
+        });
+        res.json({ user: req.session.user });
+    } catch (err) {
+        console.error('[auth/login]', err);
+        res.status(500).json({ error: '로그인 처리 중 오류가 발생했습니다.' });
     }
-
-    const ok = await bcrypt.compare(password, account.password_hash);
-    if (!ok) {
-        return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
-    }
-
-    req.session.user = {
-        id: account.id, username: account.username, displayName: account.display_name, role: account.role,
-        sigunguCode: account.sigungu_code, sigunguName: account.sigungu_name,
-        sigunguExtent: findSigunguExtent(account.sigungu_code),
-    };
-    res.json({ user: req.session.user });
 });
 
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
+    const user = req.session && req.session.user;
+    if (user) {
+        await logAction(null, {
+            action: 'logout', targetTable: 'accounts', targetId: String(user.id),
+            summary: `로그아웃: ${user.username}`, user, sigunguCode: user.sigunguCode, ip: clientIp(req),
+        });
+    }
     req.session.destroy(() => {
         res.json({ ok: true });
     });
@@ -57,24 +154,229 @@ router.get('/me', (req, res) => {
     res.json({ user: req.session.user });
 });
 
-// 관리자 전용: 계정 목록(회원가입 화면 대신 관리자가 직접 계정을 만드는
-// "계정관리" 탭에서 씀). password_hash는 응답에 절대 포함하지 않는다.
+// 그 계정의 로그인 세션을 전부 끊는다(계정 삭제·비밀번호 변경/재설정 때) — 안 하면 이미 로그인된
+// 브라우저는 세션이 만료될 때까지(최대 sessionMaxAgeHours) 계속 쓸 수 있다. 세션은
+// connect-pg-simple이 session 테이블에 저장하므로 거기서 그 계정 것을 지우면 된다.
+// exceptSid: 본인이 비밀번호를 바꿀 때 지금 쓰는 세션만 남기기 위함.
+async function destroyUserSessions(userId, exceptSid) {
+    try {
+        await pool.query(
+            `DELETE FROM session WHERE (sess->'user'->>'id') = $1 AND ($2::text IS NULL OR sid <> $2)`,
+            [String(userId), exceptSid || null]
+        );
+    } catch (e) {
+        console.error('[auth/destroyUserSessions]', e.message);
+    }
+}
+
+function validateNewPassword(password, username) {
+    if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH || password.length > 100) {
+        return `비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상으로 입력하세요.`;
+    }
+    if (password === username) return '비밀번호는 아이디와 달라야 합니다.';
+    return null;
+}
+
+// 본인 비밀번호 변경 — 로그인 상태의 누구나. 관리자 재설정으로 임시 비밀번호를 받은
+// 계정도 이걸로 바꾼다(requireAuth는 그 계정을 막으므로 여기선 세션만 직접 확인).
+// 현재 비밀번호 확인이 틀리면 로그인 실패와 같은 카운터로 센다 — 세션을 탈취한 사람이
+// 현재 비밀번호를 무차별 대입하는 걸 막기 위함.
+router.post('/change-password', async (req, res) => {
+    const user = req.session && req.session.user;
+    if (!user) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+        return res.status(400).json({ error: '현재 비밀번호와 새 비밀번호를 입력하세요.' });
+    }
+    const key = failureKey(user.username);
+    const remain = lockRemainingMinutes(key);
+    if (remain > 0) {
+        return res.status(429).json({ error: `시도가 너무 많아 잠겼습니다. ${remain}분 후 다시 시도하세요.` });
+    }
+    const pwError = validateNewPassword(newPassword, user.username);
+    if (pwError) return res.status(400).json({ error: pwError });
+    if (newPassword === currentPassword) {
+        return res.status(400).json({ error: '새 비밀번호는 현재 비밀번호와 달라야 합니다.' });
+    }
+    try {
+        const { rows } = await pool.query('SELECT password_hash FROM accounts WHERE id = $1', [user.id]);
+        if (!rows.length) {
+            return req.session.destroy(() => res.status(401).json({ error: '계정을 찾을 수 없습니다. 다시 로그인하세요.' }));
+        }
+        if (!(await bcrypt.compare(currentPassword, rows[0].password_hash))) {
+            const locked = recordLoginFailure(key);
+            await logAction(null, {
+                action: 'login_fail', targetTable: 'accounts', targetId: String(user.id),
+                summary: `비밀번호 변경 실패(현재 비밀번호 불일치): ${user.username}${locked ? ` — ${LOCK_MINUTES}분 잠금` : ''}`,
+                user, sigunguCode: user.sigunguCode, ip: clientIp(req),
+            });
+            return res.status(400).json({ error: '현재 비밀번호가 올바르지 않습니다.' });
+        }
+        await pool.query(
+            'UPDATE accounts SET password_hash = $1, must_change_password = false WHERE id = $2',
+            [await bcrypt.hash(newPassword, 10), user.id]
+        );
+        await destroyUserSessions(user.id, req.sessionID);
+        req.session.user.mustChangePassword = false;
+        await logAction(null, {
+            action: 'password_change', targetTable: 'accounts', targetId: String(user.id),
+            summary: `비밀번호 변경: ${user.username}`, user, sigunguCode: user.sigunguCode, ip: clientIp(req),
+        });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('[auth/change-password]', err);
+        res.status(500).json({ error: '비밀번호 변경 중 오류가 발생했습니다.' });
+    }
+});
+
+// 관리자 전용: 다른 계정의 비밀번호 재설정(분실 대응). 관리자가 임시 비밀번호를 정해
+// 알려주면 그 계정은 그걸로 로그인한 뒤 새 비밀번호로 바꿔야만 쓸 수 있다
+// (must_change_password). 기존 로그인 세션은 모두 끊고, 로그인 잠금도 풀어준다.
+router.post('/accounts/:id/reset-password', requireAdmin, async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '잘못된 계정 ID입니다.' });
+    if (id === req.session.user.id) {
+        return res.status(400).json({ error: '본인 비밀번호는 "비밀번호 변경"으로 바꾸세요.' });
+    }
+    const { newPassword } = req.body || {};
+    try {
+        const { rows } = await pool.query('SELECT username, sigungu_code FROM accounts WHERE id = $1', [id]);
+        if (!rows.length) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+        const pwError = validateNewPassword(newPassword, rows[0].username);
+        if (pwError) return res.status(400).json({ error: pwError });
+        await pool.query(
+            'UPDATE accounts SET password_hash = $1, must_change_password = true WHERE id = $2',
+            [await bcrypt.hash(newPassword, 10), id]
+        );
+        await destroyUserSessions(id);
+        loginFailures.delete(failureKey(rows[0].username));
+        await logAction(null, {
+            action: 'password_reset', targetTable: 'accounts', targetId: String(id),
+            summary: `비밀번호 재설정: ${rows[0].username} (다음 로그인 시 변경 필수)`,
+            sigunguCode: rows[0].sigungu_code, user: req.session.user, ip: clientIp(req),
+        });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('[auth/reset-password]', err);
+        res.status(500).json({ error: '비밀번호 재설정 중 오류가 발생했습니다.' });
+    }
+});
+
+// 관리자 전용: 계정 목록("계정관리" 탭 — 직접 만든 계정과 회원가입 신청 계정을
+// 한 목록에서 같이 관리, 승인대기가 맨 위). password_hash는 응답에 절대 포함하지 않는다.
 router.get('/accounts', requireAdmin, async (req, res) => {
     const { rows } = await pool.query(
-        `SELECT id, username, display_name, role, sigungu_code, sigungu_name, created_at
-         FROM accounts ORDER BY created_at`
+        `SELECT id, username, display_name, role, status, sigungu_code, sigungu_name, created_at
+         FROM accounts ORDER BY (status = 'pending') DESC, created_at`
     );
     res.json({ accounts: rows });
 });
 
-// 관리자 전용: 시군구명으로 법정동코드 검색(계정관리 "새 계정 추가" 폼에서
-// 시군구코드를 직접 입력하지 않고 이름만 치면 자동으로 찾게 하기 위함).
-// "중구"처럼 여러 시도에 같은 이름이 있을 수 있어(서울/부산/대구/인천/대전/
-// 울산 중구 등 6곳) 이름만으로 하나로 정하지 않고 후보 목록을 돌려준다 —
-// 코드값은 행정안전부 공개 법정동코드 전체자료(2018년 gist, 이후 전남·광주가
-// "전남광주통합특별시"로 통합되면서 바뀐 코드는 사용자가 직접 제공한 원본
-// 파일로 덮어써서 최신화함) 기준.
-router.get('/sigungu-search', requireAdmin, (req, res) => {
+// 관리자 전용: 회원가입 신청(pending) 계정 승인
+router.post('/accounts/:id/approve', requireAdmin, async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '잘못된 계정 ID입니다.' });
+    const { rows } = await pool.query(
+        `UPDATE accounts SET status = 'active' WHERE id = $1 AND status = 'pending'
+         RETURNING id, username, sigungu_code`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: '승인 대기 중인 계정을 찾을 수 없습니다.' });
+    await logAction(null, {
+        action: 'approve', targetTable: 'accounts', targetId: String(id),
+        summary: `가입 승인: ${rows[0].username}`, sigunguCode: rows[0].sigungu_code,
+        user: req.session.user, ip: clientIp(req),
+    });
+    res.json({ ok: true });
+});
+
+// ---- 계정 생성 공통 규칙 ----
+// 관리자가 계정관리에서 만드는 계정(POST /accounts)과 로그인 화면 회원가입(POST
+// /signup)은 같은 accounts 테이블에 같은 규칙으로 들어간다 — 둘의 차이는
+// status(관리자 생성=active, 가입 신청=pending), role(신청은 항상 user),
+// 관할 시군구 필수 여부(신청은 필수, 관리자는 비우면 전체 관할)뿐이다.
+const USERNAME_RE = /^[A-Za-z0-9_.-]{4,30}$/;
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PENDING_SIGNUPS = 100; // 승인 대기가 너무 쌓이면 더 안 받음(공개 엔드포인트 스팸 방지)
+
+// 성공: { account }, 실패: { code(HTTP 상태), error }. 검증·시군구 확인·INSERT·
+// 중복/DB 오류 처리를 전부 여기서 하므로 호출하는 라우트는 결과만 응답하면 된다
+// (공개 엔드포인트(signup)에서 예외가 프로세스 밖으로 새지 않게 하는 효과도 있음).
+async function insertAccount({ username, password, displayName, role, status, sigunguCode, requireSigungu, requireDisplayName }) {
+    const uname = String(username || '').trim();
+    if (!USERNAME_RE.test(uname)) {
+        return { code: 400, error: '아이디는 영문/숫자/_.- 4~30자로 입력하세요.' };
+    }
+    const pwError = validateNewPassword(password, uname); // 비밀번호 변경/재설정과 같은 규칙
+    if (pwError) return { code: 400, error: pwError };
+    const name = String(displayName || '').trim();
+    if (requireDisplayName && !name) {
+        return { code: 400, error: '이름(소속/성명)을 입력하세요.' };
+    }
+    if (name.length > 50) {
+        return { code: 400, error: '이름은 50자 이내로 입력하세요.' };
+    }
+    // 시군구는 클라이언트가 보낸 이름을 믿지 않고 서버 코드표(sigunguCodes.json)로
+    // 코드를 확인한 뒤 이름도 그 표에서 가져온다.
+    let sigungu = null;
+    if (sigunguCode) {
+        sigungu = SIGUNGU_CODES.find((it) => it.code5 === String(sigunguCode));
+        if (!sigungu) return { code: 400, error: '소속 시군구를 목록에서 선택하세요.' };
+    } else if (requireSigungu) {
+        return { code: 400, error: '소속 시군구를 목록에서 선택하세요.' };
+    }
+    try {
+        const passwordHash = await bcrypt.hash(password, 10);
+        const { rows } = await pool.query(
+            `INSERT INTO accounts (username, password_hash, display_name, role, status, sigungu_code, sigungu_name)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, username, display_name, role, status, sigungu_code, sigungu_name, created_at`,
+            [uname, passwordHash, name || uname, role, status, sigungu ? sigungu.code5 : null, sigungu ? sigungu.sgg : null]
+        );
+        return { account: rows[0] };
+    } catch (err) {
+        if (err.code === '23505') return { code: 409, error: '이미 사용 중인 아이디입니다.' };
+        console.error('[auth/insertAccount]', err);
+        return { code: 500, error: '계정 생성 중 오류가 발생했습니다.' };
+    }
+}
+
+// 로그인 화면의 회원가입(신청) — 로그인 전이라 인증 없이 열려 있다. 그래서
+// 항상 일반(user) 권한 + 승인 대기(pending)로만 만들고(관리자 승인 전엔 로그인
+// 불가), 관할 시군구를 필수로 받는다(관할 없는 계정은 전체 데이터를 볼 수 있어
+// 신청 단계에선 허용하지 않음).
+router.post('/signup', async (req, res) => {
+    const { username, password, displayName, sigunguCode } = req.body || {};
+    try {
+        const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM accounts WHERE status = 'pending'`);
+        if (rows[0].n >= MAX_PENDING_SIGNUPS) {
+            return res.status(503).json({ error: '현재 가입 신청을 받을 수 없습니다. 관리자에게 문의하세요.' });
+        }
+    } catch (err) {
+        console.error('[auth/signup]', err);
+        return res.status(500).json({ error: '가입 신청 중 오류가 발생했습니다.' });
+    }
+    const result = await insertAccount({
+        username, password, displayName, sigunguCode,
+        role: 'user', status: 'pending', requireSigungu: true, requireDisplayName: true,
+    });
+    if (result.error) return res.status(result.code).json({ error: result.error });
+    const acc = result.account;
+    await logAction(null, {
+        action: 'signup', targetTable: 'accounts', targetId: String(acc.id),
+        summary: `가입 신청: ${acc.username} (${acc.sigungu_name})`, sigunguCode: acc.sigungu_code,
+        user: { id: acc.id, username: acc.username }, ip: clientIp(req),
+    });
+    res.status(201).json({ ok: true });
+});
+
+// 시군구명으로 법정동코드 검색 — 계정관리 "새 계정 추가" 폼과 로그인 화면
+// 회원가입 폼이 같이 쓴다(로그인 전에도 불러야 해서 인증 없이 열어둠 — 행정구역
+// 이름/코드뿐이라 비밀이 아니다). "중구"처럼 여러 시도에 같은 이름이 있을 수
+// 있어(서울/부산/대구/인천/대전/울산 중구 등 6곳) 이름만으로 하나로 정하지 않고
+// 후보 목록을 돌려준다 — 코드값은 행정안전부 공개 법정동코드 전체자료(2018년
+// gist, 이후 전남·광주가 "전남광주통합특별시"로 통합되면서 바뀐 코드는 사용자가
+// 직접 제공한 원본 파일로 덮어써서 최신화함) 기준.
+router.get('/sigungu-search', (req, res) => {
     const q = (req.query.q || '').trim();
     if (!q) return res.json({ items: [] });
     const items = SIGUNGU_CODES
@@ -83,27 +385,22 @@ router.get('/sigungu-search', requireAdmin, (req, res) => {
     res.json({ items });
 });
 
-// 관리자 전용: 계정 생성
+// 관리자 전용: 계정 생성 — 바로 사용 가능(active). 관할을 비우면 전체 관할.
 router.post('/accounts', requireAdmin, async (req, res) => {
-    const { username, password, displayName, role, sigunguCode, sigunguName } = req.body || {};
-    if (!username || !password) {
-        return res.status(400).json({ error: '아이디와 비밀번호를 입력하세요.' });
-    }
-    const passwordHash = await bcrypt.hash(password, 10);
-    try {
-        const { rows } = await pool.query(
-            `INSERT INTO accounts (username, password_hash, display_name, role, sigungu_code, sigungu_name)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             RETURNING id, username, display_name, role, sigungu_code, sigungu_name, created_at`,
-            [username, passwordHash, displayName || username, role === 'admin' ? 'admin' : 'user', sigunguCode || null, sigunguName || null]
-        );
-        res.status(201).json({ account: rows[0] });
-    } catch (err) {
-        if (err.code === '23505') {
-            return res.status(409).json({ error: '이미 존재하는 아이디입니다.' });
-        }
-        throw err;
-    }
+    const { username, password, displayName, role, sigunguCode } = req.body || {};
+    const result = await insertAccount({
+        username, password, displayName, sigunguCode,
+        role: role === 'admin' ? 'admin' : 'user', status: 'active',
+        requireSigungu: false, requireDisplayName: false,
+    });
+    if (result.error) return res.status(result.code).json({ error: result.error });
+    const acc = result.account;
+    await logAction(null, {
+        action: 'account_create', targetTable: 'accounts', targetId: String(acc.id),
+        summary: `계정 생성: ${acc.username} (${acc.role === 'admin' ? '관리자' : '일반'}, 관할 ${acc.sigungu_name || '전체'})`,
+        sigunguCode: acc.sigungu_code, user: req.session.user, ip: clientIp(req),
+    });
+    res.status(201).json({ account: acc });
 });
 
 // 관리자 전용: 계정 삭제. 본인 계정은 못 지운다 — 실수로 관리자 계정을
@@ -115,8 +412,16 @@ router.delete('/accounts/:id', requireAdmin, async (req, res) => {
         return res.status(400).json({ error: '로그인 중인 본인 계정은 삭제할 수 없습니다.' });
     }
     try {
-        const { rowCount } = await pool.query('DELETE FROM accounts WHERE id = $1', [id]);
-        if (!rowCount) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+        const { rows } = await pool.query(
+            'DELETE FROM accounts WHERE id = $1 RETURNING username, status, sigungu_code', [id]
+        );
+        if (!rows.length) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+        await destroyUserSessions(id); // 지운 계정이 이미 로그인해 있었다면 그 세션도 즉시 끊는다
+        await logAction(null, {
+            action: 'account_delete', targetTable: 'accounts', targetId: String(id),
+            summary: `${rows[0].status === 'pending' ? '가입 신청 거절(삭제)' : '계정 삭제'}: ${rows[0].username}`,
+            sigunguCode: rows[0].sigungu_code, user: req.session.user, ip: clientIp(req),
+        });
         res.json({ ok: true });
     } catch (err) {
         // 이 계정이 등록/수정/업로드한 기록이 남아있으면(created_by 등 FK) 삭제가

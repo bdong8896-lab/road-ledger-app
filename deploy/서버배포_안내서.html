@@ -236,12 +236,12 @@
 <div class="hero">
   <div class="hero-inner">
     <div class="eyebrow">배포 안내서 · 저장소 문서 기준</div>
-    <h1>도로대장 시스템 — 운영 서버(192.168.0.211) 배포 가이드</h1>
-    <p class="lede">이미 이 서버에 한 번 배포하며 정리해둔 <code>deploy/서버배포_가이드.txt</code>, <code>server/env.production</code>, <code>deploy/web.config</code>를 그대로 기준으로 재구성했습니다. 실제로 겪었던 문제(401 오류, WebDAV POST 차단 등)까지 반영돼 있습니다.</p>
+    <h1>도로대장 시스템 — 운영 서버(105.24.1.170) 배포 가이드</h1>
+    <p class="lede">이전 서버(192.168.0.211)에 실제로 배포하며 정리해둔 <code>deploy/서버배포_가이드.txt</code>, <code>server/env.production</code>, <code>deploy/web.config</code>를 새 서버(105.24.1.170) 기준으로 재구성했습니다. 그때 실제로 겪었던 문제(401 오류, WebDAV POST 차단 등)까지 반영돼 있지만, PostgreSQL 설치 등 <strong>이 서버에서 새로 해야 하는 작업</strong>은 본문에 따로 표시했습니다.</p>
     <div class="hero-meta">
-      <span>대상: 192.168.0.211 (Windows Server + IIS)</span>
-      <span>구성: IIS 8081 → Node(PM2) 3000 → PostgreSQL 5432</span>
-      <span>DS-LandInfo(8080)와 같은 서버, 다른 사이트</span>
+      <span>대상: 105.24.1.170 (Windows Server 2022 + IIS)</span>
+      <span>구성: IIS 11800 → Node(PM2) 3000 → PostgreSQL 5432</span>
+      <span>8080엔 이미 다른 시스템 — 같은 서버, 다른 사이트로 추가</span>
     </div>
   </div>
 </div>
@@ -268,29 +268,42 @@
     <main>
       <section id="overview">
         <h2><span class="step-num">00</span>전체 구조</h2>
-        <p class="section-intro">이 서버엔 이미 DS-LandInfo(기존 Electron 앱)가 IIS 8080 사이트로 떠 있습니다. 도로대장 시스템은 <strong>같은 서버에 나란히 새 IIS 사이트(8081)</strong>로 추가하는 구성입니다.</p>
+        <p class="section-intro">이 서버(105.24.1.170)엔 이미 다른 시스템이 IIS 8080 사이트로 떠 있습니다(건드리지 않음). 도로대장 시스템은 <strong>같은 서버에 나란히 새 IIS 사이트(11800)</strong>로 추가하는 구성입니다.</p>
         <div class="arch">
-          <div class="arch-box"><span class="arch-icon">🌐</span><div class="arch-title">사용자 브라우저</div><div class="arch-sub">http://192.168.0.211:8081</div></div>
+          <div class="arch-box"><span class="arch-icon">🌐</span><div class="arch-title">사용자 브라우저</div><div class="arch-sub">http://105.24.1.170:11800</div></div>
           <div class="arch-arrow">→</div>
-          <div class="arch-box accent"><span class="arch-icon">🛡️</span><div class="arch-title">IIS (새 사이트)</div><div class="arch-sub">8081, URL Rewrite + ARR로 프록시</div></div>
+          <div class="arch-box accent"><span class="arch-icon">🛡️</span><div class="arch-title">IIS (새 사이트)</div><div class="arch-sub">11800, URL Rewrite + ARR로 프록시</div></div>
           <div class="arch-arrow">→</div>
           <div class="arch-box"><span class="arch-icon">⚙️</span><div class="arch-title">Node.js (road-ledger)</div><div class="arch-sub">내부 3000, PM2로 상시 구동</div></div>
           <div class="arch-arrow">→</div>
           <div class="arch-box"><span class="arch-icon">🗄️</span><div class="arch-title">PostgreSQL</div><div class="arch-sub">DSMap / DSMap, 5432, 로컬 전용</div></div>
         </div>
-        <div class="note"><p><strong>포트가 8080이 아니라 8081인 이유</strong> — 8080은 DS-LandInfo가 이미 쓰고 있어서, 도로대장 시스템은 겹치지 않게 8081로 새 사이트를 만듭니다. 3000(Node)과 5432(PostgreSQL)는 로컬 전용이라 방화벽에서 외부 노출을 막습니다.</p></div>
+        <div class="note"><p><strong>포트가 8080이 아니라 11800인 이유</strong> — 8080은 기존 시스템이 이미 쓰고 있어서, 도로대장 시스템은 겹치지 않게 11800로 새 사이트를 만듭니다(보안팀에 개방 요청 완료). 3000(Node)과 5432(PostgreSQL)는 로컬 전용이라 방화벽에서 외부 노출을 막습니다.</p></div>
       </section>
 
       <section id="prereq">
         <h2><span class="step-num">01</span>사전 준비물</h2>
-        <p class="section-intro">서버 쪽에 이미 되어 있어야 하는 것과, 이 컴퓨터(로컬)에서 이미 준비된 것을 나눠서 확인합니다.</p>
-        <h3>서버(192.168.0.211)에 이미 되어 있어야 하는 것</h3>
+        <p class="section-intro">서버 쪽에 이미 되어 있어야 하는 것과, 이 컴퓨터(로컬)에서 이미 준비된 것을 나눠서 확인합니다. ⚠ 이 서버는 IT팀이 "서버 자원 할당·OS·IP·계정"만 세팅 완료했고, 아래 항목들은 우리가 직접 설치/확인해야 합니다.</p>
+        <h3>서버(105.24.1.170)에서 직접 설치/확인해야 하는 것</h3>
         <ul class="checklist">
-          <li>PostgreSQL 설치 — 포트 5432, 계정/DB 이름 모두 <code>DSMap</code>으로 생성</li>
-          <li>Node.js 설치</li>
-          <li>IIS + <strong>URL Rewrite</strong> + <strong>Application Request Routing(ARR)</strong> 모듈, "Server Proxy Settings → Enable proxy" 체크 완료(안 하면 502)</li>
-          <li>방화벽 인바운드 <strong>8081만 허용</strong> (3000, 5432는 외부 노출 금지)</li>
-          <li>FreeSFTPd 구동 중 — <code>Dsuser</code> 계정 Home Directory = <code>D:\</code> (SFTP에서 <code>/Dsmap_ROAD</code> = 실제 <code>D:\Dsmap_ROAD</code>)</li>
+          <li>PostgreSQL은 <strong>이미 설치돼 있음</strong> — 다만 포트·계정 정보를 몰라서 직접 확인해야 함. 아래 <a class="inline" href="#step-pgcheck">"PostgreSQL 포트·계정 확인"</a> 절차 참고</li>
+          <li>Node.js 설치 여부 확인(미확인 — <code>node -v</code>로 먼저 확인)</li>
+          <li>IIS는 이미 설치돼 있음(8080에 다른 시스템). <strong>URL Rewrite</strong> + <strong>Application Request Routing(ARR)</strong> 모듈 설치 여부 확인, "Server Proxy Settings → Enable proxy" 체크 필요(안 하면 502)</li>
+          <li>방화벽 인바운드 <strong>11800만 허용</strong> (3000, 5432는 외부 노출 금지) — 보안팀에 요청 완료</li>
+          <li>SFTP 구동 여부 미확인 — 이전 서버는 FreeSFTPd(<code>Dsuser</code> 계정, Home Directory <code>D:\</code>)를 썼으나, 이 서버에 준비돼 있는지는 확인 전(없으면 원격데스크톱으로 직접 업로드하거나 새로 설치)</li>
+        </ul>
+
+        <h3 id="step-pgcheck">PostgreSQL 포트·계정 확인 (원격데스크톱 105.24.1.170:33890 접속 후, PowerShell)</h3>
+        <ul class="checklist">
+          <li><strong>1) 서비스 확인</strong> — 이름이 "postgresql"로 안 시작할 수도 있음: <code>Get-Service | Where-Object { $_.DisplayName -like "*postgres*" }</code></li>
+          <li><strong>2) 설치 경로 확인</strong>: <code>Get-ChildItem "C:\Program Files\PostgreSQL"</code> — 버전 폴더 이름을 기억해둘 것</li>
+          <li><strong>3) 실제 포트 확인</strong>(프로세스 기준, 설정파일보다 확실함): <code>Get-NetTCPConnection -OwningProcess (Get-Process postgres).Id | Select-Object LocalPort</code></li>
+          <li><strong>4) 계정·비밀번호</strong> — 기존 비번은 해시로만 저장돼 "알아낼" 수 없음. 모르면 우리 전용 계정을 새로 만드는 게 안전(기존 데이터는 안 건드림):</li>
+          <li>4-a) <code>data\pg_hba.conf</code>의 local 인증 방식을 적어두고 임시로 <code>trust</code>로 변경(백업 필수)</li>
+          <li>4-b) 서비스 재시작 — ⚠ 이 순간 기존 시스템의 DB 연결도 잠깐 끊김, 영향 적은 시간대에 진행</li>
+          <li>4-c) 비번 없이 접속: <code>psql -U postgres -h 127.0.0.1 -p &lt;확인한 포트&gt;</code></li>
+          <li>4-d) 새 계정 생성: <code>CREATE USER "DSMap" WITH PASSWORD '...'; CREATE DATABASE "DSMap" OWNER "DSMap";</code></li>
+          <li>4-e) <code>pg_hba.conf</code>를 원래대로 복구 후 서비스 재시작</li>
         </ul>
         <h3>로컬(이 컴퓨터)에 이미 준비된 것</h3>
         <ul class="checklist">
@@ -355,7 +368,7 @@
         <p>이 파일엔 이미 운영 값이 채워져 있습니다 — 그대로 두면 됩니다.</p>
         <div class="code-wrap">
           <div class="code-label"><span>server/.env (이미 채워진 내용)</span></div>
-          <pre>PORT=3000                                          <span class="c"># IIS가 8081에서 이 내부 포트로 프록시</span>
+          <pre>PORT=3000                                          <span class="c"># IIS가 11800에서 이 내부 포트로 프록시</span>
 PGHOST=localhost
 PGPORT=5432
 PGDATABASE=DSMap
@@ -363,7 +376,7 @@ PGUSER=DSMap
 PGPASSWORD=<span class="mask">••••••••</span>                                   <span class="c"># 이미 설정됨</span>
 SESSION_SECRET=<span class="mask">••••••••••••••••••••••••</span>                <span class="c"># 이미 무작위 값으로 생성됨(2026-08-05)</span>
 VWORLD_API_KEY=<span class="mask">••••••••••••••••••••••••••••••••••••</span>   <span class="c"># DSRoad 전용 개발키, 만료 2027-02-28</span>
-VWORLD_REFERER=<span class="v">https://192.168.0.211:8081/</span>
+VWORLD_REFERER=<span class="v">https://105.24.1.170:11800/</span>
 ITS_CCTV_API_KEY=<span class="mask">••••••••••••••••••••••••••••••••</span>
 UPLOAD_DIR=./uploads</pre>
         </div>
@@ -413,7 +426,7 @@ pm2 save</pre>
       <section id="step-iis">
         <h2><span class="step-num">06</span>IIS 사이트 생성 (최초 1회)</h2>
         <ol class="plain">
-          <li>IIS 관리자에서 새 웹사이트 추가 — 포트 <strong>8081</strong>, 물리 경로 <code>D:\Dsmap_ROAD</code></li>
+          <li>IIS 관리자에서 새 웹사이트 추가 — 포트 <strong>11800</strong>, 물리 경로 <code>D:\Dsmap_ROAD</code></li>
           <li>사이트 선택 → "인증(Authentication)" → <strong>익명 인증 = 사용</strong>, <strong>Windows 인증 = 사용 안 함</strong> — 이거 안 하면 401 오류</li>
           <li>NTFS 권한 부여:</li>
         </ol>
@@ -421,22 +434,22 @@ pm2 save</pre>
           <div class="code-label"><span>PowerShell (관리자)</span><button class="copy-btn" data-copy="icacls &quot;D:\Dsmap_ROAD&quot; /grant &quot;IIS_IUSRS:(OI)(CI)RX&quot; /T">복사</button></div>
           <pre>icacls <span class="v">"D:\Dsmap_ROAD"</span> /grant <span class="v">"IIS_IUSRS:(OI)(CI)RX"</span> /T</pre>
         </div>
-        <p>접속 테스트: <a class="inline" href="http://192.168.0.211:8081" target="_blank" rel="noopener">http://192.168.0.211:8081</a> → 로그인 화면이 뜨는지 확인합니다.</p>
+        <p>접속 테스트: <a class="inline" href="http://105.24.1.170:11800" target="_blank" rel="noopener">http://105.24.1.170:11800</a> → 로그인 화면이 뜨는지 확인합니다.</p>
       </section>
 
       <section id="step-vworld">
         <h2><span class="step-num">07</span>VWorld 키 확인</h2>
-        <p class="section-intro">8081 전용으로 새로 발급한 키입니다 — 04단계의 <code>.env</code>와 값이 정확히 일치하는지만 확인하면 됩니다.</p>
+        <p class="section-intro">105.24.1.170:11800(화성 도로관리시스템) 전용으로 새로 발급받은 키입니다 — <code>server/.env.production</code>에 이미 반영해뒀습니다. 04단계의 <code>.env</code>와 값이 정확히 일치하는지만 확인하면 됩니다.</p>
         <div class="kv">
-          <div class="kv-item"><dt>서비스명</dt><dd>DSRoad</dd></div>
-          <div class="kv-item"><dt>서비스 URL</dt><dd>https://192.168.0.211:8081</dd></div>
-          <div class="kv-item"><dt>키 종류</dt><dd>개발키</dd></div>
-          <div class="kv-item"><dt>발급일 → 만료일</dt><dd>2026-08-28 → 2027-02-28</dd></div>
+          <div class="kv-item"><dt>서비스명</dt><dd>화성 도로관리시스템</dd></div>
+          <div class="kv-item"><dt>인증키</dt><dd><code><발급받은 VWorld 키 — 값은 server/.env.production에만 둠></code></dd></div>
+          <div class="kv-item"><dt>서비스 URL</dt><dd>https://105.24.1.170:11800</dd></div>
+          <div class="kv-item"><dt>발급일 → 만료일</dt><dd>VWorld 개발자센터에서 확인 필요(전달받은 정보에 날짜 없음)</dd></div>
         </div>
         <div class="callout">
-          <div class="callout-title">개발키는 만료됩니다</div>
-          <p>기존에는 같은 서버의 DS-LandInfo가 등록해 쓰던 키(<code>FF96060E-...</code>)를 재사용했지만, 이제 DSRoad 전용 키로 교체했습니다. 이 키는 <strong>2027-02-28</strong>에 만료되는 개발키입니다(연장신청 0/3회 사용 가능) — 만료 전에 VWorld 개발자센터에서 <strong>운영키 신청</strong>으로 전환해야 지도가 끊기지 않습니다.</p>
-          <p>서버 접속 주소(도메인 연결, 포트 변경 등)가 바뀌면 이 키의 서비스 URL도 같이 재등록해야 합니다.</p>
+          <div class="callout-title">이전 서버 키와 혼동하지 말 것</div>
+          <p>이전 서버(192.168.0.211:8081)용으로 따로 발급받았던 개발키가 있는데, 이번 키와는 별개입니다 — 이 서버(105.24.1.170:11800)에는 반드시 위 새 키를 써야 합니다. 개발키라면 만료가 있으므로(VWorld 개발자센터에서 만료일 확인) 만료 전에 <strong>운영키 신청</strong>으로 전환해야 지도가 끊기지 않습니다.</p>
+          <p>서버 접속 주소(도메인 연결, 포트 변경 등)가 또 바뀌면 이 키의 서비스 URL도 같이 재등록해야 합니다.</p>
         </div>
       </section>
 
@@ -482,12 +495,12 @@ pm2 save</pre>
       <section id="verify">
         <h2><span class="step-num">10</span>완료 확인</h2>
         <ul class="checklist">
-          <li><code>http://192.168.0.211:8081</code> 접속 시 로그인 화면이 뜨는지</li>
+          <li><code>http://105.24.1.170:11800</code> 접속 시 로그인 화면이 뜨는지</li>
           <li>아이디/비밀번호로 로그인이 되는지 (POST /api/auth/login 정상 응답)</li>
           <li>로그인 후 지도 타일이 정상적으로 뜨는지 (VWorld 키 확인)</li>
           <li>DXF/DWG 도면을 열어봤을 때 정상 표시되는지</li>
           <li>서버를 재부팅해도 <code>pm2</code>가 <code>road-ledger</code>를 자동으로 다시 띄우는지</li>
-          <li>DS-LandInfo(8080 사이트)가 이 배포로 영향받지 않았는지</li>
+          <li>8080의 기존 시스템이 이 배포로 영향받지 않았는지</li>
         </ul>
       </section>
 
