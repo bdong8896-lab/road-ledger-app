@@ -17,6 +17,7 @@ const {
 const { syncRoadSection } = require('../lib/govSectionSync');
 const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles } = require('../lib/bulkImportAttachments');
 const { autoUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
+const { detectRankNameInRoot, detectRankNameHints } = require('../lib/bulkImportRank');
 const { parseSectorShpFiles } = require('../lib/bulkImportSectors');
 const { convertDwgToDxf } = require('../lib/dwgConvert');
 const { logAction } = require('../lib/auditLog');
@@ -78,6 +79,8 @@ function summarizeForPreview(parsed) {
         totalNew: parsed.layers.reduce((s, l) => s + l.newRecords.length, 0),
         totalDelete: parsed.layers.reduce((s, l) => s + l.deleteRecords.length, 0),
         krris: parsed.krris,
+        // 500m 구간 SHP 파일명(면도0101.shp 등)에서 알아낸 도로종류 이름 — 코드가 1599(기타)인 노선만
+        rankNameHints: detectRankNameHints(parsed.sectionRecords),
     };
 }
 
@@ -311,8 +314,12 @@ router.post('/:uploadId/confirm', async (req, res) => {
         // 합쳐지기 전에도(즉 이 버그를 고치기 전에도) 구간이 하나만 등록되는
         // 문제가 있었다 — sectionRecords는 납품 루트별로 구분해서 만들어지므로
         // 이제 전부 등록된다.
+        // 도로종류 표시 이름: 화면에서 이름을 직접 골랐으면 모든 노선에 그 이름을, 비워 두면(자동) 노선마다
+        // 500m 구간 SHP 파일명(면도0101.shp 등)에서 알아낸 이름을 쓴다. 둘 다 없으면 납품 그대로(기타).
+        const requestedRankName = (req.body.roadRankDisplayName || '').trim();
         for (const { deliveryRoot, deliveryCode, row, geom } of parsed.sectionRecords) {
-            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, req.session.user.id, (req.body.roadRankDisplayName || '').trim());
+            const rankName = requestedRankName || (row.road_rank === '1599' ? detectRankNameInRoot(deliveryRoot) : '') || '';
+            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, req.session.user.id, rankName);
             // 원본 관리번호를 남겨둬야 노선 내보내기가 파일명을 원본과 똑같이 만들 수 있다.
             if (deliveryCode) {
                 await client.query('UPDATE road_sections SET delivery_code = $1 WHERE rdid = $2', [deliveryCode, synced.rdid]);

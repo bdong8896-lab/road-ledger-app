@@ -4070,6 +4070,7 @@ function initBulkRegister() {
             <div class="meta-row"><span class="meta-label">신규/삭제 레코드</span><span>${data.totalNew}건 / ${data.totalDelete}건</span></div>
             ${data.mergedLargeFiles ? `<div class="meta-row"><span class="meta-label">사전 업로드 파일</span><span>${data.largeFileCount}건 병합됨(사진·보고서·도면)</span></div>` : ''}
             ${data.sectorCount ? `<div class="meta-row"><span class="meta-label">500m 구간 정보</span><span>${data.sectorCount}건 발견(도면/500SHP)</span></div>` : ''}
+            ${(data.rankNameHints || []).length ? `<div class="meta-row"><span class="meta-label">도로종류(파일명 인식)</span><span>${(data.rankNameHints || []).map((h) => `${escapeHtml(h.deliveryCode)} → ${escapeHtml(h.name)}`).join(', ')}</span></div>` : ''}
         `;
 
         layersEl.innerHTML = '';
@@ -4583,12 +4584,13 @@ function buildTreeLeaf(label, sectionInfo) {
             const toggle = document.createElement('button');
             toggle.type = 'button';
             toggle.className = `tree-facility-toggle ${className}`;
-            toggle.title = `지도에 ${name} 표시`;
             toggle.innerHTML = `<i class="${icon}"></i>`;
             toggle.dataset.group = name;
+            paintFacilityGroupToggle(toggle, name, sectionFacilityActiveGroups.has(facilityGroupKey(facilitySectionKey(sectionInfo), name)));
             toggle.addEventListener('click', (e) => {
                 e.stopPropagation();
-                setSectionFacilityGroupActive(sectionInfo, name, !toggle.classList.contains('active'), toggle);
+                const nowActive = sectionFacilityActiveGroups.has(facilityGroupKey(facilitySectionKey(sectionInfo), name));
+                setSectionFacilityGroupActive(sectionInfo, name, !nowActive, toggle);
             });
             toggleGroup.appendChild(toggle);
         });
@@ -4652,8 +4654,24 @@ FACILITY_GROUPS.forEach(({ group }) => {
 // 해서 데이터(피처)를 지우지는 않는다 — 표시만 가린다. 그래야 나중에 다시
 // 켤 때 재요청 없이 즉시 다시 보인다.
 const sectionFacilityHiddenGroups = new Set();
+// 반대로 "이 구간의 이 그룹은 지도에 켜 둔 상태"를 기록한다. 트리 리프의 아이콘 상태는 이 Set에서 그려서,
+// 트리가 다시 그려지거나(loadLedgerTree) 검색으로 구간을 골라 리프 아이콘을 못 찾는 경우에도
+// 아이콘이 지도의 실제 상태와 어긋나지 않는다(예전엔 아이콘 클래스만 믿어서, 트리를 다시 그린 뒤
+// 눌러도 "끄기"가 아니라 "켜기"로 처리돼 지도에서 안 꺼졌다).
+const sectionFacilityActiveGroups = new Set();
 function facilityGroupKey(sectionKey, groupName) {
     return `${sectionKey}::${groupName}`;
+}
+// 트리 리프의 시설물 그룹 아이콘 하나의 겉모습을 상태에 맞춘다.
+function paintFacilityGroupToggle(toggleBtn, groupName, active) {
+    toggleBtn.classList.toggle('active', active);
+    toggleBtn.title = active ? `지도에서 ${groupName} 숨기기` : `지도에 ${groupName} 표시`;
+}
+// 이 구간의 이 그룹 아이콘을 트리에서 찾아 맞춘다(리프가 그려져 있을 때만).
+function syncFacilityGroupToggle(sectionKey, groupName, active) {
+    document.querySelectorAll(`.tree-leaf[data-rdid="${CSS.escape(sectionKey)}"] .tree-facility-toggle`).forEach((b) => {
+        if (b.dataset.group === groupName) paintFacilityGroupToggle(b, groupName, active);
+    });
 }
 
 // 구간 하나의 시설물 그룹(주요시설물/부대시설) 하나를 지도에 켜거나 끈다.
@@ -4661,6 +4679,7 @@ function setSectionFacilityGroupActive(section, groupName, active, toggleBtn) {
     const types = facilityGroupTypeList(groupName);
     const key = facilitySectionKey(section);
     const groupKey = facilityGroupKey(key, groupName);
+    if (active) sectionFacilityActiveGroups.add(groupKey); else sectionFacilityActiveGroups.delete(groupKey);
     if (active) {
         sectionFacilityHiddenGroups.delete(groupKey);
         types.forEach((label) => visibleFacilityLabels.add(label));
@@ -4680,10 +4699,8 @@ function setSectionFacilityGroupActive(section, groupName, active, toggleBtn) {
         });
         sectionFacilityLayer.changed();
     }
-    if (toggleBtn) {
-        toggleBtn.classList.toggle('active', active);
-        toggleBtn.title = active ? `지도에서 ${groupName} 숨기기` : `지도에 ${groupName} 표시`;
-    }
+    if (toggleBtn) paintFacilityGroupToggle(toggleBtn, groupName, active);
+    syncFacilityGroupToggle(key, groupName, active);
     // 시설물 탭이 지금 이 구간(또는 다른 구간)을 보여주고 있다면, 방금 바뀐
     // visibleFacilityLabels를 기준으로 개별 눈 아이콘들을 다시 그려서 실제
     // 지도 표시 상태와 항상 일치하게 만든다.
@@ -4713,11 +4730,39 @@ function buildFacilityLeaf(name, count) {
             visToggle.title = visible ? `지도에서 ${name} 숨기기` : `지도에 ${name} 표시`;
             visToggle.classList.toggle('hidden-state', !visible);
         };
-        setToggleState(visibleFacilityLabels.has(name));
+        // 지금 보고 있는 구간에서 이 종류가 실제로 지도에 보이는지: 전역 필터에 있고, 이 구간의 그룹을 따로 꺼 두지 않았을 때.
+        const shownOnMap = () => {
+            if (!visibleFacilityLabels.has(name)) return false;
+            const group = facilityLabelGroupMap.get(name);
+            return !(currentRoute && group && sectionFacilityHiddenGroups.has(facilityGroupKey(facilitySectionKey(currentRoute), group)));
+        };
+        setToggleState(shownOnMap());
         visToggle.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const nowVisible = !visibleFacilityLabels.has(name);
-            if (nowVisible) visibleFacilityLabels.add(name); else visibleFacilityLabels.delete(name);
+            const nowVisible = !shownOnMap();
+            if (nowVisible) {
+                visibleFacilityLabels.add(name);
+                // 이 구간의 그룹이 꺼져 있었다면 지도에 안 나타나므로 같이 켠다(구간 리프의 그룹 아이콘도 맞춘다).
+                const group = facilityLabelGroupMap.get(name);
+                if (currentRoute && group) {
+                    const gk = facilityGroupKey(facilitySectionKey(currentRoute), group);
+                    if (sectionFacilityHiddenGroups.delete(gk) || !sectionFacilityActiveGroups.has(gk)) {
+                        sectionFacilityActiveGroups.add(gk);
+                        syncFacilityGroupToggle(facilitySectionKey(currentRoute), group, true);
+                    }
+                }
+            } else {
+                visibleFacilityLabels.delete(name);
+                // 이 그룹의 종류가 하나도 안 남았으면 구간 리프의 그룹 아이콘도 "꺼짐"으로 맞춘다
+                // (아니면 아이콘은 켜져 있는데 지도엔 아무것도 없어, 누르면 한 번 더 눌러야 켜진다).
+                const group = facilityLabelGroupMap.get(name);
+                if (group && !facilityGroupTypeList(group).some((l) => visibleFacilityLabels.has(l))) {
+                    [...sectionFacilityActiveGroups].filter((k) => k.endsWith('::' + group)).forEach((k) => {
+                        sectionFacilityActiveGroups.delete(k);
+                        syncFacilityGroupToggle(k.slice(0, -(group.length + 2)), group, false);
+                    });
+                }
+            }
             setToggleState(nowVisible);
             if (nowVisible && currentRoute) await ensureSectionFacilityLoaded(currentRoute);
             sectionFacilityLayer.changed();

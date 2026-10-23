@@ -511,9 +511,9 @@
                         <label class="field-full" id="bulk-incoming-batch-sigungu-row">일괄등록 대상 시군구
                             <input type="text" id="bulk-incoming-batch-sigungu-input" list="managing-agency-list" autocomplete="off" placeholder="예: 전라남도 장성군">
                         </label>
-                        <label class="field-full" id="bulk-incoming-batch-rank-row">도로종류 표시 이름(납품 코드가 1599 기타인 노선에만 적용)
+                        <label class="field-full" id="bulk-incoming-batch-rank-row">도로종류 표시 이름(납품 코드가 1599 기타인 노선에만 적용 · 이름을 고르면 모든 노선에 같은 이름이 붙습니다)
                             <select id="bulk-incoming-rank-name">
-                            <option value="">납품 그대로 (기타 — 이미 바꿔 둔 노선은 유지)</option>
+                            <option value="">자동 — 500m 구간 SHP 파일명으로 노선마다 인식(없으면 납품 그대로)</option>
                             <option value="면도">면도</option>
                             <option value="리도">리도</option>
                             <option value="농도">농도</option>
@@ -554,9 +554,9 @@
                     <label class="field-full" id="bulk-review-sigungu-row">대상 시군구
                         <input type="text" id="bulk-review-sigungu-input" list="managing-agency-list" autocomplete="off" placeholder="예: 전라남도 장성군">
                     </label>
-                    <label class="field-full" id="bulk-review-rank-row">도로종류 표시 이름(납품 코드가 1599 기타인 노선에만 적용)
+                    <label class="field-full" id="bulk-review-rank-row">도로종류 표시 이름(납품 코드가 1599 기타인 노선에만 적용 · 이름을 고르면 모든 노선에 같은 이름이 붙습니다)
                         <select id="bulk-review-rank-name">
-                            <option value="">납품 그대로 (기타 — 이미 바꿔 둔 노선은 유지)</option>
+                            <option value="">자동 — 500m 구간 SHP 파일명으로 노선마다 인식(없으면 납품 그대로)</option>
                             <option value="면도">면도</option>
                             <option value="리도">리도</option>
                             <option value="농도">농도</option>
