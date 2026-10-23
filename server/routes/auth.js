@@ -1,7 +1,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
-const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
+const { requireAuth, requireAdmin, requireAdminReauth } = require('../middleware/requireAuth');
+const config = require('../config');
+const { regionNameEn } = require('../lib/regionNameEn');
 const SIGUNGU_CODES = require('../lib/sigunguCodes.json');
 const SIGUNGU_EXTENTS = require('../lib/sigunguExtents.json');
 const { logAction, clientIp } = require('../lib/auditLog');
@@ -114,6 +116,9 @@ router.post('/login', async (req, res) => {
         }
 
         loginFailures.delete(key);
+        // 로그인 직전에 세션 ID를 새로 발급한다(세션 고정 공격 방지) — 로그인 전에 심어둔
+        // 세션 ID를 그대로 쓰면 공격자가 알고 있는 ID로 피해자가 로그인하게 만들 수 있다.
+        await new Promise((resolve, reject) => req.session.regenerate((e) => (e ? reject(e) : resolve())));
         req.session.user = {
             id: account.id, username: account.username, displayName: account.display_name, role: account.role,
             sigunguCode: account.sigungu_code, sigunguName: account.sigungu_name,
@@ -229,10 +234,69 @@ router.post('/change-password', async (req, res) => {
     }
 });
 
+// 관리 콘솔 진입 전 재인증 — 로그인한 관리자가 비밀번호를 한 번 더 입력한다. 성공하면
+// config.adminReauthMinutes(기본 15분) 동안 관리 API(requireAdminReauth)를 쓸 수 있다.
+// 틀리면 로그인 실패와 같은 카운터로 세서 잠근다(세션을 가로챈 사람의 무차별 대입 방지).
+router.post('/reauth', requireAdmin, async (req, res) => {
+    const user = req.session.user;
+    const { password } = req.body || {};
+    if (typeof password !== 'string' || !password) {
+        return res.status(400).json({ error: '비밀번호를 입력하세요.' });
+    }
+    const key = failureKey(user.username);
+    const remain = lockRemainingMinutes(key);
+    if (remain > 0) {
+        return res.status(429).json({ error: `시도가 너무 많아 잠겼습니다. ${remain}분 후 다시 시도하세요.` });
+    }
+    try {
+        const { rows } = await pool.query('SELECT password_hash FROM accounts WHERE id = $1', [user.id]);
+        if (!rows.length) {
+            return req.session.destroy(() => res.status(401).json({ error: '계정을 찾을 수 없습니다. 다시 로그인하세요.' }));
+        }
+        if (!(await bcrypt.compare(password, rows[0].password_hash))) {
+            const locked = recordLoginFailure(key);
+            await logAction(null, {
+                action: 'login_fail', targetTable: 'accounts', targetId: String(user.id),
+                summary: `관리자 재인증 실패: ${user.username}${locked ? ` — ${LOCK_MINUTES}분 잠금` : ''}`,
+                user, sigunguCode: user.sigunguCode, ip: clientIp(req),
+            });
+            return res.status(400).json({ error: '비밀번호가 올바르지 않습니다.' });
+        }
+        loginFailures.delete(key);
+        req.session.adminReauthAt = Date.now();
+        await logAction(null, {
+            action: 'admin_reauth', targetTable: 'accounts', targetId: String(user.id),
+            summary: `관리 콘솔 재인증: ${user.username}`, user, sigunguCode: user.sigunguCode, ip: clientIp(req),
+        });
+        res.json({ ok: true, validMinutes: config.adminReauthMinutes });
+    } catch (err) {
+        console.error('[auth/reauth]', err);
+        res.status(500).json({ error: '재인증 처리 중 오류가 발생했습니다.' });
+    }
+});
+
+// 재인증이 아직 유효한지(관리 콘솔을 열 때 재인증 창을 띄울지 결정). 유효시간은 늘리지 않는다.
+router.get('/reauth-status', requireAdmin, (req, res) => {
+    const at = req.session.adminReauthAt;
+    const remainingMs = at ? config.adminReauthMinutes * 60 * 1000 - (Date.now() - at) : 0;
+    res.json({ valid: remainingMs > 0, remainingSeconds: Math.max(0, Math.floor(remainingMs / 1000)) });
+});
+
+// 지도 하단 저작권 문구 — 로그인한 계정의 관할 지자체 영문명으로 만든다
+// (예: "copyright © 2026 HWASEONG CITY. All Rights Reserved."). 관할이 없는(전체) 계정은
+// .env의 SITE_COPYRIGHT(배포처 기본 문구)를 쓰고, 그것도 없으면 빈 값(화면에 표시 안 함).
+router.get('/site-info', (req, res) => {
+    const user = req.session && req.session.user;
+    if (!user) return res.json({ copyright: '' });
+    const nameEn = user.sigunguCode ? regionNameEn(user.sigunguCode) : null;
+    const year = new Date(Date.now() + 9 * 3600 * 1000).getUTCFullYear(); // 한국시간 기준 연도
+    res.json({ copyright: nameEn ? `copyright © ${year} ${nameEn}. All Rights Reserved.` : config.siteCopyright });
+});
+
 // 관리자 전용: 다른 계정의 비밀번호 재설정(분실 대응). 관리자가 임시 비밀번호를 정해
 // 알려주면 그 계정은 그걸로 로그인한 뒤 새 비밀번호로 바꿔야만 쓸 수 있다
 // (must_change_password). 기존 로그인 세션은 모두 끊고, 로그인 잠금도 풀어준다.
-router.post('/accounts/:id/reset-password', requireAdmin, async (req, res) => {
+router.post('/accounts/:id/reset-password', requireAdminReauth, async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: '잘못된 계정 ID입니다.' });
     if (id === req.session.user.id) {
@@ -264,7 +328,7 @@ router.post('/accounts/:id/reset-password', requireAdmin, async (req, res) => {
 
 // 관리자 전용: 계정 목록("계정관리" 탭 — 직접 만든 계정과 회원가입 신청 계정을
 // 한 목록에서 같이 관리, 승인대기가 맨 위). password_hash는 응답에 절대 포함하지 않는다.
-router.get('/accounts', requireAdmin, async (req, res) => {
+router.get('/accounts', requireAdminReauth, async (req, res) => {
     const { rows } = await pool.query(
         `SELECT id, username, display_name, role, status, sigungu_code, sigungu_name, created_at
          FROM accounts ORDER BY (status = 'pending') DESC, created_at`
@@ -273,7 +337,7 @@ router.get('/accounts', requireAdmin, async (req, res) => {
 });
 
 // 관리자 전용: 회원가입 신청(pending) 계정 승인
-router.post('/accounts/:id/approve', requireAdmin, async (req, res) => {
+router.post('/accounts/:id/approve', requireAdminReauth, async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: '잘못된 계정 ID입니다.' });
     const { rows } = await pool.query(
@@ -301,7 +365,7 @@ const MAX_PENDING_SIGNUPS = 100; // 승인 대기가 너무 쌓이면 더 안 �
 // 성공: { account }, 실패: { code(HTTP 상태), error }. 검증·시군구 확인·INSERT·
 // 중복/DB 오류 처리를 전부 여기서 하므로 호출하는 라우트는 결과만 응답하면 된다
 // (공개 엔드포인트(signup)에서 예외가 프로세스 밖으로 새지 않게 하는 효과도 있음).
-async function insertAccount({ username, password, displayName, role, status, sigunguCode, requireSigungu, requireDisplayName }) {
+async function insertAccount({ username, password, displayName, role, status, sigunguCode, requireSigungu, requireDisplayName, privacyConsent }) {
     const uname = String(username || '').trim();
     if (!USERNAME_RE.test(uname)) {
         return { code: 400, error: '아이디는 영문/숫자/_.- 4~30자로 입력하세요.' };
@@ -327,10 +391,10 @@ async function insertAccount({ username, password, displayName, role, status, si
     try {
         const passwordHash = await bcrypt.hash(password, 10);
         const { rows } = await pool.query(
-            `INSERT INTO accounts (username, password_hash, display_name, role, status, sigungu_code, sigungu_name)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            `INSERT INTO accounts (username, password_hash, display_name, role, status, sigungu_code, sigungu_name, privacy_consent_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8::boolean THEN now() END)
              RETURNING id, username, display_name, role, status, sigungu_code, sigungu_name, created_at`,
-            [uname, passwordHash, name || uname, role, status, sigungu ? sigungu.code5 : null, sigungu ? sigungu.sgg : null]
+            [uname, passwordHash, name || uname, role, status, sigungu ? sigungu.code5 : null, sigungu ? sigungu.sgg : null, !!privacyConsent]
         );
         return { account: rows[0] };
     } catch (err) {
@@ -345,7 +409,11 @@ async function insertAccount({ username, password, displayName, role, status, si
 // 불가), 관할 시군구를 필수로 받는다(관할 없는 계정은 전체 데이터를 볼 수 있어
 // 신청 단계에선 허용하지 않음).
 router.post('/signup', async (req, res) => {
-    const { username, password, displayName, sigunguCode } = req.body || {};
+    const { username, password, displayName, sigunguCode, privacyConsent } = req.body || {};
+    // 개인정보 수집·이용 동의는 화면 체크만 믿지 않고 서버에서도 요구하고 동의 시각을 남긴다.
+    if (privacyConsent !== true) {
+        return res.status(400).json({ error: '개인정보 수집·이용에 동의해야 가입 신청을 할 수 있습니다.' });
+    }
     try {
         const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM accounts WHERE status = 'pending'`);
         if (rows[0].n >= MAX_PENDING_SIGNUPS) {
@@ -356,7 +424,7 @@ router.post('/signup', async (req, res) => {
         return res.status(500).json({ error: '가입 신청 중 오류가 발생했습니다.' });
     }
     const result = await insertAccount({
-        username, password, displayName, sigunguCode,
+        username, password, displayName, sigunguCode, privacyConsent: true,
         role: 'user', status: 'pending', requireSigungu: true, requireDisplayName: true,
     });
     if (result.error) return res.status(result.code).json({ error: result.error });
@@ -386,7 +454,7 @@ router.get('/sigungu-search', (req, res) => {
 });
 
 // 관리자 전용: 계정 생성 — 바로 사용 가능(active). 관할을 비우면 전체 관할.
-router.post('/accounts', requireAdmin, async (req, res) => {
+router.post('/accounts', requireAdminReauth, async (req, res) => {
     const { username, password, displayName, role, sigunguCode } = req.body || {};
     const result = await insertAccount({
         username, password, displayName, sigunguCode,
@@ -405,7 +473,7 @@ router.post('/accounts', requireAdmin, async (req, res) => {
 
 // 관리자 전용: 계정 삭제. 본인 계정은 못 지운다 — 실수로 관리자 계정을
 // 전부 지워서 아무도 로그인 못 하게 되는 상황을 막기 위함.
-router.delete('/accounts/:id', requireAdmin, async (req, res) => {
+router.delete('/accounts/:id', requireAdminReauth, async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: '잘못된 계정 ID입니다.' });
     if (id === req.session.user.id) {

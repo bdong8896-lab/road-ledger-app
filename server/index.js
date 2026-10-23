@@ -1,5 +1,7 @@
 // 가장 먼저 — 이후 모든 console 출력이 날짜별 로그 파일(server/logs/app-*.log)에도 남는다.
 require('./lib/serverLog').install();
+// async 라우트 오류가 프로세스를 죽이지 않고 전역 에러 핸들러(500)로 가게 한다.
+require('./lib/asyncErrors').install();
 
 const path = require('path');
 const express = require('express');
@@ -15,6 +17,7 @@ const parcelsRoutes = require('./routes/parcels');
 const filesRoutes = require('./routes/files');
 const cctvRoutes = require('./routes/cctv');
 const routeFilesRoutes = require('./routes/routeFiles');
+const adminSectionsRoutes = require('./routes/adminSections');
 const sectionsRoutes = require('./routes/sections');
 const roadIssuesRoutes = require('./routes/roadIssues');
 const bulkImportRoutes = require('./routes/bulkImport');
@@ -92,6 +95,7 @@ app.use('/api/parcels', parcelsRoutes);
 app.use('/api/parcels', filesRoutes);
 app.use('/api/routes/files', routeFilesRoutes);
 app.use('/api/sections', sectionsRoutes);
+app.use('/api/admin/sections', adminSectionsRoutes);
 app.use('/api/road-issues', roadIssuesRoutes);
 app.use('/api/bulk-import', bulkImportRoutes);
 app.use('/api/audit-log', auditLogRoutes);

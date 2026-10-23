@@ -1,0 +1,23 @@
+LibreDWG (dwg2dxf.exe, libredwg-0.dll) - license and source notice
+====================================================================
+
+This folder contains a Windows build of LibreDWG, distributed under the
+GNU General Public License, version 3 or (at your option) any later version.
+The full license text is in the file COPYING in this folder.
+
+  Program version reported by "dwg2dxf.exe --version": dwg2dxf 0.14
+  Project home:  https://www.gnu.org/software/libredwg/
+  Source code:   https://github.com/LibreDWG/libredwg
+                 https://ftp.gnu.org/gnu/libredwg/   (release tarballs)
+
+The complete corresponding source code of this program is available from the
+locations above. On request, the distributor of this system will also provide
+the matching source code for the binary files in this folder.
+
+The road-ledger application does not link against LibreDWG. It only starts
+dwg2dxf.exe as a separate process (server/lib/dwgConvert.js) to convert uploaded
+DWG drawings into DXF files.
+
+Other DLLs in this folder (libiconv-2.dll, libpcre2-8-0.dll, libpcre2-16-0.dll)
+are third-party runtime libraries required by dwg2dxf.exe and keep their own
+licenses (libiconv: GNU LGPL; PCRE2: BSD).

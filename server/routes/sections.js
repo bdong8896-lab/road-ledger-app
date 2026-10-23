@@ -13,31 +13,28 @@ const { buildExportZip, buildExportZipMulti } = require('../lib/sectionExport');
 const { getTableLabels } = require('../lib/schemaLabels');
 const { buildOfficialLedgerZip, buildSectionWorkbook } = require('../lib/officialLedgerZip');
 const { logAction } = require('../lib/auditLog');
+const { ROAD_RANK_CODES, ROAD_RANK_NAME_BY_CODE } = require('../lib/roadRank');
+const { deleteSection } = require('../lib/sectionDelete');
 const { decodeCode } = require('../lib/govCodebook');
 
 const router = express.Router();
 
-// 국토교통부 「도로대장공간정보 공통입력코드정의서」 03.도로의종류(ROAD_RANK) 공식 코드(1501~1508, 1599).
-// ⚠ 1509~1512(면도/리도/농도/도시계획도로)는 공식 코드북(v2.6)에 없는 값이다 —
-// 실제로 코드정의서를 재확인함(2026-09-01): 03.도로의종류엔 9개(1501~1508+1599)만
-// 있고, 작성지침 PDF도 「도로법」 제10조 적용범위(고속국도~구도)로 못박아
-// 도시계획도로는 예시에서도 "기타(1599)"로 편입시킨다. 그럼에도 사용자 요청으로
-// 우리 시스템 내부 관리용 비공식 확장 코드로 이 4개를 추가한 것 — 그대로 KRRIS
-// 등 외부 표준 시스템에 제출하면 이 4개 코드는 거부되거나 무시될 수 있으므로,
-// 실제 제출/납품용 SHP·DBF를 만들 때는 반드시 1599(기타)로 변환해야 한다.
-const ROAD_RANK_CODES = {
-    '고속국도': '1501', '일반국도': '1502', '특별시도': '1503', '광역시도': '1504',
-    '지방도': '1505', '시도': '1506', '군도': '1507', '구도': '1508',
-    '면도': '1509', '리도': '1510', '농도': '1511', '도시계획도로': '1512',
-    '기타': '1599',
-};
-// 역방향(코드->이름). gov_* 부속시설 테이블은 국토부 코드(1501~1599)만 저장하고
-// 있어서(우리 내부 확장 4개는 저장 안 됨) facility-detail에서 "1507" 같은 값을
-// "1507 (군도)"처럼 풀어 보여줄 때 쓴다. govSectionSync.js의 ROAD_RANK_NAME_BY_CODE와
-// 같은 패턴 — 거긴 gov_section(도로대장총괄) 동기화용이라 따로 두되 값은 같다.
-const ROAD_RANK_NAME_BY_CODE = Object.fromEntries(
-    Object.entries(ROAD_RANK_CODES).map(([name, code]) => [code, name])
-);
+// 도로의종류 코드표와 면도/리도/농도/도시계획도로 처리 방침은 lib/roadRank.js 참고
+// (저장 코드는 1599, 이름만 구분 — KRRIS 규격 외 코드 1509~1512는 쓰지 않는다).
+// 도로종류 이름 → 저장 코드. 같은 이름이라도 코드가 다를 수 있다(납품 코드가 1599인 노선을 "면도"로 보이게 해 둔 경우,
+// 화면 이름은 면도지만 코드는 1599). 그래서 등록된 구간(road_sections)에서 이름+노선번호로 실제 코드를 먼저 찾고,
+// 없으면 기본 코드표(ROAD_RANK_CODES)를 쓴다.
+async function rankCodeFor(roadRankName, routeNo) {
+    const name = String(roadRankName || '').trim();
+    const no = String(routeNo || '').trim();
+    if (name && no) {
+        const { rows } = await pool.query(
+            'SELECT road_rank_code FROM road_sections WHERE road_rank_name = $1 AND route_no = $2 LIMIT 1', [name, no]
+        );
+        if (rows[0]) return rows[0].road_rank_code;
+    }
+    return ROAD_RANK_CODES[name];
+}
 
 // gov_* 부속시설 테이블의 mco(관리기관 코드)를 풀어 보여주기 위한 표
 // (public/data/managing_agencies.json, govSectionSync.js의 getMcoNameByCode와
@@ -180,7 +177,7 @@ function outsideJurisdiction(userSigungu, rowSigungu) {
 // rdid로 잘못 매칭되지 않는다.
 router.get('/facility-counts', async (req, res) => {
     const roadRankName = (req.query.road_rank_name || '').trim();
-    const roadRankCode = ROAD_RANK_CODES[roadRankName];
+    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ counts: {} });
@@ -207,7 +204,7 @@ router.get('/facility-counts', async (req, res) => {
 // 돌려주고, 그 경우 프론트는 예전처럼 구간 전체 합계 표시로 자연히 되돌아간다.
 router.get('/sectors', async (req, res) => {
     const roadRankName = (req.query.road_rank_name || '').trim();
-    const roadRankCode = ROAD_RANK_CODES[roadRankName];
+    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ sectors: [] });
@@ -230,7 +227,7 @@ router.get('/sectors', async (req, res) => {
 // 테이블(예: 도로구역)은 조용히 건너뛴다.
 router.get('/facility-counts-by-sector', async (req, res) => {
     const roadRankName = (req.query.road_rank_name || '').trim();
-    const roadRankCode = ROAD_RANK_CODES[roadRankName];
+    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ buckets: {} });
@@ -264,7 +261,7 @@ router.get('/facility-counts-by-sector', async (req, res) => {
 // 시설물을 표시하기 위함. facility-counts와 같은 업무키로 조회한다.
 // '/:rdid'보다 먼저 등록해야 한다.
 router.get('/facility-geoms', async (req, res) => {
-    const roadRankCode = ROAD_RANK_CODES[(req.query.road_rank_name || '').trim()];
+    const roadRankCode = await rankCodeFor(req.query.road_rank_name, req.query.route_no);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ items: [] });
@@ -317,7 +314,7 @@ router.get('/facility-files', async (req, res) => {
 
     const label = (req.query.label || '').trim();
     const table = FACILITY_TABLE_MAP[label];
-    const roadRankCode = ROAD_RANK_CODES[(req.query.road_rank_name || '').trim()];
+    const roadRankCode = await rankCodeFor(req.query.road_rank_name, req.query.route_no);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!table || !roadRankCode || !routeNo) return res.json({ files: [] });
@@ -740,79 +737,8 @@ router.put('/:rdid', requireAdmin, async (req, res) => {
 // 일치), 그 시설물에 연결된 gov_facility_files(사진/보고서)까지 전부.
 // gov_road_bound만 road_rank 컬럼이 없어(구조가 다름) road_no+sect로만 매칭한다.
 router.delete('/:rdid', requireAdmin, async (req, res) => {
-    const { rdid } = req.params;
-    const { rows } = await pool.query(
-        'SELECT sigungu_code, road_rank_code, road_rank_name, route_no, route_name, sect FROM road_sections WHERE rdid = $1',
-        [rdid]
-    );
-    const section = rows[0];
-    if (!section) return res.status(404).json({ error: '구간을 찾을 수 없습니다.' });
-    if (outsideJurisdiction(req.session.user.sigunguCode, section.sigungu_code)) {
-        return res.status(403).json({ error: '관할 시군구 밖의 구간입니다.' });
-    }
-
-    const client = await pool.connect();
-    const filesToUnlink = [];
-    const deletedCounts = {};
-    try {
-        await client.query('BEGIN');
-
-        const routeFileRows = await client.query(
-            'SELECT stored_path FROM route_files WHERE section_rdid = $1',
-            [rdid]
-        );
-        filesToUnlink.push(...routeFileRows.rows.map((r) => r.stored_path));
-        if (routeFileRows.rows.length) deletedCounts.route_files = routeFileRows.rows.length;
-        await client.query('DELETE FROM route_files WHERE section_rdid = $1', [rdid]);
-
-        for (const { table, pkColumn } of Object.values(GOV_LAYER_MAP)) {
-            const hasRoadRank = table !== 'gov_road_bound';
-            const where = hasRoadRank
-                ? 'road_rank = $1 AND road_no = $2 AND sect = $3'
-                : 'road_no = $1 AND sect = $2';
-            const params = hasRoadRank
-                ? [section.road_rank_code, section.route_no, section.sect]
-                : [section.route_no, section.sect];
-
-            let pkRows;
-            try {
-                pkRows = await client.query(`SELECT ${pkColumn} FROM ${table} WHERE ${where}`, params);
-            } catch (e) {
-                continue; // 테이블에 해당 컬럼이 없는 등 예외 케이스는 건너뜀
-            }
-            const pks = pkRows.rows.map((r) => r[pkColumn]);
-            if (pks.length) {
-                deletedCounts[table] = pks.length;
-                const attFileRows = await client.query(
-                    'SELECT stored_path FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = ANY($2)',
-                    [table, pks]
-                );
-                filesToUnlink.push(...attFileRows.rows.map((r) => r.stored_path));
-                await client.query(
-                    'DELETE FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = ANY($2)',
-                    [table, pks]
-                );
-                await client.query(`DELETE FROM ${table} WHERE ${where}`, params);
-            }
-        }
-
-        await client.query('DELETE FROM road_sections WHERE rdid = $1', [rdid]);
-        await client.query('COMMIT');
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error('[sections/delete]', e);
-        return res.status(500).json({ error: '삭제 중 오류가 발생했습니다.' });
-    } finally {
-        client.release();
-    }
-
-    for (const p of filesToUnlink) fs.promises.unlink(p).catch(() => {});
-    await logAction(null, {
-        action: 'delete', targetTable: 'road_sections', targetId: rdid,
-        summary: `구간 삭제: ${section.road_rank_name} ${section.route_no || ''} ${section.route_name || ''} ${section.sect || ''}구간 (부속시설 ${Object.values(deletedCounts).reduce((a, b) => a + b, 0)}건 함께 삭제)`.replace(/\s+/g, ' ').trim(),
-        detail: { section, deletedCounts },
-        sigunguCode: section.sigungu_code, user: req.session.user,
-    });
+    const result = await deleteSection(req.params.rdid, req.session.user);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
     res.json({ ok: true });
 });
 

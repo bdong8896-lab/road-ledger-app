@@ -86,8 +86,37 @@ async function doLogin() {
 async function enterApp() {
     document.getElementById('login-overlay').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
+    loadMapFooter();
     await initApp();
 }
+
+// ---------- 화면 테마(어둡게/밝게) ----------
+// 기본은 어두운 테마. 해/달 버튼(.theme-toggle — 로그인 화면·상단 바)으로 바꾸고 브라우저에
+// 기억한다. 첫 화면 깜빡임 방지용 적용은 index.html/cad-popup.html <head>의 인라인 스크립트가 한다.
+function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+    if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem('rl-theme', theme); } catch (e) { /* 저장 못 해도 이번 화면에는 적용됨 */ }
+    syncThemeButtons();
+}
+
+function syncThemeButtons() {
+    const light = currentTheme() === 'light';
+    document.querySelectorAll('.theme-toggle').forEach((b) => {
+        b.innerHTML = light ? '<i class="fa-solid fa-moon"></i>' : '<i class="fa-solid fa-sun"></i>';
+        b.title = light ? '어두운 화면으로 전환' : '밝은 화면으로 전환';
+        b.setAttribute('aria-label', b.title);
+    });
+}
+
+document.querySelectorAll('.theme-toggle').forEach((b) => {
+    b.addEventListener('click', () => applyTheme(currentTheme() === 'light' ? 'dark' : 'light'));
+});
+syncThemeButtons();
 
 // ---------- 비밀번호 변경 ----------
 let pwModalOnDone = null;
@@ -216,6 +245,8 @@ async function doSignup() {
     if (password.length < 8) { errEl.textContent = '비밀번호는 8자 이상으로 입력하세요.'; return; }
     if (password !== password2) { errEl.textContent = '비밀번호 확인이 일치하지 않습니다.'; return; }
     if (!selectedSignupSigungu) { errEl.textContent = '소속 시군구를 검색해서 목록에서 선택하세요.'; return; }
+    const consentEl = document.getElementById('signup-consent');
+    if (!consentEl.checked) { errEl.textContent = '개인정보 수집·이용에 동의해야 가입 신청을 할 수 있습니다.'; return; }
 
     const btn = document.getElementById('signup-submit');
     btn.disabled = true;
@@ -223,16 +254,17 @@ async function doSignup() {
         const res = await fetch('/api/auth/signup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, displayName, sigunguCode: selectedSignupSigungu.code5 }),
+            body: JSON.stringify({ username, password, displayName, sigunguCode: selectedSignupSigungu.code5, privacyConsent: true }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { errEl.textContent = data.error || '가입 신청에 실패했습니다.'; return; }
         ['signup-username', 'signup-password', 'signup-password2', 'signup-name', 'signup-sigungu']
             .forEach((id) => { document.getElementById(id).value = ''; });
         selectedSignupSigungu = null;
+        consentEl.checked = false;
         showSignupForm(false);
         const loginErr = document.getElementById('login-error');
-        loginErr.style.color = '#5ad18f';
+        loginErr.style.color = 'var(--success)';
         loginErr.textContent = '가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.';
         setTimeout(() => { loginErr.style.color = ''; }, 8000);
     } catch (e) {
@@ -408,8 +440,9 @@ function makeBoundaryLayer(typeName, labelField, strokeColor, options = {}) {
 async function initApp() {
     document.getElementById('user-display-name').textContent = currentUser.displayName || currentUser.username;
     if (currentUser.sigunguName) {
+        // 지자체명과 시스템명을 두 줄로(좁은 사이드바에서 한 줄로 쓰면 "시스/템"처럼 중간에 끊겼다)
         document.getElementById('sidebar-title').innerHTML =
-            `<i class="fa-solid fa-road"></i> ${escapeHtml(currentUser.sigunguName)} 도로대장 시스템`;
+            `<img class="app-logo" src="favicon.svg" alt=""><span class="st-text"><span class="st-region">${escapeHtml(currentUser.sigunguName)}</span><span class="st-name">도로대장 시스템</span></span>`;
     }
 
     const keyRes = await fetch('/api/vworld/key').then((r) => r.json());
@@ -691,6 +724,7 @@ function initMap() {
     buildingLayer = makeBuildingLayer();
 
     roadviewGuideLayer = createRoadviewGuideLayer();
+    cadastralEditLayer = createCadastralEditLayer();
 
     issueVectorLayer = new ol.layer.Vector({
         source: new ol.source.Vector(),
@@ -720,7 +754,7 @@ function initMap() {
 
     map = new ol.Map({
         target: 'map',
-        layers: [base, satellite, wfsLayer, zoningAreaLayer, buildingLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, roadCenterlineLayer, cctvLayer, clickHighlightLayer, routeHighlightLayer, sectorHighlightLayer, sectionFacilityLayer, facilityJumpLayer, measureLayer, roadviewGuideLayer, issueVectorLayer],
+        layers: [base, satellite, cadastralEditLayer, wfsLayer, zoningAreaLayer, buildingLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, roadCenterlineLayer, cctvLayer, clickHighlightLayer, routeHighlightLayer, sectorHighlightLayer, sectionFacilityLayer, facilityJumpLayer, measureLayer, roadviewGuideLayer, issueVectorLayer],
         view: new ol.View({ center: ol.proj.fromLonLat([127.5, 36.0]), zoom: 7, minZoom: 6, maxZoom: 21 }),
         // OpenLayers 기본 확대/축소 컨트롤(좌상단 흰 배경 +/- 버튼)은 이미 있는
         // 커스텀 좌측 툴바(#left-toolbar)와 중복이라 끈다.
@@ -1537,6 +1571,13 @@ function buildingUsabilityLabel(code) {
 
 function makeBuildingLayer() {
     const typeName = BUILDING_INFO_LAYER;
+    // lt_c_bldginfo는 같은 건물을 두 번 내려준다: 정상 레코드(건물명/면적/용도 등)와,
+    // ufid가 'NN'인 빈 레코드(속성 없음, 도형이 몇 m 어긋남). 둘이 겹쳐 그려지고 클릭 결과도
+    // 위치마다 달라지므로, 같은 필지(pnu)에 정상 레코드가 있으면 빈 레코드는 그리지 않는다.
+    // 정상 레코드가 없는 필지의 빈 레코드는 유일한 건물이라 그대로 보여준다.
+    // 필지가 타일 경계에 걸리면 두 레코드가 다른 타일에서 올 수 있어 style에서 판정한다.
+    const pnusWithRealRecord = new Set();
+    let layer = null;
     const tileGrid = ol.tilegrid.createXYZ({ tileSize: 256 });
     const source = new ol.source.Vector({
         loader: async function (extent, resolution, projection, success) {
@@ -1566,21 +1607,25 @@ function makeBuildingLayer() {
                 allFeatures.push(...feats);
                 if (feats.length < maxFeatures) break;
             }
+            allFeatures.forEach((f) => { if (f.get('ufid') !== 'NN') pnusWithRealRecord.add(f.get('pnu')); });
             source.addFeatures(allFeatures);
+            if (layer) layer.changed();
             if (success) success(allFeatures);
         },
         strategy: ol.loadingstrategy.tile(tileGrid),
     });
-    return new ol.layer.Vector({
+    const buildingStyle = new ol.style.Style({
+        stroke: new ol.style.Stroke({ color: '#5a5a5a', width: 1 }),
+        fill: new ol.style.Fill({ color: 'rgba(120,120,120,0.45)' }),
+    });
+    layer = new ol.layer.Vector({
         source,
         visible: false,
         minZoom: 16,
-        style: new ol.style.Style({
-            stroke: new ol.style.Stroke({ color: '#5a5a5a', width: 1 }),
-            fill: new ol.style.Fill({ color: 'rgba(120,120,120,0.45)' }),
-        }),
+        style: (feature) => (feature.get('ufid') === 'NN' && pnusWithRealRecord.has(feature.get('pnu')) ? null : buildingStyle),
         zIndex: 85, // 용도지역(80) 위, 경계/도로망(90) 아래
     });
+    return layer;
 }
 
 async function runZoningAnalysis() {
@@ -1688,9 +1733,22 @@ let pendingIssuePreviewFeature = null; // 신규 등록 모달이 열려있는 �
 // 막혀 있으니(server/routes/sections.js) 이건 UI 일관성을 위한 것.
 function applySectionFormEditability() {
     const isAdmin = document.body.classList.contains('admin-mode');
+    // 편집 모드가 아니면 입력 양식이 아니라 "읽기 전용 정보"로 보이게 한다 — 안내 문구
+    // ("예: 001", "번지 단위까지 입력")·"선택"·날짜칸의 "연도-월-일"이 그대로 보여서 값이
+    // 빈 건지 입력하라는 건지 헷갈렸다. 빈 값은 "—"로 표시(CSS: #parcel-form.is-readonly).
+    document.getElementById('parcel-form').classList.toggle('is-readonly', !isAdmin);
     FIELD_IDS.forEach((f) => {
         const el = document.getElementById('in-' + f);
-        if (el) el.disabled = !isAdmin;
+        if (!el) return;
+        el.disabled = !isAdmin;
+        if (el.tagName === 'SELECT') {
+            const emptyOpt = el.querySelector('option[value=""]');
+            if (emptyOpt) emptyOpt.textContent = isAdmin ? '선택' : '—';
+        } else {
+            if (el.dataset.ph === undefined) el.dataset.ph = el.getAttribute('placeholder') || '';
+            el.placeholder = isAdmin ? el.dataset.ph : '—';
+            if (f === 'completion_date') el.type = isAdmin ? 'date' : 'text'; // 값(YYYY-MM-DD)은 그대로 유지됨
+        }
     });
     const rankSelect = document.getElementById('road-rank-select');
     if (rankSelect) rankSelect.disabled = !isAdmin;
@@ -2497,6 +2555,13 @@ function initLayerPanel() {
         cctvLayer.setVisible(e.target.checked);
         if (e.target.checked) refreshCctvMarkers();
     });
+    // 지적편집도 — 지도 왼쪽 툴바(로드뷰 위) 버튼으로 켜고 끈다. 켜지면 버튼이 강조색.
+    document.getElementById('cadastral-edit-btn').addEventListener('click', (e) => {
+        const on = !cadastralEditLayer.getVisible();
+        cadastralEditLayer.setVisible(on);
+        e.currentTarget.classList.toggle('active', on);
+        e.currentTarget.setAttribute('aria-pressed', String(on));
+    });
     document.getElementById('layer-zoning').addEventListener('change', (e) => { zoningAreaLayer.setVisible(e.target.checked); });
     document.getElementById('layer-building').addEventListener('change', (e) => { buildingLayer.setVisible(e.target.checked); });
     document.getElementById('layer-roadcenterline').addEventListener('change', (e) => { roadCenterlineLayer.setVisible(e.target.checked); });
@@ -2887,8 +2952,12 @@ const KAKAO_RV_DISPLAY_MAX_LEVEL = 6;
 function kakaoRvResolution(level) { return Math.pow(2, level - 3); } // m/px, TM 실측 미터 기준
 
 let roadviewGuideLayer = null;
+let cadastralEditLayer = null; // 지적편집도(카카오 PNGSD_CAD02) — 기본 레이어 패널에서 켜고 끔
 
-function createRoadviewGuideLayer() {
+// 로드뷰 안내선과 지적편집도가 같은 카카오 타일 그리드·좌표계를 쓰므로 공통으로 만든다.
+// tilePath: 카카오 타일 종류/버전(kakao_sdk.js의 URI_FUNC 값), displayMaxLevel: 이보다 축소되면 숨김.
+// 주소는 https — 로드뷰도 예전엔 http였는데 운영을 HTTPS로 바꾸면 혼합 콘텐츠로 막힐 수 있었다.
+function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex }) {
     // z=0이 가장 축소(level=14, 해상도 큼), z가 커질수록 확대(level=1, 해상도 작음) —
     // OpenLayers TileGrid는 resolutions가 z 증가에 따라 감소해야 한다.
     const levelByZ = [];
@@ -2913,15 +2982,27 @@ function createRoadviewGuideLayer() {
             const cell = resolutions[z] * 256;
             const H = Math.floor(((extent[0] + extent[2]) / 2 - KAKAO_RV_ORIGIN_X) / cell);
             const V = Math.floor(((extent[1] + extent[3]) / 2 - KAKAO_RV_ORIGIN_Y) / cell);
-            return `http://mts.daumcdn.net/api/v1/tile/PNGSD_RV02/v16_83b8i/latest/${level}/${V}/${H}.png`;
+            return `https://mts.daumcdn.net/api/v1/tile/${tilePath}/latest/${level}/${V}/${H}.png`;
         },
     });
-    // 카카오 level(DISPLAY_MAX_LEVEL)의 실측 지상 해상도를, 우리 지도의 명목
+    // 카카오 level(displayMaxLevel)의 실측 지상 해상도를, 우리 지도의 명목
     // Web Mercator 해상도로 환산해 레이어 표시 상한으로 쓴다(위도에 따라 실제
     // 지상 거리가 달라지므로 투영법 기준위도(38도)로 환산 — 안전 마진용 근사치).
-    const maxResolution = kakaoRvResolution(KAKAO_RV_DISPLAY_MAX_LEVEL) / Math.cos(38 * Math.PI / 180);
+    const maxResolution = displayMaxLevel
+        ? kakaoRvResolution(displayMaxLevel) / Math.cos(38 * Math.PI / 180)
+        : undefined;
 
-    return new ol.layer.Tile({ source, visible: false, opacity: 0.6, zIndex: 15, maxResolution });
+    return new ol.layer.Tile({ source, visible: false, opacity, zIndex, maxResolution });
+}
+
+function createRoadviewGuideLayer() {
+    return createKakaoTileLayer({ tilePath: 'PNGSD_RV02/v16_83b8i', displayMaxLevel: KAKAO_RV_DISPLAY_MAX_LEVEL, opacity: 0.6, zIndex: 15 });
+}
+
+// 지적편집도 — 용도지역 색과 지역 이름이 입혀진 카카오 지도 타일(반투명 배경 포함). 모든 축척에서
+// 표시하고, 우리 데이터(용도지역 80·건물 85·경계/도로망 90·구간 100~)가 그 위에 보이도록 70에 깐다.
+function createCadastralEditLayer() {
+    return createKakaoTileLayer({ tilePath: 'PNGSD_CAD02/v17_sgbh6', displayMaxLevel: null, opacity: 0.8, zIndex: 70 });
 }
 
 function openRoadviewAt(lat, lng) {
@@ -3018,38 +3099,145 @@ function initRoadviewPanelResizer() {
     resizer.addEventListener('pointercancel', endDrag);
 }
 
-// ---------- 관리자 모드 ----------
+// ---------- 관리자 기능 ----------
+// 관리자 모드 토글(상단 방패 아이콘)은 지도에서 구간을 등록·수정·삭제하는 "편집 모드"만
+// 켠다. 계정관리·접속/변경 이력·일괄등록은 지도 사이드바가 아니라 별도 전체 화면인
+// 관리 콘솔(#admin-console)에서 한다 — 열 때 비밀번호 재인증을 받는다.
 function initAdminMode() {
     const toggleBtn = document.getElementById('admin-mode-toggle');
-    const bulkTabBtn = document.getElementById('bulk-tab-btn');
-    const auditLogTabBtn = document.getElementById('audit-log-tab-btn');
-    const accountsTabBtn = document.getElementById('accounts-tab-btn');
     if (!currentUser || currentUser.role !== 'admin') return;
 
     toggleBtn.style.display = '';
     toggleBtn.addEventListener('click', () => {
         const isOn = document.body.classList.toggle('admin-mode');
         toggleBtn.classList.toggle('active', isOn);
-        bulkTabBtn.style.display = isOn ? '' : 'none';
-        auditLogTabBtn.style.display = isOn ? '' : 'none';
-        accountsTabBtn.style.display = isOn ? '' : 'none';
-        document.getElementById('sidebar-tabs').classList.toggle('admin-tabs-visible', isOn);
-        // accounts-tab-btn은 이제 #sidebar-tabs 밖(상단 관리자모드 버튼 옆)에 있어
-        // switchSidebarTab()이 관리하는 .active 표시 대상이 아니다 — 그 탭 내용
-        // 자체가 지금 보이는 중인지로 직접 확인해야 여기서도 정확히 판단된다.
-        const accountsTabVisible = document.getElementById('accountsview-tab').style.display !== 'none';
-        if (!isOn && (bulkTabBtn.classList.contains('active') || auditLogTabBtn.classList.contains('active') || accountsTabVisible)) {
-            switchSidebarTab('dataview-tab');
-        }
         applySectionFormEditability();
     });
 
+    initAdminConsole();
     document.getElementById('audit-log-refresh-btn').addEventListener('click', () => loadAuditLog(1));
     document.getElementById('audit-log-action-filter').addEventListener('change', () => loadAuditLog(1));
     document.getElementById('audit-log-from').addEventListener('change', () => loadAuditLog(1));
     document.getElementById('audit-log-to').addEventListener('change', () => loadAuditLog(1));
     document.getElementById('audit-log-export-btn').addEventListener('click', downloadAuditLog);
     initAccountsTab();
+}
+
+// ---------- 관리 콘솔 + 재인증 ----------
+// 서버는 관리 API(계정·이력·일괄등록)에 "최근 15분 안에 재인증했는지"를 검사하고, 관리
+// 작업을 할 때마다 그 시간을 다시 늘린다(middleware/requireAuth.js). 화면은 콘솔을 열 때
+// 미리 묻고, 작업 중에 만료되면(REAUTH_REQUIRED) adminFetch가 재인증 창을 띄운 뒤 같은
+// 요청을 한 번 다시 보낸다.
+const CONSOLE_DEFAULT_SECTION = 'accountsview-tab';
+let reauthWaiter = null; // 열려 있는 재인증 창의 { promise, resolve } — 동시에 여러 요청이 만료돼도 창은 하나
+
+function initAdminConsole() {
+    const btn = document.getElementById('admin-console-btn');
+    btn.style.display = '';
+    btn.addEventListener('click', () => openAdminConsole());
+    document.getElementById('console-close-btn').addEventListener('click', closeAdminConsole);
+    document.querySelectorAll('.console-nav-btn').forEach((b) => {
+        b.addEventListener('click', () => showConsoleSection(b.dataset.section));
+    });
+    document.getElementById('console-user').textContent = currentUser.displayName || currentUser.username;
+    document.getElementById('datamgmt-refresh-btn').addEventListener('click', loadDataMgmtList);
+    document.getElementById('datamgmt-delete-btn').addEventListener('click', deleteSelectedRoutes);
+
+    const pw = document.getElementById('reauth-password');
+    document.getElementById('reauth-submit').addEventListener('click', submitReauth);
+    pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitReauth(); });
+    document.getElementById('reauth-cancel').addEventListener('click', () => finishReauth(false));
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (document.getElementById('reauth-modal').classList.contains('open')) finishReauth(false);
+        else if (document.getElementById('admin-console').classList.contains('open')) closeAdminConsole();
+    });
+}
+
+async function openAdminConsole(section) {
+    let status = { valid: false };
+    try { status = await fetch('/api/auth/reauth-status').then((r) => r.json()); } catch (e) { /* 아래에서 재인증 */ }
+    if (!status.valid && !(await requestReauth())) return;
+    document.getElementById('admin-console').classList.add('open');
+    showConsoleSection(section || document.querySelector('.console-nav-btn.active')?.dataset.section || CONSOLE_DEFAULT_SECTION);
+}
+
+function closeAdminConsole() {
+    document.getElementById('admin-console').classList.remove('open');
+}
+
+function showConsoleSection(sectionId) {
+    document.querySelectorAll('.console-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === sectionId));
+    document.querySelectorAll('.console-section').forEach((s) => { s.style.display = s.id === sectionId ? 'flex' : 'none'; });
+    // 일괄등록은 진행 중인 검수 상태를 유지해야 해서 다시 불러오지 않는다.
+    if (sectionId === 'accountsview-tab') loadAccountsList();
+    else if (sectionId === 'auditlogview-tab') loadAuditLog(1);
+    else if (sectionId === 'datamgmtview-tab') loadDataMgmtList();
+}
+
+// 재인증 창을 띄우고 결과(true=성공, false=취소)를 돌려준다.
+function requestReauth() {
+    if (reauthWaiter) return reauthWaiter.promise;
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    reauthWaiter = { promise, resolve };
+    document.getElementById('reauth-error').textContent = '';
+    const pw = document.getElementById('reauth-password');
+    pw.value = '';
+    document.getElementById('reauth-modal').classList.add('open');
+    setTimeout(() => pw.focus(), 0);
+    return promise;
+}
+
+function finishReauth(ok) {
+    document.getElementById('reauth-modal').classList.remove('open');
+    document.getElementById('reauth-password').value = '';
+    if (reauthWaiter) { reauthWaiter.resolve(ok); reauthWaiter = null; }
+}
+
+async function submitReauth() {
+    const pw = document.getElementById('reauth-password');
+    const errEl = document.getElementById('reauth-error');
+    const btn = document.getElementById('reauth-submit');
+    if (!pw.value) { errEl.textContent = '비밀번호를 입력하세요.'; return; }
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/auth/reauth', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: pw.value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            errEl.textContent = data.error || '재인증에 실패했습니다.';
+            pw.select();
+            return;
+        }
+        finishReauth(true);
+    } catch (e) {
+        errEl.textContent = '서버에 연결할 수 없습니다.';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// 관리 API 호출용 fetch — 재인증이 만료됐으면 재인증 창을 띄우고, 성공하면 같은 요청을
+// 한 번 다시 보낸다(취소하면 원래의 403 응답을 그대로 돌려줘 호출 측이 오류를 표시).
+async function adminFetch(input, init) {
+    const res = await fetch(input, init);
+    if (res.status !== 403) return res;
+    const data = await res.clone().json().catch(() => ({}));
+    if (data.code !== 'REAUTH_REQUIRED') return res;
+    return (await requestReauth()) ? fetch(input, init) : res;
+}
+
+// ---------- 지도 하단 저작권 문구 ----------
+// 로그인한 계정의 관할 지자체 영문명으로 서버가 만든다(예: "copyright © 2026 HWASEONG CITY.
+// All Rights Reserved."). 로그인 화면·관리 콘솔에는 표시하지 않는다. 빈 값이면 숨김.
+async function loadMapFooter() {
+    try {
+        const { copyright } = await fetch('/api/auth/site-info').then((r) => r.json());
+        document.getElementById('map-footer').textContent = copyright || '';
+    } catch (e) { /* 문구가 없어도 동작에는 영향 없음 */ }
 }
 
 // ---------- 계정관리(관리자 전용) ----------
@@ -3085,9 +3273,12 @@ async function loadAccountsList() {
     listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오는 중...</div>';
     let accounts;
     try {
-        ({ accounts } = await fetch('/api/auth/accounts').then((r) => r.json()));
+        const res = await adminFetch('/api/auth/accounts');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '불러오기 실패');
+        ({ accounts } = data);
     } catch (e) {
-        listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오기 실패</div>';
+        listEl.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">${escapeHtml(e.message || '불러오기 실패')}</div>`;
         return;
     }
     if (!accounts || !accounts.length) {
@@ -3124,7 +3315,7 @@ function buildAccountRow(acc) {
         resetBtn.addEventListener('click', async () => {
             const tmp = prompt(`"${acc.username}"의 임시 비밀번호를 입력하세요(8자 이상).\n그 계정은 이 비밀번호로 로그인한 뒤 새 비밀번호로 바꿔야 하고, 지금 로그인돼 있는 세션은 모두 끊깁니다.`);
             if (tmp === null) return;
-            const res = await fetch(`/api/auth/accounts/${acc.id}/reset-password`, {
+            const res = await adminFetch(`/api/auth/accounts/${acc.id}/reset-password`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ newPassword: tmp }),
@@ -3138,7 +3329,7 @@ function buildAccountRow(acc) {
     if (approveBtn) {
         approveBtn.addEventListener('click', async () => {
             if (!confirm(`"${acc.username}" 계정의 가입을 승인하시겠습니까?\n승인하면 관할(${sigungu})의 데이터를 조회할 수 있게 됩니다.`)) return;
-            const res = await fetch(`/api/auth/accounts/${acc.id}/approve`, { method: 'POST' });
+            const res = await adminFetch(`/api/auth/accounts/${acc.id}/approve`, { method: 'POST' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
                 alert(data.error || '승인에 실패했습니다.');
@@ -3149,7 +3340,7 @@ function buildAccountRow(acc) {
     }
     row.querySelector('.acc-del-btn').addEventListener('click', async () => {
         if (!confirm(`계정 "${acc.username}"을(를) 삭제하시겠습니까?`)) return;
-        const res = await fetch(`/api/auth/accounts/${acc.id}`, { method: 'DELETE' });
+        const res = await adminFetch(`/api/auth/accounts/${acc.id}`, { method: 'DELETE' });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             alert(data.error || '삭제에 실패했습니다.');
@@ -3180,7 +3371,7 @@ async function createAccount() {
     }
     statusEl.textContent = '저장 중...';
     const sigunguCode = selectedAccountSigungu ? selectedAccountSigungu.code5 : '';
-    const res = await fetch('/api/auth/accounts', {
+    const res = await adminFetch('/api/auth/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, displayName, role, sigunguCode }),
@@ -3205,7 +3396,7 @@ const AUDIT_ACTION_LABELS = {
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
-    log_export: '이력 다운로드',
+    log_export: '이력 다운로드', admin_reauth: '관리자 재인증',
 };
 
 // 화면 목록과 다운로드가 같은 조건(작업 종류 + 기간)을 쓴다.
@@ -3227,7 +3418,7 @@ async function downloadAuditLog() {
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-hourglass-half"></i> 생성 중';
     try {
-        const res = await fetch('/api/audit-log/export?' + auditLogFilterParams().toString());
+        const res = await adminFetch('/api/audit-log/export?' + auditLogFilterParams().toString());
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             alert(data.error || '이력 다운로드에 실패했습니다.');
@@ -3259,9 +3450,12 @@ async function loadAuditLog(page) {
         const params = auditLogFilterParams();
         params.set('page', String(page));
         params.set('size', '30');
-        data = await fetch('/api/audit-log?' + params.toString()).then((r) => r.json());
+        const res = await adminFetch('/api/audit-log?' + params.toString());
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || '불러오기 실패');
     } catch (e) {
-        listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오기 실패</div>';
+        listEl.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">${escapeHtml(e.message || '불러오기 실패')}</div>`;
+        document.getElementById('audit-log-pagination').innerHTML = '';
         return;
     }
     const items = data.items || [];
@@ -3298,6 +3492,142 @@ function renderAuditLogPager(total, page, totalPages) {
     `;
     document.getElementById('al-prev-btn').addEventListener('click', () => loadAuditLog(page - 1));
     document.getElementById('al-next-btn').addEventListener('click', () => loadAuditLog(page + 1));
+}
+
+// ---------- 등록 데이터 관리(노선 삭제) ----------
+const RANK_NAMES_FOR_1599 = ['기타', '면도', '리도', '농도', '도시계획도로']; // 서버 lib/roadRank.js와 같은 목록
+let dataMgmtRoutes = [];
+const dataMgmtSelected = new Set(); // 선택한 노선의 키
+
+function dataMgmtKey(r) { return `${r.roadGrade}|${r.routeNo}|${r.routeName}`; }
+
+function updateDataMgmtFooter() {
+    const picked = dataMgmtRoutes.filter((r) => dataMgmtSelected.has(dataMgmtKey(r)));
+    const sections = picked.reduce((n, r) => n + r.sections.length, 0);
+    document.getElementById('datamgmt-selected-info').textContent = picked.length
+        ? `노선 ${picked.length}개(구간 ${sections}개) 선택` : '선택된 노선 없음';
+    document.getElementById('datamgmt-delete-btn').disabled = !picked.length;
+}
+
+function renderDataMgmtList() {
+    const listEl = document.getElementById('datamgmt-list');
+    if (!dataMgmtRoutes.length) {
+        listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">등록된 노선이 없습니다.</div>';
+        updateDataMgmtFooter();
+        return;
+    }
+    listEl.innerHTML = '';
+    dataMgmtRoutes.forEach((r) => {
+        const key = dataMgmtKey(r);
+        const row = document.createElement('label');
+        row.className = 'dm-row' + (dataMgmtSelected.has(key) ? ' selected' : '');
+        const km = r.lengthM ? (r.lengthM / 1000).toFixed(2) + ' km' : '연장 없음';
+        const sects = r.sections.map((s) => s.sect).filter(Boolean).join(', ');
+        row.innerHTML = `
+            <input type="checkbox" ${dataMgmtSelected.has(key) ? 'checked' : ''}>
+            <div class="dm-main">
+                <div class="dm-top"><span class="dm-grade">${escapeHtml(r.roadGrade || '')}</span><span class="dm-name">${escapeHtml([r.routeNo, r.routeName].filter(Boolean).join(' '))}</span>${r.roadRankCode === '1599' ? `<select class="dm-rank-select" title="화면에 표시할 도로종류(저장 코드는 1599 그대로)">${RANK_NAMES_FOR_1599.map((n) => `<option${n === r.roadGrade ? ' selected' : ''}>${n}</option>`).join('')}</select>` : ''}</div>
+                <div class="dm-meta">구간 ${r.sections.length}개(${escapeHtml(sects)}) · ${km} · 시설물 ${r.facilityCount.toLocaleString()}건 · 도면 ${r.drawingCount.toLocaleString()}건</div>
+            </div>`;
+        row.querySelector('input').addEventListener('change', (e) => {
+            if (e.target.checked) dataMgmtSelected.add(key); else dataMgmtSelected.delete(key);
+            row.classList.toggle('selected', e.target.checked);
+            updateDataMgmtFooter();
+        });
+        const rankSel = row.querySelector('.dm-rank-select');
+        if (rankSel) {
+            // 행(label) 안의 셀렉트라 클릭이 체크박스 토글로 번지지 않게 막는다.
+            rankSel.addEventListener('click', (e) => e.stopPropagation());
+            rankSel.addEventListener('change', async () => {
+                try {
+                    const res = await adminFetch('/api/admin/sections/rank-name', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rdids: r.sections.map((s) => s.rdid), name: rankSel.value }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || '변경 실패');
+                } catch (e) {
+                    alert(e.message || '변경 실패');
+                }
+                loadLedgerTree();
+                loadDataMgmtList();
+            });
+        }
+        listEl.appendChild(row);
+    });
+    updateDataMgmtFooter();
+}
+
+async function loadDataMgmtList() {
+    const listEl = document.getElementById('datamgmt-list');
+    listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">불러오는 중...</div>';
+    try {
+        const res = await adminFetch('/api/admin/sections');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '불러오기 실패');
+        dataMgmtRoutes = data.routes || [];
+    } catch (e) {
+        listEl.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">${escapeHtml(e.message || '불러오기 실패')}</div>`;
+        return;
+    }
+    // 목록에서 사라진 노선은 선택에서도 뺀다
+    const keys = new Set(dataMgmtRoutes.map(dataMgmtKey));
+    [...dataMgmtSelected].forEach((k) => { if (!keys.has(k)) dataMgmtSelected.delete(k); });
+    renderDataMgmtList();
+}
+
+async function deleteSelectedRoutes() {
+    const picked = dataMgmtRoutes.filter((r) => dataMgmtSelected.has(dataMgmtKey(r)));
+    if (!picked.length) return;
+    const sections = picked.flatMap((r) => r.sections);
+    const facility = picked.reduce((n, r) => n + r.facilityCount, 0);
+    const drawings = picked.reduce((n, r) => n + r.drawingCount, 0);
+    const names = picked.slice(0, 8).map((r) => `  · ${r.roadGrade} ${[r.routeNo, r.routeName].filter(Boolean).join(' ')} (구간 ${r.sections.length}개)`);
+    if (picked.length > 8) names.push(`  … 외 ${picked.length - 8}개 노선`);
+    const typed = prompt(
+        `다음 노선을 삭제합니다. 복구할 수 없습니다.\n\n${names.join('\n')}\n\n구간 ${sections.length}개, 시설물 ${facility.toLocaleString()}건, 도면 ${drawings.toLocaleString()}건이 함께 지워집니다.\n\n계속하려면 "삭제"를 입력하세요.`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== '삭제') { alert('"삭제"를 정확히 입력해야 삭제됩니다. 삭제를 취소했습니다.'); return; }
+
+    const btn = document.getElementById('datamgmt-delete-btn');
+    btn.disabled = true;
+    let data;
+    try {
+        const res = await adminFetch('/api/admin/sections/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rdids: sections.map((s) => s.rdid) }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || '삭제 실패');
+    } catch (e) {
+        alert(e.message || '삭제 실패');
+        updateDataMgmtFooter();
+        return;
+    }
+
+    // 지도/트리 쪽 상태도 정리한다
+    const failedSet = new Set((data.failed || []).map((f) => f.rdid));
+    sections.filter((s) => !failedSet.has(s.rdid)).forEach((s) => {
+        if (currentSectionRdid === s.rdid) {
+            currentSectionRdid = null;
+            pendingSectionDraft = null;
+            document.getElementById('parcel-form').style.display = 'none';
+            document.getElementById('parcel-empty-msg').style.display = 'block';
+            routeHighlightLayer.getSource().clear();
+            stopRouteHighlightBlink();
+            clearSectorSelection();
+        }
+        clearSectionFacilityGeoms(s.rdid);
+    });
+    dataMgmtSelected.clear();
+    loadLedgerTree();
+    await loadDataMgmtList();
+    if (data.failed && data.failed.length) {
+        alert(`구간 ${data.deleted}개를 삭제했고 ${data.failed.length}개는 삭제하지 못했습니다:\n${data.failed.slice(0, 5).map((f) => `  · ${f.rdid}: ${f.error}`).join('\n')}`);
+    } else {
+        alert(`구간 ${data.deleted}개를 삭제했습니다.`);
+    }
 }
 
 async function deleteSectionFromTree(rdid, label) {
@@ -3347,6 +3677,7 @@ function initBulkRegister() {
     const sigunguInput = document.getElementById('bulk-review-sigungu-input');
     const layersEl = document.getElementById('bulk-review-layers');
     const warningsEl = document.getElementById('bulk-review-warnings');
+    const krrisEl = document.getElementById('bulk-review-krris');
     const confirmBtn = document.getElementById('bulk-confirm-btn');
     const cancelBtn = document.getElementById('bulk-cancel-btn');
     const resultEl = document.getElementById('bulk-review-result');
@@ -3410,7 +3741,7 @@ function initBulkRegister() {
     const rdUploadBtn = document.getElementById('bulk-route-drawings-upload-btn');
     const rdStatusEl = document.getElementById('bulk-route-drawings-status');
     const rdResultEl = document.getElementById('bulk-route-drawings-result');
-    let rdFile = null;
+    let rdFiles = [];
 
     async function loadRouteDrawingsRouteOptions() {
         rdRouteSelect.innerHTML = '<option value="">불러오는 중...</option>';
@@ -3418,56 +3749,63 @@ function initBulkRegister() {
         try {
             ({ tree } = await fetch('/api/sections/tree').then((r) => r.json()));
         } catch (e) {
-            rdRouteSelect.innerHTML = '<option value="">노선 목록을 불러오지 못했습니다</option>';
+            rdRouteSelect.innerHTML = '<option value="">자동 인식 (파일명으로 노선·구간 찾기)</option>';
             return;
         }
-        const currentKey = currentRoute && currentRoute.route_no
-            ? `${currentRoute.road_rank_name || currentRoute.road_grade || ''}__${currentRoute.route_no}`
-            : null;
-        rdRouteSelect.innerHTML = '<option value="">노선을 선택하세요</option>' +
+        // 기본값은 "자동 인식"(노선을 고르지 않음). 노선을 고르면 그 노선 구간에만 붙인다.
+        rdRouteSelect.innerHTML = '<option value="">자동 인식 (파일명으로 노선·구간 찾기)</option>' +
             (tree || []).flatMap((g) => g.routes.map((r) => {
                 const key = `${g.road_grade}__${r.route_no}`;
                 return `<option value="${escapeHtml(key)}" data-road-grade="${escapeHtml(g.road_grade)}" data-route-no="${escapeHtml(r.route_no || '')}" data-route-name="${escapeHtml(r.route_name || '')}">${escapeHtml(g.road_grade)} ${escapeHtml(r.route_no || '')} ${escapeHtml(r.route_name || '')}</option>`;
             })).join('');
-        if (currentKey && [...rdRouteSelect.options].some((o) => o.value === currentKey)) {
-            rdRouteSelect.value = currentKey;
-        }
     }
 
-    function setRouteDrawingsFile(file) {
-        if (!file) return;
-        if (!/\.zip$/i.test(file.name)) { alert('ZIP 파일만 선택할 수 있습니다.'); return; }
-        rdFile = file;
-        rdFileNameEl.textContent = file.name;
+    function setRouteDrawingsFiles(fileList) {
+        const files = [...(fileList || [])];
+        if (!files.length) return;
+        const ok = files.filter((f) => /\.(zip|dwg|dxf)$/i.test(f.name));
+        if (ok.length !== files.length) alert('ZIP, DWG, DXF 파일만 선택할 수 있습니다. 다른 파일은 제외했습니다.');
+        if (!ok.length) return;
+        rdFiles = ok;
+        rdFileNameEl.textContent = ok.length === 1 ? ok[0].name : `${ok[0].name} 외 ${ok.length - 1}개`;
+        rdFileNameEl.title = ok.map((f) => f.name).join('\n');
     }
     rdDropzone.addEventListener('click', () => rdFileInput.click());
-    rdFileInput.addEventListener('change', () => { setRouteDrawingsFile(rdFileInput.files[0]); rdFileInput.value = ''; });
+    rdFileInput.addEventListener('change', () => { setRouteDrawingsFiles(rdFileInput.files); rdFileInput.value = ''; });
     rdDropzone.addEventListener('dragover', (e) => { e.preventDefault(); rdDropzone.classList.add('dragover'); });
     rdDropzone.addEventListener('dragleave', () => rdDropzone.classList.remove('dragover'));
     rdDropzone.addEventListener('drop', (e) => {
         e.preventDefault();
         rdDropzone.classList.remove('dragover');
-        setRouteDrawingsFile(e.dataTransfer.files[0]);
+        setRouteDrawingsFiles(e.dataTransfer.files);
     });
 
     rdUploadBtn.addEventListener('click', async () => {
         const opt = rdRouteSelect.selectedOptions[0];
-        if (!opt || !opt.value) { alert('먼저 대상 노선을 선택하세요.'); return; }
-        if (!rdFile) { alert('먼저 ZIP 파일을 선택하세요.'); return; }
+        const routeChosen = !!(opt && opt.value);
+        if (!rdFiles.length) { alert('먼저 도면 파일 또는 ZIP을 선택하세요.'); return; }
+        if (routeChosen && (rdFiles.length !== 1 || !/\.zip$/i.test(rdFiles[0].name))) {
+            alert('노선을 고른 경우에는 ZIP 파일 1개만 올릴 수 있습니다. 여러 파일은 "자동 인식"으로 올리세요.');
+            return;
+        }
 
         const formData = new FormData();
-        formData.append('road_grade', opt.dataset.roadGrade || '');
-        formData.append('route_no', opt.dataset.routeNo || '');
-        formData.append('route_name', opt.dataset.routeName || '');
-        formData.append('file', rdFile);
+        if (routeChosen) {
+            formData.append('road_grade', opt.dataset.roadGrade || '');
+            formData.append('route_no', opt.dataset.routeNo || '');
+            formData.append('route_name', opt.dataset.routeName || '');
+            formData.append('file', rdFiles[0]);
+        } else {
+            rdFiles.forEach((f) => formData.append('files', f));
+        }
 
         bulkTabEl.classList.add('bulk-loading');
         rdUploadBtn.disabled = true;
-        rdStatusEl.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>ZIP 처리 중입니다... (파일 수에 따라 시간이 걸릴 수 있습니다)';
+        rdStatusEl.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>도면을 처리하는 중입니다... (파일 수에 따라 시간이 걸릴 수 있습니다)';
         rdResultEl.innerHTML = '';
         let data;
         try {
-            const res = await fetch('/api/routes/files/bulk-zip', { method: 'POST', body: formData });
+            const res = await fetch(routeChosen ? '/api/routes/files/bulk-zip' : '/api/routes/files/auto', { method: 'POST', body: formData });
             data = await res.json();
             if (!res.ok) throw new Error(data.error || 'ZIP 업로드 실패');
         } catch (e) {
@@ -3480,25 +3818,45 @@ function initBulkRegister() {
         }
 
         rdStatusEl.textContent = '';
-        rdFile = null;
+        rdFiles = [];
         rdFileNameEl.textContent = '';
+        rdFileNameEl.title = '';
         if (typeof refreshRouteFilePanel === 'function') refreshRouteFilePanel();
 
         const parts = [`<div class="bulk-rd-result-ok">${data.matched.length}건 등록됨</div>`];
+        // 자동 인식 결과는 어느 노선·구간으로 갔는지 묶어서 보여준다(노선을 고른 경우는 matched에 그 정보가 없음).
+        const groups = new Map();
+        data.matched.forEach((m) => {
+            if (!m.roadGrade) return;
+            const key = `${m.roadGrade} ${m.routeNo} ${m.routeName} ${m.sect}구간`;
+            groups.set(key, (groups.get(key) || 0) + 1);
+        });
+        if (groups.size) {
+            parts.push(`<ul class="bulk-rd-unmatched-list">${[...groups].map(([k, n]) => `<li>${escapeHtml(k)} — ${n}건</li>`).join('')}</ul>`);
+        }
         if (data.unmatched.length) {
-            parts.push(`<div class="bulk-rd-result-warn">${data.unmatched.length}건은 구간을 찾지 못해 건너뜀:</div>`);
-            parts.push(`<ul class="bulk-rd-unmatched-list">${data.unmatched.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul>`);
+            parts.push(`<div class="bulk-rd-result-warn">${data.unmatched.length}건은 올리지 못했습니다:</div>`);
+            // bulk-zip은 파일명 문자열, auto는 { name, reason }
+            parts.push(`<ul class="bulk-rd-unmatched-list">${data.unmatched.map((u) => (typeof u === 'string'
+                ? `<li>${escapeHtml(u)}</li>`
+                : `<li>${escapeHtml(u.name)} — ${escapeHtml(u.reason || '')}</li>`)).join('')}</ul>`);
         }
         rdResultEl.innerHTML = parts.join('');
     });
 
+    function formatBytesShort(n) {
+        if (n == null) return '';
+        if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GB';
+        if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(1) + ' MB';
+        return Math.max(1, Math.round(n / 1024)) + ' KB';
+    }
     function renderIncomingList(folders) {
         incomingFolders = folders;
         selectedIncomingFolders.forEach((name) => {
             if (!folders.some((f) => f.name === name)) selectedIncomingFolders.delete(name);
         });
         if (!folders.length) {
-            incomingListEl.innerHTML = '<div class="bulk-empty">bulk-import-incoming에 올려둔 폴더가 없습니다.</div>';
+            incomingListEl.innerHTML = '<div class="bulk-empty">bulk-import-incoming에 올려둔 폴더 또는 ZIP 파일이 없습니다.</div>';
             incomingSelectAllCb.checked = false;
             return;
         }
@@ -3509,9 +3867,9 @@ function initBulkRegister() {
             const when = new Date(f.mtimeMs).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' });
             row.innerHTML = `
                 <input type="checkbox" ${selectedIncomingFolders.has(f.name) ? 'checked' : ''}>
-                <i class="fa-solid fa-folder"></i>
+                <i class="fa-solid ${f.isZip ? 'fa-file-zipper' : 'fa-folder'}"></i>
                 <span class="bulk-incoming-name">${escapeHtml(f.name)}</span>
-                <span class="bulk-incoming-meta">${when}</span>
+                <span class="bulk-incoming-meta">${f.isZip ? formatBytesShort(f.sizeBytes) + ' · ' : ''}${when}</span>
             `;
             const cb = row.querySelector('input[type="checkbox"]');
             const toggle = () => {
@@ -3537,7 +3895,7 @@ function initBulkRegister() {
     async function loadIncomingFolders() {
         incomingListEl.innerHTML = '<div class="bulk-empty">불러오는 중...</div>';
         try {
-            const res = await fetch('/api/bulk-import/incoming');
+            const res = await adminFetch('/api/bulk-import/incoming');
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || '목록을 불러오지 못했습니다.');
             renderIncomingList(data.folders || []);
@@ -3580,21 +3938,24 @@ function initBulkRegister() {
         for (const name of folderNames) {
             const row = addBatchLogRow(name);
             try {
-                const pRes = await fetch('/api/bulk-import/preview-from-folder', {
+                const pRes = await adminFetch('/api/bulk-import/preview-from-folder', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ folderName: name }),
                 });
                 const pData = await pRes.json();
                 if (!pRes.ok) throw new Error(pData.error || '검수 실패');
-                const cRes = await fetch(`/api/bulk-import/${pData.uploadId}/confirm`, {
+                const cRes = await adminFetch(`/api/bulk-import/${pData.uploadId}/confirm`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sigunguCode, acknowledgeUnrecognizedCrs: true }),
+                    body: JSON.stringify({ sigunguCode, acknowledgeUnrecognizedCrs: true, roadRankDisplayName: document.getElementById('bulk-incoming-rank-name').value }),
                 });
                 const cData = await cRes.json();
                 if (!cRes.ok) throw new Error(cData.error || '등록 실패');
                 const insertedTotal = Object.values(cData.inserted || {}).reduce((sum, n) => sum + n, 0);
                 const sectorPart = cData.sectorsInserted ? `, 500m 구간 ${cData.sectorsInserted}건` : '';
-                setBatchLogRow(row, true, `${insertedTotal}건 저장, 첨부 ${cData.facilityFilesAttached || 0}건, 도면 ${cData.drawingFilesAttached || 0}건${sectorPart}`);
+                const da = cData.drawingsAuto || {};
+                const looseDrawingPart = da.failed ? ', 도면 자동 분류 실패'
+                    : (da.matchedCount || da.unmatchedCount) ? `, 구간도면 ${da.matchedCount || 0}건${da.unmatchedCount ? `(인식 못함 ${da.unmatchedCount}건)` : ''}` : '';
+                setBatchLogRow(row, true, `${insertedTotal}건 저장, 첨부 ${cData.facilityFilesAttached || 0}건, 도면 ${cData.drawingFilesAttached || 0}건${looseDrawingPart}${sectorPart}`);
                 okCount++;
             } catch (e) {
                 setBatchLogRow(row, false, e.message);
@@ -3725,6 +4086,8 @@ function initBulkRegister() {
             layersEl.appendChild(row);
         });
 
+        renderKrrisChecks(data);
+
         const allWarnings = [];
         if (data.unknownLayerCodes.length) allWarnings.push(`알 수 없는 레이어코드: ${data.unknownLayerCodes.join(', ')}`);
         data.layers.forEach((l) => l.warnings.forEach((w) => allWarnings.push(w)));
@@ -3738,6 +4101,76 @@ function initBulkRegister() {
 
         resultEl.textContent = '';
         hideReviewError();
+    }
+
+    // KRRIS(국가 도로대장 검수) 사전검사 결과 — C-1 좌표계, M-1 필수항목 빈 값.
+    // 등록을 막지는 않고(업체 데이터를 일단 받아두고 보완 요청하는 흐름), 결함 목록을
+    // CSV로 내려받아 업체에 그대로 보낼 수 있게 한다. 서버 lib/bulkImportParse.js 참고.
+    function renderKrrisChecks(data) {
+        const k = data.krris;
+        if (!k) { krrisEl.innerHTML = ''; return; }
+        const crsBad = k.crs.length;
+        const crsByEpsg = {};
+        k.crs.forEach((c) => {
+            const key = c.status === 'mismatch' ? `${c.label} (${c.epsg})` : (c.status === 'no-prj' ? '.prj 없음' : '인식 불가');
+            crsByEpsg[key] = (crsByEpsg[key] || 0) + 1;
+        });
+        const crsDetail = crsBad
+            ? Object.entries(crsByEpsg).map(([lbl, n]) => `${escapeHtml(lbl)} — ${n}개 레이어`).join('<br>')
+            : `SHP ${k.checkedShpLayers}개 레이어 모두 ${escapeHtml(k.requiredEpsg)}`;
+        const nnRows = k.nn.map((n) => `
+            <tr>
+                <td>${escapeHtml(n.koreanName)}</td>
+                <td>${escapeHtml(n.label)}<span class="kr-field">${escapeHtml(n.field)}</span></td>
+                <td class="kr-num">${(n.emptyCount + n.nullCount).toLocaleString()}${n.nullCount ? '<span class="kr-skip">저장 제외 ' + n.nullCount + '</span>' : ''}</td>
+            </tr>`).join('');
+        const anyDefect = crsBad || k.nnTotal;
+        krrisEl.innerHTML = `
+            <div class="kr-head">
+                <span>KRRIS 사전검사</span>
+                ${anyDefect ? '<button type="button" id="bulk-krris-download" class="kr-dl"><i class="fa-solid fa-download"></i> 결함 목록</button>' : ''}
+            </div>
+            <div class="kr-item ${crsBad ? 'fail' : 'pass'}">
+                <i class="fa-solid ${crsBad ? 'fa-triangle-exclamation' : 'fa-circle-check'}"></i>
+                <div><b>C-1 좌표계</b> ${crsBad ? `<span class="kr-msg">제출 기준 ${escapeHtml(k.requiredEpsg)}(UTM-K) 아님</span>` : '<span class="kr-msg">적합</span>'}
+                <div class="kr-sub">${crsDetail}</div></div>
+            </div>
+            <div class="kr-item ${k.nnTotal ? 'fail' : 'pass'}">
+                <i class="fa-solid ${k.nnTotal ? 'fa-triangle-exclamation' : 'fa-circle-check'}"></i>
+                <div><b>M-1 필수항목</b> <span class="kr-msg">${k.nnTotal ? `빈 값 ${k.nnTotal.toLocaleString()}건` : '누락 없음'}</span>
+                ${k.nnTotal ? `<table class="kr-table"><thead><tr><th>레이어</th><th>항목</th><th>건수</th></tr></thead><tbody>${nnRows}</tbody></table>` : ''}</div>
+            </div>
+            ${anyDefect ? '<div class="kr-note">등록은 그대로 진행할 수 있습니다. 이 원본을 KRRIS에 제출하면 위 항목이 결함으로 지적됩니다.</div>' : ''}
+        `;
+        const dl = document.getElementById('bulk-krris-download');
+        if (dl) dl.addEventListener('click', () => downloadKrrisReport(data.uploadId, dl));
+    }
+
+    async function downloadKrrisReport(uploadId, btn) {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-hourglass-half"></i> 생성 중';
+        try {
+            const res = await adminFetch(`/api/bulk-import/${encodeURIComponent(uploadId)}/krris-report`);
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                alert(err.error || '결함 목록을 만들지 못했습니다.');
+                return;
+            }
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') || '');
+            a.download = m ? decodeURIComponent(m[1]) : 'KRRIS사전검사.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('결함 목록 다운로드 중 오류가 발생했습니다.');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
     }
 
     function resetToUploadStep() {
@@ -3775,14 +4208,14 @@ function initBulkRegister() {
                 const fd = new FormData();
                 bulkFolderFiles.forEach((f) => fd.append('files', f, f.webkitRelativePath));
                 fd.append('incomingFolderName', incomingFolderInput.value.trim());
-                res = await fetch('/api/bulk-import/preview-folder-upload', { method: 'POST', body: fd });
+                res = await adminFetch('/api/bulk-import/preview-folder-upload', { method: 'POST', body: fd });
             } else if (bulkMode === 'zip') {
                 const fd = new FormData();
                 fd.append('file', bulkFile);
                 fd.append('incomingFolderName', incomingFolderInput.value.trim());
-                res = await fetch('/api/bulk-import/preview', { method: 'POST', body: fd });
+                res = await adminFetch('/api/bulk-import/preview', { method: 'POST', body: fd });
             } else {
-                res = await fetch('/api/bulk-import/preview-from-folder', {
+                res = await adminFetch('/api/bulk-import/preview-from-folder', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ folderName: [...selectedIncomingFolders][0] }),
                 });
@@ -3805,7 +4238,7 @@ function initBulkRegister() {
 
     cancelBtn.addEventListener('click', async () => {
         if (currentPreview) {
-            await fetch(`/api/bulk-import/${currentPreview.uploadId}`, { method: 'DELETE' });
+            await adminFetch(`/api/bulk-import/${currentPreview.uploadId}`, { method: 'DELETE' });
         }
         resetToUploadStep();
     });
@@ -3822,11 +4255,12 @@ function initBulkRegister() {
         resultEl.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>저장 중입니다...';
         bulkTabEl.classList.add('bulk-loading');
         try {
-            const res = await fetch(`/api/bulk-import/${currentPreview.uploadId}/confirm`, {
+            const res = await adminFetch(`/api/bulk-import/${currentPreview.uploadId}/confirm`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     sigunguCode,
                     acknowledgeUnrecognizedCrs: currentPreview.blockingWarnings.length > 0,
+                    roadRankDisplayName: document.getElementById('bulk-review-rank-name').value,
                 }),
             });
             const data = await res.json();
@@ -3835,6 +4269,15 @@ function initBulkRegister() {
             let msg = `등록 완료: ${insertedTotal}건 저장, 노선 ${data.roadSectionsUpserted}건이 데이터보기 트리에 동기화됐습니다.`;
             if (data.facilityFilesAttached || data.drawingFilesAttached) {
                 msg += ` 첨부파일 ${data.facilityFilesAttached}건, 도면 ${data.drawingFilesAttached}건이 자동 연결됐습니다.`;
+            }
+            const da = data.drawingsAuto || {};
+            if (da.failed) {
+                msg += ' 구간 도면(500_P/CONT 등) 자동 분류 중 오류가 났습니다 — 도면 업로드 탭에서 다시 올려 주세요.';
+            } else if (da.matchedCount || da.unmatchedCount) {
+                msg += ` 구간 도면 ${da.matchedCount || 0}건을 파일명으로 노선·구간에 자동 분류했습니다.`;
+                if (da.unmatchedCount) {
+                    msg += ` 인식 못한 ${da.unmatchedCount}건: ${da.unmatched.slice(0, 5).map((u) => u.name).join(', ')}${da.unmatchedCount > 5 ? ' 외' : ''} (도면 업로드 탭에서 노선을 골라 올리세요).`;
+                }
             }
             if (data.sectorsInserted) {
                 msg += ` 500m 구간 정보 ${data.sectorsInserted}건이 저장됐습니다.`;
@@ -3903,7 +4346,7 @@ async function openLedgerReportPreview() {
     document.body.classList.add('app-busy');
     const originalHtml = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>';
+    btn.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i> 조서';
     try {
         const res = await fetch('/api/sections/ledger-report-preview?rdid=' + encodeURIComponent(currentRoute.rdid));
         if (!res.ok) {
@@ -4092,7 +4535,8 @@ async function loadLedgerTree() {
 // 쓸 수 있게 비워둔다. false(기본)는 기존처럼 라벨 전체 클릭이 토글.
 function buildTreeGroup(label, count, caretOnlyToggle) {
     const node = document.createElement('div');
-    node.className = 'tree-node';
+    // 0건 항목은 흐리게(도로등급 13종 중 실제 데이터가 있는 것만 눈에 띄게) — count는 숫자 또는 "1,234" 문자열
+    node.className = 'tree-node' + (Number(String(count).replace(/,/g, '')) === 0 ? ' is-empty' : '');
     const labelEl = document.createElement('div');
     labelEl.className = 'tree-node-label';
     labelEl.innerHTML = `<i class="fa-solid fa-caret-right tree-caret"></i><span>${escapeHtml(label)}</span><span class="tree-count">${count}</span>`;
@@ -4254,7 +4698,7 @@ function setSectionFacilityGroupActive(section, groupName, active, toggleBtn) {
 function buildFacilityLeaf(name, count) {
     const node = document.createElement('div');
     const clickable = count > 0;
-    node.className = 'tree-node facility-leaf' + (clickable ? ' rf-clickable' : '');
+    node.className = 'tree-node facility-leaf' + (clickable ? ' rf-clickable' : ' is-empty');
     const labelEl = document.createElement('div');
     labelEl.className = 'tree-node-label';
     labelEl.innerHTML = `<span>${escapeHtml(name)}</span><span class="tree-count">${count.toLocaleString()}</span>`;
@@ -5040,8 +5484,11 @@ function initLeftSidebar() {
     initLeftSidebarResize();
 
     initRouteFileTabs();
+    initRouteInfoCard();
 
     document.getElementById('route-upload-btn').addEventListener('click', uploadRouteFile);
+    // 기본 파일 입력은 좁은 패널에서 파일명이 "선…"처럼 잘려서, 숨기고 "파일 선택" 버튼 옆에 이름을 따로 보여준다
+    document.getElementById('route-upload-file').addEventListener('change', updateRouteUploadName);
 
     initCadToolbarButtons();
     initDxfCanvas();
@@ -5079,13 +5526,19 @@ function initLeftSidebarResize() {
     });
 }
 
-// "황룡면 통안리 산 118-1"처럼 끝에 붙는 번지(숫자 또는 숫자-숫자)를
-// 앞의 한글 지명과 줄바꿈으로 분리해 보여준다. 번지가 없는 주소는 그대로 둔다.
-function formatAddressWithBreak(addr) {
-    if (!addr) return '-';
-    const m = /^(.*\S)\s+(\d[\d-]*)$/.exec(addr.trim());
-    if (!m) return escapeHtml(addr);
-    return `${escapeHtml(m[1])}<br>${escapeHtml(m[2])}`;
+
+// 구간정보 카드(.ri-card) — 값이 "-"(없음)인 칸에 is-blank를 붙여 흐리게(구간 칩은 숨김).
+// 값을 채우는 곳이 여러 군데(노선 선택·구간 선택·cad-viewer.js)라 각자 고치지 않고 변화를 지켜본다.
+function initRouteInfoCard() {
+    const card = document.querySelector('#left-sidebar .ri-card');
+    if (!card) return;
+    const ids = ['ri-road-grade', 'ri-route-name', 'ri-segment-name', 'ri-length', 'ri-start-point', 'ri-end-point'];
+    const sync = () => ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('is-blank', el.textContent.trim() === '-' || !el.textContent.trim());
+    });
+    new MutationObserver(sync).observe(card, { childList: true, characterData: true, subtree: true });
+    sync();
 }
 
 // 데이터보기 트리에서 개별 구간이 아니라 노선(호선) 라벨을 클릭했을 때 —
@@ -5134,8 +5587,9 @@ function selectSectionForLeftSidebar(section) {
     document.getElementById('ri-road-grade').textContent = section.road_rank_name || section.road_grade || '-';
     document.getElementById('ri-route-name').textContent = section.route_name || '-';
     document.getElementById('ri-segment-name').textContent = section.sect ? `${section.sect}구간` : '-';
-    document.getElementById('ri-start-point').innerHTML = formatAddressWithBreak(section.s_point);
-    document.getElementById('ri-end-point').innerHTML = formatAddressWithBreak(section.e_point);
+    // 구간정보 카드에서 시점·종점은 한 줄 전체를 쓰므로 번지 앞에서 줄을 바꾸지 않는다
+    document.getElementById('ri-start-point').textContent = section.s_point || '-';
+    document.getElementById('ri-end-point').textContent = section.e_point || '-';
     document.getElementById('ri-length').textContent = formatLengthM(section.length_m);
 
     const sidebar = document.getElementById('left-sidebar');

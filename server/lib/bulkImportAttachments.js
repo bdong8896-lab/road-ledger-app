@@ -65,4 +65,23 @@ function findDrawingFiles(root) {
     return out;
 }
 
-module.exports = { findFacilityAttachments, findDrawingFiles };
+// 납품 폴더(관리번호 폴더) 밖/옆에 놓이는 도면 폴더 — 500m 단위 구간도면(500_P/500_Y/500_U)과 구간 전체 도면(CONT).
+// 예: 58950/500_P, 58950/CONT, 41590/500_Y. ETC 안의 도면은 findDrawingFiles가 따로 다루므로 ETC/LAYER는 건너뛴다.
+// 이 파일들은 어느 노선 것인지 파일명(노선번호+구간번호)으로 알아내야 해서 lib/routeDrawingsBulk.js의 자동 인식으로 붙인다.
+const LOOSE_DRAWING_DIR_RE = /^(500_[A-Za-z]|CONT)$/i;
+function findLooseDrawingFiles(root) {
+    const out = [];
+    const walk = (dir) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (!e.isDirectory()) continue;
+            const full = path.join(dir, e.name);
+            if (/^(ETC|LAYER)$/i.test(e.name)) continue;
+            if (LOOSE_DRAWING_DIR_RE.test(e.name)) out.push(...walkFiles(full).filter((f) => /\.(dxf|dwg)$/i.test(f)));
+            else walk(full);
+        }
+    };
+    if (fs.existsSync(root)) walk(root);
+    return out;
+}
+
+module.exports = { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles };

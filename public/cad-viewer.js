@@ -475,8 +475,44 @@ async function uploadOneRouteFile(file) {
 // 경우를 감안해 다중 선택을 지원한다(#route-upload-file에 multiple 속성).
 // 순서대로 하나씩 올린다 — 동시에 수십 개를 병렬로 쏘면 서버 메모리(multer가
 // 메모리 버퍼링 방식이라)에 부담이 크다.
+// "파일 선택" 버튼 옆에 고른 파일 이름(여러 개면 개수)을 보여준다 — 기본 파일 입력 대신.
+function updateRouteUploadName() {
+    const input = document.getElementById('route-upload-file');
+    const nameEl = document.getElementById('route-upload-name');
+    if (!input || !nameEl) return;
+    const files = [...input.files];
+    nameEl.textContent = !files.length ? '선택된 파일 없음'
+        : files.length === 1 ? files[0].name : `${files[0].name} 외 ${files.length - 1}개`;
+    nameEl.title = files.map((f) => f.name).join('\n');
+    nameEl.classList.toggle('has-file', files.length > 0);
+}
+
+// 도면 탭(도로/도면)에서는 노선을 고르지 않아도 파일명으로 노선·구간을 알아내 붙인다.
+// 서버가 인식 못 한 파일은, 노선을 골라 둔 경우 예전처럼 그 노선에 붙이고 아니면 목록으로 알려준다.
+async function uploadRouteFilesAuto(files) {
+    const formData = new FormData();
+    // 힌트(선택한 노선)는 파일보다 먼저 append — uploadOneRouteFile과 같은 이유.
+    if (currentRoute) {
+        formData.append('road_grade', currentRoute.road_rank_name || currentRoute.road_grade || '');
+        formData.append('route_no', currentRoute.route_no || '');
+    }
+    files.forEach((f) => formData.append('files', f));
+    const res = await fetch('/api/routes/files/auto', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '자동 인식 업로드 실패');
+    return data;
+}
+
+function sameRouteTarget(m) {
+    if (!currentRoute) return false;
+    const grade = currentRoute.road_rank_name || currentRoute.road_grade || '';
+    return m.roadGrade === grade && Number(m.routeNo) === Number(currentRoute.route_no) &&
+        (!currentRoute.sect || m.sect === currentRoute.sect);
+}
+
 async function uploadRouteFile() {
-    if (!currentRoute) { alert('먼저 데이터보기 트리에서 노선을 선택하세요.'); return; }
+    const isDrawingTab = currentRouteCategory === '도로' || currentRouteCategory === '도면종류';
+    if (!currentRoute && !isDrawingTab) { alert('먼저 데이터보기 트리에서 노선을 선택하세요.'); return; }
     const fileInput = document.getElementById('route-upload-file');
     if (!fileInput || !fileInput.files.length) return;
 
@@ -485,11 +521,31 @@ async function uploadRouteFile() {
     const statusEl = document.getElementById('route-upload-status');
     let lastUploaded = null;
     const errors = [];
+    let autoMatched = [];
+    let toUploadOneByOne = files;
+    let autoUnmatched = [];
     try {
-        for (let i = 0; i < files.length; i++) {
-            if (statusEl) statusEl.textContent = `업로드 중... (${i + 1}/${files.length}) ${files[i].name}`;
+        if (isDrawingTab) {
+            if (statusEl) statusEl.textContent = `노선·구간 자동 인식 중... (${files.length}개)`;
             try {
-                lastUploaded = await uploadOneRouteFile(files[i]);
+                const result = await uploadRouteFilesAuto(files);
+                autoMatched = result.matched || [];
+                const unmatchedNames = new Set((result.unmatched || []).map((u) => u.name));
+                // 노선을 골라 둔 경우 인식 못 한 낱개 파일은 예전처럼 그 노선에 붙인다.
+                // (ZIP 안의 파일은 원본 File과 이름이 대응하지 않아 낱개 폴백 대상이 아니다.)
+                toUploadOneByOne = currentRoute ? files.filter((f) => unmatchedNames.has(f.name)) : [];
+                autoUnmatched = currentRoute
+                    ? (result.unmatched || []).filter((u) => !files.some((f) => f.name === u.name))
+                    : (result.unmatched || []);
+            } catch (e) {
+                errors.push(e.message);
+                toUploadOneByOne = currentRoute ? files : [];
+            }
+        }
+        for (let i = 0; i < toUploadOneByOne.length; i++) {
+            if (statusEl) statusEl.textContent = `업로드 중... (${i + 1}/${toUploadOneByOne.length}) ${toUploadOneByOne[i].name}`;
+            try {
+                lastUploaded = await uploadOneRouteFile(toUploadOneByOne[i]);
             } catch (e) {
                 errors.push(e.message);
             }
@@ -500,9 +556,34 @@ async function uploadRouteFile() {
     }
 
     fileInput.value = '';
+    updateRouteUploadName();
     await loadRouteFileList();
+    // 자동 인식 결과 요약 — 선택한 노선 밖으로 간 파일이 있거나 못 붙인 파일이 있을 때만 알린다.
+    const elsewhere = autoMatched.filter((m) => !sameRouteTarget(m));
+    if (elsewhere.length || autoUnmatched.length) {
+        const groups = new Map();
+        elsewhere.forEach((m) => {
+            const key = `${m.roadGrade} ${m.routeNo} ${m.routeName} ${m.sect}구간`;
+            groups.set(key, (groups.get(key) || 0) + 1);
+        });
+        const lines = [];
+        if (elsewhere.length) {
+            lines.push(`파일명으로 노선·구간을 인식해 ${elsewhere.length}개를 분류했습니다:`);
+            groups.forEach((n, key) => lines.push(`  · ${key}: ${n}개`));
+        }
+        if (autoUnmatched.length) {
+            if (lines.length) lines.push('');
+            lines.push(`올리지 못한 파일 ${autoUnmatched.length}개:`);
+            autoUnmatched.slice(0, 10).forEach((u) => lines.push(`  · ${u.name} — ${u.reason}`));
+            if (autoUnmatched.length > 10) lines.push(`  … 외 ${autoUnmatched.length - 10}개`);
+        }
+        alert(lines.join('\n'));
+    }
     if (errors.length) alert(`${errors.length}건 실패:\n${errors.slice(0, 10).join('\n')}`);
-    if (files.length === 1 && lastUploaded && !errors.length) openRouteFileInViewer(lastUploaded);
+    if (!errors.length && !autoUnmatched.length && autoMatched.length + toUploadOneByOne.length === 1) {
+        const single = autoMatched.length === 1 ? (sameRouteTarget(autoMatched[0]) ? autoMatched[0].file : null) : lastUploaded;
+        if (single) openRouteFileInViewer(single);
+    }
 }
 
 function openRouteFileInViewer(file) {
@@ -828,6 +909,8 @@ const dxfViewer = {
     bgDark: true,
     measureMode: null, // null | 'distance' | 'area'
     measurePoints: [], // 진행 중인 측정의 월드 좌표 점들
+    measureCursor: null, // 마우스 현재 위치(월드 좌표) — 진행 중인 측정의 실시간 선/값 표시용
+    _baseSnap: null, // 측정 중 마우스를 움직일 때 도면 전체를 다시 그리지 않으려고 둔 화면 캐시
     measurements: [], // 완료된 측정 결과들 { type, points, value }
 
     load(dxf) {
@@ -886,32 +969,81 @@ const dxfViewer = {
         this.fit();
     },
 
+    // 엔티티 하나가 차지하는 점들(바운딩박스 계산용).
+    _entityPoints(e) {
+        const pts = [];
+        const add = (x, y) => { if (Number.isFinite(x) && Number.isFinite(y)) pts.push([x, y]); };
+        if (e.vertices) e.vertices.forEach((v) => add(v.x, v.y));
+        if (e.center) { const r = e.radius || 0; add(e.center.x - r, e.center.y - r); add(e.center.x + r, e.center.y + r); }
+        if (e.position) add(e.position.x, e.position.y);
+        if (e.startPoint) add(e.startPoint.x, e.startPoint.y);
+        if (e.controlPoints) e.controlPoints.forEach((v) => add(v.x, v.y));
+        if (e.boundaryPaths) e.boundaryPaths.forEach((path) => path.forEach((v) => add(v.x, v.y)));
+        if (e.points) e.points.forEach((v) => add(v.x, v.y));
+        if (e.corners) e.corners.forEach((v) => add(v.x, v.y));
+        return pts;
+    },
+
     _computeBBox() {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        const consider = (x, y) => {
-            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-            if (x < minX) minX = x; if (x > maxX) maxX = x;
-            if (y < minY) minY = y; if (y > maxY) maxY = y;
+        // TITLE 레이어는 실제 도면과 무관한 장식 요소(예: "장성로고" INSERT)가
+        // 도면 본문에서 한참 떨어진 좌표에 박혀 있는 경우가 실제 파일에서
+        // 확인됐다(도면 내용은 폭 ~540 범위인데 이 로고 하나 때문에 바운딩박스
+        // 폭이 ~950으로 늘어나, "전체보기"/인쇄 모두에서 빈 배경이 크게 남았다).
+        // 도면 프레임(CX-BORD-*)이나 실제 지형지물이 아니라 순수 장식이라
+        // 바운딩박스 계산에서 제외한다. 꺼져 있는(동결/off) 레이어도 화면에 안 그려지니
+        // 도면 위치를 잡는 데 쓰지 않는다(전부 꺼져 있으면 어쩔 수 없이 전체를 쓴다).
+        const collect = (skipHidden) => {
+            const groups = [];
+            this.entities.forEach((e) => {
+                if (e.layer === 'TITLE') return;
+                if (skipHidden && this.layerVisible[e.layer] === false) return;
+                const pts = this._entityPoints(e);
+                if (pts.length) groups.push(pts);
+            });
+            return groups;
         };
-        this.entities.forEach((e) => {
-            // TITLE 레이어는 실제 도면과 무관한 장식 요소(예: "장성로고" INSERT)가
-            // 도면 본문에서 한참 떨어진 좌표에 박혀 있는 경우가 실제 파일에서
-            // 확인됐다(도면 내용은 폭 ~540 범위인데 이 로고 하나 때문에 바운딩박스
-            // 폭이 ~950으로 늘어나, "전체보기"/인쇄 모두에서 빈 배경이 크게 남았다).
-            // 도면 프레임(CX-BORD-*)이나 실제 지형지물이 아니라 순수 장식이라
-            // 바운딩박스 계산에서 제외한다.
-            if (e.layer === 'TITLE') return;
-            if (e.vertices) e.vertices.forEach((v) => consider(v.x, v.y));
-            if (e.center) { consider(e.center.x - (e.radius || 0), e.center.y - (e.radius || 0)); consider(e.center.x + (e.radius || 0), e.center.y + (e.radius || 0)); }
-            if (e.position) consider(e.position.x, e.position.y);
-            if (e.startPoint) consider(e.startPoint.x, e.startPoint.y);
-            if (e.controlPoints) e.controlPoints.forEach((v) => consider(v.x, v.y));
-            if (e.boundaryPaths) e.boundaryPaths.forEach((path) => path.forEach((v) => consider(v.x, v.y)));
-            if (e.points) e.points.forEach((v) => consider(v.x, v.y));
-            if (e.corners) e.corners.forEach((v) => consider(v.x, v.y));
-        });
-        if (!Number.isFinite(minX)) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+        let groups = collect(true);
+        if (!groups.length) groups = collect(false);
+        if (!groups.length) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+        const [minX, minY, maxX, maxY] = this._robustBounds(groups);
         return { minX, minY, maxX, maxY };
+    },
+
+    // 도면 본문에서 터무니없이 떨어진 쓰레기 엔티티를 빼고 바운딩박스를 잡는다.
+    // 실제 파일(DWG→DXF 변환본)에 좌표가 (-221526, 44)·(336962, 44)처럼 본문(약 18만, 30만
+    // 부근)에서 수십만 떨어진 2점짜리 폴리선이 1개 섞여 있어서, 그 하나 때문에 "전체보기"가
+    // 도면을 점처럼 작게 보여주거나 빈 곳으로 이동하는 문제가 있었다(헤더의 $EXTMIN/$EXTMAX는
+    // 본문 범위로 정상). 점들의 2~98% 구간을 본문으로 보고, 그 구간 폭의 절반만큼 여유를 둔
+    // 바깥에 점이 하나라도 있는 엔티티는 범위 계산에서만 뺀다(화면에는 그대로 그려진다).
+    // 그런 엔티티가 전체의 1%(최소 3개)를 넘으면 쓰레기가 아니라 실제로 떨어진 도면 요소로
+    // 보고 아무것도 빼지 않는다(예: 종단면도처럼 영역이 여러 곳인 도면).
+    _robustBounds(groups) {
+        const plain = (gs) => {
+            let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+            for (const g of gs) for (const p of g) {
+                if (p[0] < a) a = p[0]; if (p[0] > c) c = p[0];
+                if (p[1] < b) b = p[1]; if (p[1] > d) d = p[1];
+            }
+            return [a, b, c, d];
+        };
+        let total = 0;
+        groups.forEach((g) => { total += g.length; });
+        if (total < 20) return plain(groups);
+        const xs = new Float64Array(total), ys = new Float64Array(total);
+        let k = 0;
+        for (const g of groups) for (const p of g) { xs[k] = p[0]; ys[k] = p[1]; k++; }
+        xs.sort(); ys.sort();
+        const q = (arr, f) => arr[Math.min(arr.length - 1, Math.floor(f * arr.length))];
+        const loX = q(xs, 0.02), hiX = q(xs, 0.98), loY = q(ys, 0.02), hiY = q(ys, 0.98);
+        const m = Math.max(1, Math.max(hiX - loX, hiY - loY) * 0.5);
+        const kept = [];
+        let dropped = 0;
+        for (const g of groups) {
+            if (g.some((p) => p[0] < loX - m || p[0] > hiX + m || p[1] < loY - m || p[1] > hiY + m)) dropped++;
+            else kept.push(g);
+        }
+        if (!kept.length || dropped > Math.max(3, groups.length * 0.01)) return plain(groups);
+        return plain(kept);
     },
 
     fit() {
@@ -919,6 +1051,10 @@ const dxfViewer = {
         const w = this.bbox.maxX - this.bbox.minX || 1;
         const h = this.bbox.maxY - this.bbox.minY || 1;
         const cw = this.canvas.width, ch = this.canvas.height;
+        // 팝업 창 레이아웃이 아직 안 잡혀 캔버스 크기가 0이면 배율이 0이 돼 도면이 안 보인다 —
+        // 크기가 정해지는 시점(resizeDxfCanvas)에 다시 맞추도록 표시만 해둔다.
+        if (!cw || !ch) { this._needFit = true; return; }
+        this._needFit = false;
         this.scale = Math.min(cw / w, ch / h) * 0.9;
         this.panX = cw / 2 - ((this.bbox.minX + this.bbox.maxX) / 2) * this.scale;
         this.panY = ch / 2 - ((this.bbox.minY + this.bbox.maxY) / 2) * this.scale;
@@ -978,6 +1114,18 @@ const dxfViewer = {
             try { this._drawEntity(e, null, 1, 0, defaultColor, 0, color); } catch (err) { /* 지원하지 않는 엔티티 형태는 조용히 무시 */ }
         });
 
+        // 측정 모드일 때만 도면 그림을 캐시한다 — 마우스를 움직일 때마다 큰 도면을
+        // 통째로 다시 그리면 느려서, 그 뒤엔 캐시 위에 측정선만 덧그린다(renderOverlay).
+        this._baseSnap = this.measureMode ? ctx.getImageData(0, 0, this.canvas.width, this.canvas.height) : null;
+        this._drawMeasurements();
+    },
+
+    renderOverlay() {
+        if (!this._baseSnap || this._baseSnap.width !== this.canvas.width || this._baseSnap.height !== this.canvas.height) {
+            this.render();
+            return;
+        }
+        this.ctx.putImageData(this._baseSnap, 0, 0);
         this._drawMeasurements();
     },
 
@@ -1081,22 +1229,52 @@ const dxfViewer = {
             ctx.fillText(label, lx + 6, ly - 6);
         });
 
-        // 진행 중인 측정
+        // 진행 중인 측정 — 찍은 점들에 마우스 위치까지 이어 실시간으로 보여준다.
         if (this.measurePoints.length > 0) {
-            const pts = this.measurePoints.map(([x, y]) => this._toScreen(x, y));
+            const live = this.measureCursor ? [...this.measurePoints, this.measureCursor] : this.measurePoints;
+            const pts = live.map(([x, y]) => this._toScreen(x, y));
+            const isArea = this.measureMode === 'area';
             ctx.strokeStyle = measureColor;
-            ctx.setLineDash([4, 4]);
             ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
             ctx.beginPath();
             pts.forEach(([sx, sy], i) => { if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy); });
+            if (isArea && pts.length >= 3) {
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(255,149,0,0.15)';
+                ctx.fill();
+            }
             ctx.stroke();
             ctx.setLineDash([]);
-            pts.forEach(drawPoint);
+            this.measurePoints.forEach(([x, y]) => drawPoint(this._toScreen(x, y)));
+
+            if (this.measureCursor) {
+                const [cx, cy] = pts[pts.length - 1];
+                const [px, py] = this.measureCursor;
+                const [lx, ly] = this.measurePoints[this.measurePoints.length - 1];
+                const seg = Math.hypot(px - lx, py - ly);
+                let label = `${seg.toFixed(2)} m`;
+                if (isArea) {
+                    label = pts.length >= 3 ? `${this._polygonArea(live).toFixed(2)} m²` : label;
+                }
+                ctx.fillStyle = measureColor;
+                ctx.fillText(label, cx + 10, cy - 10);
+            }
         }
     },
 
+    _polygonArea(pts) {
+        let sum = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const [x1, y1] = pts[i];
+            const [x2, y2] = pts[(i + 1) % pts.length];
+            sum += x1 * y2 - x2 * y1;
+        }
+        return Math.abs(sum) / 2;
+    },
+
     addMeasurePoint(worldX, worldY) {
-        if (!this.measureMode) return;
+        if (!this.measureMode || !(this.scale > 0)) return;
         this.measurePoints.push([worldX, worldY]);
 
         if (this.measureMode === 'distance' && this.measurePoints.length === 2) {
@@ -1110,15 +1288,15 @@ const dxfViewer = {
     },
 
     finishAreaMeasurement() {
-        if (this.measureMode !== 'area' || this.measurePoints.length < 3) return;
-        let sum = 0;
-        const pts = this.measurePoints;
-        for (let i = 0; i < pts.length; i++) {
-            const [x1, y1] = pts[i];
-            const [x2, y2] = pts[(i + 1) % pts.length];
-            sum += x1 * y2 - x2 * y1;
+        if (this.measureMode !== 'area') return;
+        // 더블클릭은 클릭 두 번이라 같은 자리에 점이 두 번 찍힌다 — 하나는 뺀다.
+        const n = this.measurePoints.length;
+        if (n >= 2 && this.measurePoints[n - 1][0] === this.measurePoints[n - 2][0] && this.measurePoints[n - 1][1] === this.measurePoints[n - 2][1]) {
+            this.measurePoints.pop();
         }
-        const value = Math.abs(sum) / 2;
+        if (this.measurePoints.length < 3) return;
+        const pts = this.measurePoints;
+        const value = this._polygonArea(pts);
         this.measurements.push({ type: 'area', points: [...pts], value });
         this.measurePoints = [];
         updateMeasureResult(`면적: ${value.toFixed(2)} m²`);
@@ -1128,6 +1306,7 @@ const dxfViewer = {
     clearMeasurements() {
         this.measurements = [];
         this.measurePoints = [];
+        this.measureCursor = null;
         updateMeasureResult('');
         this.render();
     },
@@ -1357,6 +1536,12 @@ function resizeDxfCanvas() {
     const wrap = document.getElementById('cad-viewer-wrap');
     const oldW = canvas.width, oldH = canvas.height;
     const newW = wrap.clientWidth, newH = wrap.clientHeight;
+    // 패널이 숨겨져 크기가 0으로 잡히는 순간엔 건드리지 않는다(배율이 0으로 망가지는 것 방지).
+    if (!newW || !newH) return;
+    // 처음으로 제대로 된 크기를 받는 순간엔, 그 전에 맞춘 배율(기본 300x150 캔버스 기준)이
+    // 의미가 없으니 비례 조정 대신 전체보기로 다시 맞춘다.
+    const firstSize = !dxfViewer._sizedOnce;
+    dxfViewer._sizedOnce = true;
     // 도면이 로드된 상태에서 캔버스 크기만 바꾸고 scale/pan을 그대로 두면(예전
     // 방식), 열었을 땐 창에 꽉 차 보이던 도면이 팝업 창을 최대화하거나 창
     // 크기를 조절할 때마다 캔버스만 커지고 도면은 이전 픽셀 크기 그대로 남아
@@ -1364,7 +1549,7 @@ function resizeDxfCanvas() {
     // 그래서 크기가 바뀌기 직전 화면 중심의 월드좌표를 기억해뒀다가, 크기가
     // 바뀐 뒤에도 그 좌표가 새 캔버스 중심에 오도록, 그리고 도면이 이전과 같은
     // 비율로 화면을 채우도록 scale/pan을 함께 비례 조정한다.
-    if (dxfViewer.bbox && oldW > 0 && oldH > 0 && (newW !== oldW || newH !== oldH)) {
+    if (dxfViewer.bbox && !firstSize && oldW > 0 && oldH > 0 && (newW !== oldW || newH !== oldH)) {
         const [cx, cy] = dxfViewer._toWorld(oldW / 2, oldH / 2);
         const k = Math.min(newW / oldW, newH / oldH);
         canvas.width = newW;
@@ -1376,17 +1561,20 @@ function resizeDxfCanvas() {
     } else {
         canvas.width = newW;
         canvas.height = newH;
-        if (dxfViewer.bbox) dxfViewer.render();
+        if (dxfViewer.bbox && newW > 0 && newH > 0 && (firstSize || dxfViewer._needFit || !(dxfViewer.scale > 0))) dxfViewer.fit();
+        else if (dxfViewer.bbox) dxfViewer.render();
     }
 }
 
 function initDxfCanvas() {
     const canvas = document.getElementById('cad-canvas');
     dxfViewer.canvas = canvas;
-    dxfViewer.ctx = canvas.getContext('2d');
+    dxfViewer.ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     resizeDxfCanvas();
     window.addEventListener('resize', resizeDxfCanvas);
+    // 창 resize 이벤트 없이 레이아웃만 늦게 잡히는 경우(팝업 첫 표시 등)도 따라가도록 크기를 지켜본다.
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resizeDxfCanvas).observe(document.getElementById('cad-viewer-wrap'));
 
     let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0;
     canvas.addEventListener('mousedown', (e) => {
@@ -1401,6 +1589,26 @@ function initDxfCanvas() {
             dxfViewer.addMeasurePoint(wx, wy);
         }
         dragging = false;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+        if (dragging || !dxfViewer.measureMode || dxfViewer.measurePoints.length === 0) return;
+        const rect = canvas.getBoundingClientRect();
+        dxfViewer.measureCursor = dxfViewer._toWorld(e.clientX - rect.left, e.clientY - rect.top);
+        if (dxfViewer._rafPending) return;
+        dxfViewer._rafPending = true;
+        requestAnimationFrame(() => { dxfViewer._rafPending = false; dxfViewer.renderOverlay(); });
+    });
+    canvas.addEventListener('mouseleave', () => {
+        if (!dxfViewer.measureCursor) return;
+        dxfViewer.measureCursor = null;
+        dxfViewer.renderOverlay();
+    });
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && dxfViewer.measureMode && dxfViewer.measurePoints.length > 0) {
+            dxfViewer.measurePoints = [];
+            dxfViewer.measureCursor = null;
+            dxfViewer.render();
+        }
     });
     window.addEventListener('mousemove', (e) => {
         if (!dragging) return;
@@ -1427,7 +1635,9 @@ function setMeasureMode(mode) {
     document.getElementById('cad-measure-dist-btn').classList.toggle('active', dxfViewer.measureMode === 'distance');
     document.getElementById('cad-measure-area-btn').classList.toggle('active', dxfViewer.measureMode === 'area');
     document.getElementById('cad-canvas').style.cursor = dxfViewer.measureMode ? 'crosshair' : 'grab';
-    updateMeasureResult(dxfViewer.measureMode === 'area' ? '다각형 클릭 후 더블클릭으로 완료' : '');
+    dxfViewer.measureCursor = null;
+    dxfViewer.render();
+    updateMeasureResult(dxfViewer.measureMode === 'area' ? '다각형 클릭 후 더블클릭으로 완료 (Esc: 취소)' : '');
     dxfViewer.render();
 }
 
@@ -1958,6 +2168,9 @@ async function loadDxfFile(url, filename) {
     currentDxfFileUrl = url;
     currentDxfFileName = filename;
     document.getElementById('cad-empty-msg').style.display = 'none';
+    // 도면이 열리면 뷰어를 원래 크기로 — 도면이 없을 땐 빈 캔버스가 패널을 크게 차지하지 않게
+    // 낮게 접어둔다(사이드바 내장형만, CSS #left-sidebar #cad-viewer-wrap:not(.has-drawing))
+    document.getElementById('cad-viewer-wrap').classList.add('has-drawing');
     document.getElementById('cad-filename').textContent = filename;
 
     // #cad-viewer-wrap은 index.html(사이드바 내장형)과 cad-popup.html(전체화면

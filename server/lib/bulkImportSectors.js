@@ -1,8 +1,11 @@
-// 일괄등록 납품 폴더 안의 "500SHP" 폴더(도면/ETC 밑에 두는 500m 단위 구간
-// SHP 모음)를 찾아 road_sectors 테이블용 레코드로 파싱한다. 국토부 표준
-// 49개 레이어(GOV_LAYER_MAP)와 달리 이 시스템만의 항목이라 파일명 규칙이
-// 없고, DBF 자체에 ROAD_NO/SECT가 있어 노선을 미리 고를 필요도 없다 —
-// 그래서 zip/폴더 어디에 있든 이 이름의 폴더를 재귀로 찾기만 하면 된다.
+// 일괄등록 납품 폴더 안의 500m 단위 구간 SHP를 찾아 road_sectors 테이블용 레코드로
+// 파싱한다. 국토부 표준 49개 레이어(GOV_LAYER_MAP)와 달리 이 시스템만의 항목이라
+// 파일명 규칙이 없고, DBF 자체에 ROAD_NO/SECT가 있어 노선을 미리 고를 필요도 없다.
+// 두 가지 배치를 모두 찾는다:
+//   1) "500SHP" 폴더 안의 .shp 전부(예전 배치, zip/폴더 어디에 있든)
+//   2) 납품 폴더(관리번호 폴더) 바로 아래 같은 곳에 놓인 "{도로종류}{노선번호}.shp"
+//      (예: 589502026008001/군도0008.shp, 415902026101001/면도0101.shp) — LAYER 밖에 있고
+//      DBF에 ROAD_NO/SECT/SECT_ST/SECT_ED 필드가 있는 .shp는 이름과 상관없이 500m 구간으로 본다.
 // SHP/DBF/CRS 파싱은 bulkImportParse.js가 국토부 레이어에 쓰는 것과 완전히
 // 같은 함수를 그대로 재사용한다(좌표계 변환 코드 포함, 새로 짤 것 없음).
 const fs = require('fs');
@@ -26,6 +29,47 @@ function findSectorShpDirs(extractDir) {
     return out;
 }
 
+const SECTOR_DBF_FIELDS = ['ROAD_NO', 'SECT', 'SECT_ST', 'SECT_ED'];
+
+// 500m 구간 SHP로 볼 .shp 목록: { dir, shpFile } — 위 두 배치를 합친다.
+function findSectorShpFiles(extractDir) {
+    const found = new Map(); // 전체 경로 -> { dir, shpFile }
+    const add = (dir, shpFile) => found.set(path.join(dir, shpFile).toLowerCase(), { dir, shpFile });
+
+    for (const dir of findSectorShpDirs(extractDir)) {
+        for (const f of fs.readdirSync(dir)) if (/\.shp$/i.test(f)) add(dir, f);
+    }
+
+    // 2) LAYER 폴더(국토부 레이어)는 건너뛰고, 그 밖의 .shp 중 DBF 필드가 500m 구간 형식인 것만.
+    const walk = (dir) => {
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+        const names = entries.filter((e) => e.isFile()).map((e) => e.name);
+        for (const shpFile of names.filter((n) => /\.shp$/i.test(n))) {
+            if (found.has(path.join(dir, shpFile).toLowerCase())) continue;
+            const base = shpFile.slice(0, -4).toLowerCase();
+            const dbfFile = names.find((n) => n.toLowerCase() === `${base}.dbf`);
+            if (!dbfFile) continue;
+            try {
+                const fields = parseDbf(fs.readFileSync(path.join(dir, dbfFile))).fields.map((f) => f.name.toUpperCase());
+                if (SECTOR_DBF_FIELDS.every((f) => fields.includes(f))) add(dir, shpFile);
+            } catch (e) { /* 읽을 수 없는 DBF는 500m 구간 파일이 아니라고 본다 */ }
+        }
+        for (const e of entries) {
+            if (e.isDirectory() && !/^LAYER$/i.test(e.name)) walk(path.join(dir, e.name));
+        }
+    };
+    if (fs.existsSync(extractDir)) walk(extractDir);
+
+    // 디렉터리별로 묶어 돌려준다(기존 파싱 루프가 폴더 단위로 .prj/.dbf를 찾는다).
+    const byDir = new Map();
+    for (const { dir, shpFile } of found.values()) {
+        if (!byDir.has(dir)) byDir.set(dir, []);
+        byDir.get(dir).push(shpFile);
+    }
+    return byDir;
+}
+
 // DBF 필드명은 대소문자를 구분하지 않고 찾는다(국토부 납품과 달리 이 SHP는
 // 벤더가 자유롭게 만들 여지가 있어, 표기 차이에 방어적으로 대응).
 function fieldValue(rec, name) {
@@ -40,9 +84,8 @@ function parseSectorShpFiles(extractDir) {
     const records = [];
     const warnings = [];
 
-    for (const dir of findSectorShpDirs(extractDir)) {
+    for (const [dir, shpFiles] of findSectorShpFiles(extractDir)) {
         const files = fs.readdirSync(dir);
-        const shpFiles = files.filter((f) => /\.shp$/i.test(f));
 
         for (const shpFile of shpFiles) {
             const base = shpFile.slice(0, -4).toLowerCase();
@@ -105,4 +148,4 @@ function parseSectorShpFiles(extractDir) {
     return { records, warnings };
 }
 
-module.exports = { findSectorShpDirs, parseSectorShpFiles };
+module.exports = { findSectorShpDirs, findSectorShpFiles, parseSectorShpFiles };

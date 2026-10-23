@@ -4,21 +4,25 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>도로대장 시스템</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<script>/* 저장된 화면 테마를 첫 그리기 전에 적용(밝은 테마 사용자가 로딩 중 어두운 화면을 잠깐 보지 않게) */try{if(localStorage.getItem('rl-theme')==='light')document.documentElement.setAttribute('data-theme','light')}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/ol@7.5.1/dist/ol.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js"></script>
 <script src="./kakao_sdk.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
 <script src="https://unpkg.com/dxf-parser@1.1.2/dist/dxf-parser.js"></script>
-<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
 <div id="login-overlay">
+    <button class="theme-toggle" id="login-theme-btn" title="밝은 화면으로 전환"><i class="fa-solid fa-sun"></i></button>
     <div id="login-box">
+        <img id="login-logo" class="app-logo" src="favicon.svg" alt="">
         <div id="login-title">도로대장 시스템</div>
         <div id="login-subtitle">Road Ledger System</div>
         <div id="login-form">
@@ -40,6 +44,20 @@
                 <input type="text" id="signup-sigungu" placeholder="소속 시군구 검색 (예: 장성)" autocomplete="off">
                 <div id="signup-sigungu-suggest" hidden></div>
             </div>
+            <div id="signup-consent-text" tabindex="0" aria-label="개인정보 수집·이용 안내">
+                <b>개인정보 수집·이용 안내</b>
+                <dl>
+                    <dt>수집 항목</dt>
+                    <dd>아이디, 비밀번호(암호화하여 저장), 이름(소속/성명), 소속 시군구, 접속 일시·접속 IP(서비스 이용 중 자동 기록)</dd>
+                    <dt>이용 목적</dt>
+                    <dd>도로대장 시스템 이용자 확인 및 계정 관리, 관할별 접근 권한 부여, 부정 이용 방지 및 접속기록 관리</dd>
+                    <dt>보유 기간</dt>
+                    <dd>계정 삭제 시까지. 접속기록은 개인정보의 안전성 확보조치 기준에 따라 1년 이상 보관 후 파기</dd>
+                    <dt>동의 거부 권리</dt>
+                    <dd>동의를 거부할 수 있으나, 거부하면 회원가입 및 시스템 이용이 제한됩니다.</dd>
+                </dl>
+            </div>
+            <label id="signup-consent-row"><input type="checkbox" id="signup-consent"> 위 개인정보 수집·이용에 동의합니다. (필수)</label>
             <button id="signup-submit">가입 신청</button>
             <button type="button" id="show-login-btn" class="login-link-btn">로그인으로 돌아가기</button>
         </div>
@@ -60,7 +78,7 @@
 </div>
 
 <div id="app" style="display:none;">
-    <div id="leftSidebarToggle" class="collapsed" title="접기/펴기"><i class="fa-solid fa-chevron-left"></i></div>
+    <div id="leftSidebarToggle" class="collapsed" title="도면 뷰어 열기/닫기"><i class="fa-solid fa-drafting-compass lst-icon"></i><span class="lst-label">도면</span><i class="fa-solid fa-chevron-left lst-caret"></i></div>
 
     <div id="left-sidebar" class="collapsed">
         <div id="left-sidebar-resizer"></div>
@@ -100,12 +118,19 @@
         <div id="route-detail-row">
             <div id="route-info-panel">
                 <div class="list-header">구간정보</div>
-                <div class="info-row"><div class="info-label">도로종류</div><div class="info-value" id="ri-road-grade">-</div></div>
-                <div class="info-row"><div class="info-label">노선명</div><div class="info-value" id="ri-route-name">-</div></div>
-                <div class="info-row"><div class="info-label">구간명</div><div class="info-value" id="ri-segment-name">-</div></div>
-                <div class="info-row"><div class="info-label">시점</div><div class="info-value" id="ri-start-point">-</div></div>
-                <div class="info-row"><div class="info-label">종점</div><div class="info-value" id="ri-end-point">-</div></div>
-                <div class="info-row"><div class="info-label">연장</div><div class="info-value" id="ri-length">-</div></div>
+                <!-- 노선 카드: [도로종류] 노선명 · 구간 / 연장 / 시점 → 종점(노선 모양 세로선) -->
+                <div class="ri-card">
+                    <div class="ri-head">
+                        <span class="ri-grade" id="ri-road-grade">-</span>
+                        <span class="ri-name" id="ri-route-name">-</span>
+                        <span class="ri-seg" id="ri-segment-name">-</span>
+                    </div>
+                    <div class="ri-length"><span class="ri-k">연장</span><span class="ri-length-v" id="ri-length">-</span></div>
+                    <div class="ri-path">
+                        <div class="ri-pt ri-start"><span class="ri-dot" aria-hidden="true"></span><span class="ri-k">시점</span><span class="ri-v" id="ri-start-point">-</span></div>
+                        <div class="ri-pt ri-end"><span class="ri-dot" aria-hidden="true"></span><span class="ri-k">종점</span><span class="ri-v" id="ri-end-point">-</span></div>
+                    </div>
+                </div>
             </div>
 
             <div id="route-file-panel">
@@ -125,7 +150,8 @@
                 <div id="route-file-list"></div>
                 <div id="route-upload-status"></div>
                 <div id="route-file-upload-row">
-                    <input type="file" id="route-upload-file" multiple>
+                    <label id="route-upload-pick" title="올릴 파일 선택(여러 개 가능)"><i class="fa-solid fa-paperclip"></i> 파일 선택<input type="file" id="route-upload-file" multiple hidden></label>
+                    <span id="route-upload-name">선택된 파일 없음</span>
                     <button id="route-upload-btn" class="btn-squared"><span class="btn-text">업로드</span></button>
                 </div>
             </div>
@@ -144,6 +170,7 @@
                 <button id="btnSatellite" onclick="switchBase('satellite')"><i class="fa-solid fa-satellite"></i><span>위성</span></button>
                 <div class="toolbar-divider"></div>
                 <button id="open-split-btn" onclick="toggleSplitView()"><i class="fa-solid fa-table-columns"></i><span>분할</span></button>
+                <button id="cadastral-edit-btn" title="지적편집도 켜기/끄기 — 용도지역 색과 지역 이름(카카오맵)" aria-pressed="false"><i class="fa-solid fa-layer-group"></i><span>지적편집도</span></button>
                 <div class="toolbar-dropdown-wrapper">
                     <button id="roadview-btn"><i class="fa-solid fa-street-view"></i><span>로드뷰</span></button>
                     <div id="roadview-facility-select-menu" class="toolbar-dropdown-menu" style="display:none;">
@@ -162,6 +189,7 @@
                     </div>
                 </div>
             </div>
+            <div class="site-footer" id="map-footer"></div>
             <div id="map-bottom-bar">
                 <div id="map-scale">축척 1 : -</div>
                 <div id="map-measure-toolbar">
@@ -234,13 +262,12 @@
     <div id="sidebar">
         <div id="sidebar-resizer"></div>
         <div id="sidebar-header">
-            <div id="sidebar-title"><i class="fa-solid fa-road"></i> 도로대장 시스템</div>
+            <div id="sidebar-title"><img class="app-logo" src="favicon.svg" alt=""> 도로대장 시스템</div>
             <div id="user-info">
                 <span id="user-display-name"></span>
-                <button id="admin-mode-toggle" title="관리자 모드" style="display:none;"><i class="fa-solid fa-user-shield"></i></button>
-                <button class="admin-only-tab" id="accounts-tab-btn" data-tab="accountsview-tab" title="계정관리" onclick="switchSidebarTab('accountsview-tab'); loadAccountsList();" style="display:none;">
-                    <i class="fa-solid fa-users-gear"></i>
-                </button>
+                <button id="admin-mode-toggle" title="편집 모드(구간 등록·수정·삭제)" style="display:none;"><i class="fa-solid fa-user-shield"></i></button>
+                <button id="admin-console-btn" title="관리 콘솔(계정·이력·일괄등록)" style="display:none;"><i class="fa-solid fa-screwdriver-wrench"></i></button>
+                <button class="theme-toggle" id="theme-toggle-btn" title="밝은 화면으로 전환"><i class="fa-solid fa-sun"></i></button>
                 <button id="pw-change-btn" title="비밀번호 변경"><i class="fa-solid fa-key"></i></button>
                 <button id="logout-btn" title="로그아웃"><i class="fa-solid fa-right-from-bracket"></i></button>
             </div>
@@ -259,12 +286,6 @@
             <button class="tab-button" data-tab="analysisview-tab" onclick="switchSidebarTab('analysisview-tab')">
                 <i class="fa-solid fa-chart-pie"></i> 분석
             </button>
-            <button class="tab-button admin-only-tab" id="bulk-tab-btn" data-tab="bulkview-tab" onclick="switchSidebarTab('bulkview-tab')" style="display:none;">
-                <i class="fa-solid fa-file-import"></i> 일괄등록
-            </button>
-            <button class="tab-button admin-only-tab" id="audit-log-tab-btn" data-tab="auditlogview-tab" onclick="switchSidebarTab('auditlogview-tab'); loadAuditLog(1);" style="display:none;">
-                <i class="fa-solid fa-clock-rotate-left"></i> 변경이력
-            </button>
         </div>
 
         <div id="dataview-tab" class="sidebar-tab-content" style="display:flex;">
@@ -276,11 +297,12 @@
                 </div>
                 <div id="ledger-tree"></div>
                 <div id="ledger-tree-toolbar">
-                    <button id="tree-expand-all-btn" title="전체 펼치기"><i class="fa-solid fa-angles-down"></i></button>
-                    <button id="tree-collapse-all-btn" title="전체 접기"><i class="fa-solid fa-angles-up"></i></button>
-                    <button id="tree-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
-                    <button id="tree-export-btn" title="전체 자료(SHP/DBF/도면 등) 압축 다운로드 — 구간 선택 시 그 구간만, 호선 선택 시 호선 전체, 선택 없으면 관할 전체"><i class="fa-solid fa-file-zipper"></i></button>
-                    <button id="ledger-report-preview-btn" title="도로대장 조서 새창에서 바로 보기(선택 구간/전체 자료 다운로드 포함) — 구간을 하나 선택했을 때만 가능"><i class="fa-solid fa-eye"></i></button>
+                    <button id="tree-expand-all-btn" class="tree-tool-icon" title="전체 펼치기"><i class="fa-solid fa-angles-down"></i></button>
+                    <button id="tree-collapse-all-btn" class="tree-tool-icon" title="전체 접기"><i class="fa-solid fa-angles-up"></i></button>
+                    <button id="tree-refresh-btn" class="tree-tool-icon" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
+                    <span class="tree-tool-divider" aria-hidden="true"></span>
+                    <button id="tree-export-btn" class="tree-tool-labeled" title="전체 자료(SHP/DBF/도면 등) 압축 다운로드 — 구간 선택 시 그 구간만, 호선 선택 시 호선 전체, 선택 없으면 관할 전체"><i class="fa-solid fa-file-zipper"></i> 자료</button>
+                    <button id="ledger-report-preview-btn" class="tree-tool-labeled" title="도로대장 조서 새창에서 바로 보기(선택 구간/전체 자료 다운로드 포함) — 구간을 하나 선택했을 때만 가능"><i class="fa-solid fa-file-lines"></i> 조서</button>
                 </div>
             </div>
 
@@ -350,7 +372,7 @@
 
         <div id="searchview-tab" class="sidebar-tab-content" style="display:none;">
             <div id="search-section">
-                <input type="text" id="searchInput" placeholder="명칭, 도로명, 지번, 노선 검색" onkeydown="if(event.key==='Enter')runUnifiedSearch(1)">
+                <input type="text" id="searchInput" placeholder="노선명 또는 주소 입력" onkeydown="if(event.key==='Enter')runUnifiedSearch(1)">
                 <button class="btn-squared" onclick="runUnifiedSearch(1)"><span class="btn-text">검색</span></button>
             </div>
             <div id="search-category-tabs">
@@ -360,7 +382,13 @@
                 <button class="sc-tab-button" data-cat="지번">지번</button>
                 <button class="sc-tab-button" data-cat="명칭">명칭</button>
             </div>
-            <div id="search-results-wrapper"></div>
+            <div id="search-results-wrapper">
+                <div class="search-empty-hint">
+                    <i class="fa-solid fa-magnifying-glass-location"></i>
+                    <div>노선명 또는 주소로 검색하세요.</div>
+                    <div class="search-empty-examples">예: 8호선 · ○○로 12 · ○○읍 ○○리 123-4</div>
+                </div>
+            </div>
             <div id="search-results-pager"></div>
         </div>
 
@@ -425,152 +453,219 @@
             </div>
         </div>
 
-        <div id="bulkview-tab" class="sidebar-tab-content" style="display:none;">
-            <div id="bulk-upload-step">
-                <div id="bulk-mode-tabs">
-                    <button type="button" class="bulk-mode-btn active" data-mode="zip">ZIP업로드<br>(500MB이하)</button>
-                    <button type="button" class="bulk-mode-btn" data-mode="incoming">서버 폴더에서 검수</button>
-                    <button type="button" class="bulk-mode-btn" data-mode="route-drawings">도면 업로드</button>
-                </div>
+    </div>
+</div>
 
-                <div id="bulk-mode-zip">
-                    <div id="bulk-notice"><i class="fa-solid fa-circle-info"></i> 국토부 표준 SHP/DBF 납품 폴더(관리번호 폴더)를 ZIP으로 압축하거나, 압축 없이 폴더째로 업로드하세요. 사진·보고서·도면은 SFTP로 서버(bulk-import-incoming)에 같은 이름의 폴더로 미리 올려두면 자동으로 연동됩니다.</div>
-                    <label class="field-full" id="bulk-incoming-folder-row">사전 업로드 폴더명(선택)
-                        <input type="text" id="bulk-incoming-folder-input" autocomplete="off" placeholder="사진·보고서·도면처럼 용량이 큰 파일을 SFTP로 미리 올려뒀다면 그 폴더명 입력">
-                    </label>
-                    <div id="bulk-dropzone">
-                        <i class="fa-solid fa-cloud-arrow-up"></i>
-                        <div>여기로 ZIP 파일을 끌어다 놓거나<br>클릭하여 선택하세요</div>
-                        <input type="file" id="bulk-file-input" accept=".zip" style="display:none;">
-                    </div>
-                    <div id="bulk-or-divider">또는</div>
-                    <label id="bulk-folder-picker-label" class="btn-outline">
-                        <i class="fa-solid fa-folder-open"></i> ZIP 없이 폴더째로 선택
-                        <input type="file" id="bulk-folder-input" webkitdirectory multiple style="display:none;">
-                    </label>
-                    <div id="bulk-file-list"></div>
-                </div>
-
-                <div id="bulk-mode-incoming" style="display:none;">
-                    <div id="bulk-notice-incoming"><i class="fa-solid fa-circle-info"></i> SFTP로 서버(bulk-import-incoming)에 미리 올려둔 납품 폴더(LAYER/신규 포함 전체)를 골라 검수합니다. 하나만 선택하면 검수 화면에서 확인 후 등록, 여러 개를 고르거나 전체 등록을 누르면 시군구 하나로 순서대로 자동 등록됩니다.</div>
-                    <div id="bulk-incoming-toolbar">
-                        <label id="bulk-incoming-select-all-label"><input type="checkbox" id="bulk-incoming-select-all"> 전체 선택</label>
-                        <button type="button" id="bulk-incoming-refresh-btn" class="btn-outline"><i class="fa-solid fa-rotate"></i> 새로고침</button>
-                    </div>
-                    <div id="bulk-incoming-list"></div>
-                    <label class="field-full" id="bulk-incoming-batch-sigungu-row">일괄등록 대상 시군구
-                        <input type="text" id="bulk-incoming-batch-sigungu-input" list="managing-agency-list" autocomplete="off" placeholder="예: 전라남도 장성군">
-                    </label>
-                    <div id="bulk-incoming-batch-buttons">
-                        <button type="button" id="bulk-incoming-register-selected-btn" class="btn-squared">선택 항목 일괄등록</button>
-                        <button type="button" id="bulk-incoming-register-all-btn" class="btn-outline">전체 등록</button>
-                    </div>
-                    <div id="bulk-incoming-batch-log"></div>
-                </div>
-
-                <div id="bulk-mode-route-drawings" style="display:none;">
-                    <div id="bulk-notice-route-drawings"><i class="fa-solid fa-circle-info"></i> 500m 단위 구간도면(예: 000801100500P.dwg)이나 구간현황 개요도(예: CON080001.dxf)를 zip 하나로 묶어 올리면, 파일명만으로 구간을 알아내 아래에서 고른 노선에 이미 등록된 구간들에 자동으로 나눠 붙입니다.</div>
-                    <label class="field-full" id="bulk-route-drawings-route-row">대상 노선
-                        <select id="bulk-route-drawings-route-select"><option value="">노선을 선택하세요</option></select>
-                    </label>
-                    <div id="bulk-route-drawings-dropzone">
-                        <i class="fa-solid fa-cloud-arrow-up"></i>
-                        <div>여기로 ZIP 파일을 끌어다 놓거나<br>클릭하여 선택하세요</div>
-                        <input type="file" id="bulk-route-drawings-file-input" accept=".zip" style="display:none;">
-                    </div>
-                    <div id="bulk-route-drawings-file-name"></div>
-                    <button type="button" id="bulk-route-drawings-upload-btn" class="btn-squared"><span class="btn-text">업로드</span></button>
-                    <div id="bulk-route-drawings-status"></div>
-                    <div id="bulk-route-drawings-result"></div>
-                </div>
-
-                <button id="bulk-register-btn" class="btn-squared"><span class="btn-text">검수 시작</span></button>
-                <div id="bulk-upload-status"></div>
-                <div id="bulk-upload-error"></div>
-            </div>
-
-            <div id="bulk-review-panel" style="display:none;">
-                <div class="list-header">검수 결과</div>
-                <div id="bulk-review-meta"></div>
-                <label class="field-full" id="bulk-review-sigungu-row">대상 시군구
-                    <input type="text" id="bulk-review-sigungu-input" list="managing-agency-list" autocomplete="off" placeholder="예: 전라남도 장성군">
-                </label>
-                <div id="bulk-review-layers"></div>
-                <div id="bulk-review-warnings"></div>
-                <div id="bulk-review-buttons">
-                    <button id="bulk-confirm-btn" class="btn-squared"><span class="btn-text">확인 및 등록</span></button>
-                    <button id="bulk-cancel-btn" class="btn-outline">취소</button>
-                </div>
-                <div id="bulk-review-result"></div>
-                <div id="bulk-review-error"></div>
-            </div>
+<!-- 관리 콘솔 — 계정관리·접속/변경 이력·일괄등록을 지도 작업 화면과 분리한 전체 화면.
+     열 때 비밀번호 재인증(15분, 관리 작업마다 연장)을 받는다. 서버도 같은 조건을 검사한다
+     (middleware/requireAuth.js의 requireAdminReauth). -->
+<div id="admin-console" style="display:none;">
+    <header id="console-header">
+        <div id="console-title"><i class="fa-solid fa-screwdriver-wrench"></i> 관리 콘솔</div>
+        <div id="console-header-right">
+            <span id="console-user"></span>
+            <button type="button" id="console-close-btn"><i class="fa-solid fa-map-location-dot"></i> 지도로 돌아가기</button>
         </div>
+    </header>
+    <div id="console-body">
+        <nav id="console-nav">
+            <button type="button" class="console-nav-btn" data-section="accountsview-tab"><i class="fa-solid fa-users-gear"></i><span>회원·계정 관리</span></button>
+            <button type="button" class="console-nav-btn" data-section="auditlogview-tab"><i class="fa-solid fa-clock-rotate-left"></i><span>접속·변경 이력</span></button>
+            <button type="button" class="console-nav-btn" data-section="bulkview-tab"><i class="fa-solid fa-file-import"></i><span>일괄등록</span></button>
+            <button type="button" class="console-nav-btn" data-section="datamgmtview-tab"><i class="fa-solid fa-database"></i><span>등록 데이터 관리</span></button>
+        </nav>
+        <main id="console-main">
+            <section id="bulkview-tab" class="console-section" style="display:none;">
+                <div id="bulk-upload-step">
+                    <div id="bulk-mode-tabs">
+                        <button type="button" class="bulk-mode-btn active" data-mode="zip">ZIP업로드<br>(500MB이하)</button>
+                        <button type="button" class="bulk-mode-btn" data-mode="incoming">서버 폴더에서 검수</button>
+                        <button type="button" class="bulk-mode-btn" data-mode="route-drawings">도면 업로드</button>
+                    </div>
 
-        <div id="auditlogview-tab" class="sidebar-tab-content" style="display:none;">
-            <div id="audit-log-header" class="list-header">
-                <span>변경·접속 이력 — 데이터 변경, 로그인/로그아웃, 계정 처리 기록</span>
-                <button id="audit-log-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
-            </div>
-            <div id="audit-log-filter-row">
-                <select id="audit-log-action-filter">
-                    <option value="">전체 작업</option>
-                    <option value="create">등록</option>
-                    <option value="update">수정</option>
-                    <option value="delete">삭제</option>
-                    <option value="bulk_import">일괄등록</option>
-                    <optgroup label="접속·계정">
-                        <option value="login">로그인</option>
-                        <option value="login_fail">로그인 실패</option>
-                        <option value="logout">로그아웃</option>
-                        <option value="signup">가입 신청</option>
-                        <option value="approve">가입 승인</option>
-                        <option value="account_create">계정 생성</option>
-                        <option value="account_delete">계정 삭제</option>
-                        <option value="password_change">비밀번호 변경</option>
-                        <option value="password_reset">비밀번호 재설정</option>
-                        <option value="log_export">이력 다운로드</option>
-                    </optgroup>
-                </select>
-                <div id="audit-log-date-row">
-                    <input type="date" id="audit-log-from" title="시작일">
-                    <span>~</span>
-                    <input type="date" id="audit-log-to" title="종료일(그날 포함)">
-                    <button id="audit-log-export-btn" title="지금 조건(작업 종류·기간)의 이력을 CSV 텍스트 파일로 저장"><i class="fa-solid fa-file-arrow-down"></i> 다운로드</button>
+                    <div id="bulk-mode-zip">
+                        <div id="bulk-notice"><i class="fa-solid fa-circle-info"></i> 국토부 표준 SHP/DBF 납품 폴더(관리번호 폴더)를 ZIP으로 압축하거나, 압축 없이 폴더째로 업로드하세요. 사진·보고서·도면은 SFTP로 서버(bulk-import-incoming)에 같은 이름의 폴더로 미리 올려두면 자동으로 연동됩니다.</div>
+                        <label class="field-full" id="bulk-incoming-folder-row">사전 업로드 폴더명(선택)
+                            <input type="text" id="bulk-incoming-folder-input" autocomplete="off" placeholder="사진·보고서·도면처럼 용량이 큰 파일을 SFTP로 미리 올려뒀다면 그 폴더명 입력">
+                        </label>
+                        <div id="bulk-dropzone">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <div>여기로 ZIP 파일을 끌어다 놓거나<br>클릭하여 선택하세요</div>
+                            <input type="file" id="bulk-file-input" accept=".zip" style="display:none;">
+                        </div>
+                        <div id="bulk-or-divider">또는</div>
+                        <label id="bulk-folder-picker-label" class="btn-outline">
+                            <i class="fa-solid fa-folder-open"></i> ZIP 없이 폴더째로 선택
+                            <input type="file" id="bulk-folder-input" webkitdirectory multiple style="display:none;">
+                        </label>
+                        <div id="bulk-file-list"></div>
+                    </div>
+
+                    <div id="bulk-mode-incoming" style="display:none;">
+                        <div id="bulk-notice-incoming"><i class="fa-solid fa-circle-info"></i> SFTP로 서버(bulk-import-incoming)에 미리 올려둔 납품 폴더(LAYER/신규 포함 전체) 또는 ZIP 파일을 골라 검수합니다. ZIP은 서버에서 풀어 검수하며 원본 ZIP은 지우지 않습니다. 하나만 선택하면 검수 화면에서 확인 후 등록, 여러 개를 고르거나 전체 등록을 누르면 시군구 하나로 순서대로 자동 등록됩니다.</div>
+                        <div id="bulk-incoming-toolbar">
+                            <label id="bulk-incoming-select-all-label"><input type="checkbox" id="bulk-incoming-select-all"> 전체 선택</label>
+                            <button type="button" id="bulk-incoming-refresh-btn" class="btn-outline"><i class="fa-solid fa-rotate"></i> 새로고침</button>
+                        </div>
+                        <div id="bulk-incoming-list"></div>
+                        <label class="field-full" id="bulk-incoming-batch-sigungu-row">일괄등록 대상 시군구
+                            <input type="text" id="bulk-incoming-batch-sigungu-input" list="managing-agency-list" autocomplete="off" placeholder="예: 전라남도 장성군">
+                        </label>
+                        <label class="field-full" id="bulk-incoming-batch-rank-row">도로종류 표시 이름(납품 코드가 1599 기타인 노선에만 적용)
+                            <select id="bulk-incoming-rank-name">
+                            <option value="">납품 그대로 (기타 — 이미 바꿔 둔 노선은 유지)</option>
+                            <option value="면도">면도</option>
+                            <option value="리도">리도</option>
+                            <option value="농도">농도</option>
+                            <option value="도시계획도로">도시계획도로</option>
+                            </select>
+                        </label>
+                        <div id="bulk-incoming-batch-buttons">
+                            <button type="button" id="bulk-incoming-register-selected-btn" class="btn-squared">선택 항목 일괄등록</button>
+                            <button type="button" id="bulk-incoming-register-all-btn" class="btn-outline">전체 등록</button>
+                        </div>
+                        <div id="bulk-incoming-batch-log"></div>
+                    </div>
+
+                    <div id="bulk-mode-route-drawings" style="display:none;">
+                        <div id="bulk-notice-route-drawings"><i class="fa-solid fa-circle-info"></i> 도면 파일(dwg/dxf) 또는 ZIP을 올리면 파일명(예: 000801100500P.dwg, TOP000801.dxf)에서 노선번호·구간번호를 읽어 이미 등록된 해당 구간에 자동으로 붙입니다. 대상 노선을 따로 고르지 않아도 됩니다. 노선을 고르면 그 노선 구간에만 붙이며, 이때는 ZIP 1개만 올릴 수 있습니다(예: CON080001.dxf처럼 이름에 노선번호가 없는 옛 형식).</div>
+                        <label class="field-full" id="bulk-route-drawings-route-row">대상 노선(선택)
+                            <select id="bulk-route-drawings-route-select"><option value="">자동 인식 (파일명으로 노선·구간 찾기)</option></select>
+                        </label>
+                        <div id="bulk-route-drawings-dropzone">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <div>여기로 도면(dwg/dxf) 또는 ZIP 파일을 끌어다 놓거나<br>클릭하여 선택하세요(여러 개 가능)</div>
+                            <input type="file" id="bulk-route-drawings-file-input" accept=".zip,.dwg,.dxf" multiple style="display:none;">
+                        </div>
+                        <div id="bulk-route-drawings-file-name"></div>
+                        <button type="button" id="bulk-route-drawings-upload-btn" class="btn-squared"><span class="btn-text">업로드</span></button>
+                        <div id="bulk-route-drawings-status"></div>
+                        <div id="bulk-route-drawings-result"></div>
+                    </div>
+
+                    <button id="bulk-register-btn" class="btn-squared"><span class="btn-text">검수 시작</span></button>
+                    <div id="bulk-upload-status"></div>
+                    <div id="bulk-upload-error"></div>
                 </div>
-            </div>
-            <div id="audit-log-list"></div>
-            <div id="audit-log-pagination"></div>
-        </div>
 
-        <div id="accountsview-tab" class="sidebar-tab-content" style="display:none;">
-            <div id="accounts-header" class="list-header">
-                <span>계정관리</span>
-                <button id="accounts-new-btn" title="새 계정 추가"><i class="fa-solid fa-user-plus"></i></button>
-            </div>
-            <div id="account-new-form" style="display:none;">
-                <div class="field-grid">
-                    <label>아이디<input type="text" id="acc-username" autocomplete="off"></label>
-                    <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password" placeholder="8자 이상"></label>
-                    <label>표시 이름<input type="text" id="acc-display-name"></label>
-                    <label>권한
-                        <select id="acc-role">
-                            <option value="user" selected>일반</option>
-                            <option value="admin">관리자</option>
+                <div id="bulk-review-panel" style="display:none;">
+                    <div class="list-header">검수 결과</div>
+                    <div id="bulk-review-meta"></div>
+                    <label class="field-full" id="bulk-review-sigungu-row">대상 시군구
+                        <input type="text" id="bulk-review-sigungu-input" list="managing-agency-list" autocomplete="off" placeholder="예: 전라남도 장성군">
+                    </label>
+                    <label class="field-full" id="bulk-review-rank-row">도로종류 표시 이름(납품 코드가 1599 기타인 노선에만 적용)
+                        <select id="bulk-review-rank-name">
+                            <option value="">납품 그대로 (기타 — 이미 바꿔 둔 노선은 유지)</option>
+                            <option value="면도">면도</option>
+                            <option value="리도">리도</option>
+                            <option value="농도">농도</option>
+                            <option value="도시계획도로">도시계획도로</option>
                         </select>
                     </label>
-                    <label class="field-full" style="position:relative;">관할 시군구(입력 후 목록에서 선택 — 비우면 전체)
-                        <input type="text" id="acc-sigungu-search" placeholder="예: 장성군, 화성시, 중구" autocomplete="off">
-                        <div id="acc-sigungu-suggest" hidden></div>
-                    </label>
+                    <div id="bulk-review-layers"></div>
+                    <div id="bulk-review-krris"></div>
+                    <div id="bulk-review-warnings"></div>
+                    <div id="bulk-review-buttons">
+                        <button id="bulk-confirm-btn" class="btn-squared"><span class="btn-text">확인 및 등록</span></button>
+                        <button id="bulk-cancel-btn" class="btn-outline">취소</button>
+                    </div>
+                    <div id="bulk-review-result"></div>
+                    <div id="bulk-review-error"></div>
                 </div>
-                <div id="account-new-form-actions">
-                    <button id="account-new-cancel-btn" class="btn-outline">취소</button>
-                    <button id="account-new-save-btn" class="btn-squared">저장</button>
+            </section>
+
+            <section id="auditlogview-tab" class="console-section" style="display:none;">
+                <div id="audit-log-header" class="list-header">
+                    <span>변경·접속 이력 — 데이터 변경, 로그인/로그아웃, 계정 처리 기록</span>
+                    <button id="audit-log-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
                 </div>
-                <div id="account-new-status"></div>
-            </div>
-            <div id="accounts-list"></div>
-        </div>
+                <div id="audit-log-filter-row">
+                    <select id="audit-log-action-filter">
+                        <option value="">전체 작업</option>
+                        <option value="create">등록</option>
+                        <option value="update">수정</option>
+                        <option value="delete">삭제</option>
+                        <option value="bulk_import">일괄등록</option>
+                        <optgroup label="접속·계정">
+                            <option value="login">로그인</option>
+                            <option value="login_fail">로그인 실패</option>
+                            <option value="logout">로그아웃</option>
+                            <option value="signup">가입 신청</option>
+                            <option value="approve">가입 승인</option>
+                            <option value="account_create">계정 생성</option>
+                            <option value="account_delete">계정 삭제</option>
+                            <option value="password_change">비밀번호 변경</option>
+                            <option value="password_reset">비밀번호 재설정</option>
+                            <option value="log_export">이력 다운로드</option>
+                            <option value="admin_reauth">관리자 재인증</option>
+                        </optgroup>
+                    </select>
+                    <div id="audit-log-date-row">
+                        <input type="date" id="audit-log-from" title="시작일">
+                        <span>~</span>
+                        <input type="date" id="audit-log-to" title="종료일(그날 포함)">
+                        <button id="audit-log-export-btn" title="지금 조건(작업 종류·기간)의 이력을 CSV 텍스트 파일로 저장"><i class="fa-solid fa-file-arrow-down"></i> 다운로드</button>
+                    </div>
+                </div>
+                <div id="audit-log-list"></div>
+                <div id="audit-log-pagination"></div>
+            </section>
+
+            <section id="datamgmtview-tab" class="console-section" style="display:none;">
+                <div id="datamgmt-header" class="list-header">
+                    <span>등록된 노선</span>
+                    <button id="datamgmt-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+                <div id="datamgmt-notice"><i class="fa-solid fa-triangle-exclamation"></i> 노선을 삭제하면 그 노선의 모든 구간과 시설물, 첨부 파일, 도면, 500m 조각이 함께 지워지며 복구할 수 없습니다. 지우기 전에 내려받기로 백업해 두세요.</div>
+                <div id="datamgmt-list"></div>
+                <div id="datamgmt-footer">
+                    <span id="datamgmt-selected-info">선택된 노선 없음</span>
+                    <button type="button" id="datamgmt-delete-btn" disabled><i class="fa-solid fa-trash"></i> 선택 노선 삭제</button>
+                </div>
+            </section>
+
+            <section id="accountsview-tab" class="console-section" style="display:none;">
+                <div id="accounts-header" class="list-header">
+                    <span>계정관리</span>
+                    <button id="accounts-new-btn" title="새 계정 추가"><i class="fa-solid fa-user-plus"></i></button>
+                </div>
+                <div id="account-new-form" style="display:none;">
+                    <div class="field-grid">
+                        <label>아이디<input type="text" id="acc-username" autocomplete="off"></label>
+                        <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password" placeholder="8자 이상"></label>
+                        <label>표시 이름<input type="text" id="acc-display-name"></label>
+                        <label>권한
+                            <select id="acc-role">
+                                <option value="user" selected>일반</option>
+                                <option value="admin">관리자</option>
+                            </select>
+                        </label>
+                        <label class="field-full" style="position:relative;">관할 시군구(입력 후 목록에서 선택 — 비우면 전체)
+                            <input type="text" id="acc-sigungu-search" placeholder="예: 장성군, 화성시, 중구" autocomplete="off">
+                            <div id="acc-sigungu-suggest" hidden></div>
+                        </label>
+                    </div>
+                    <div id="account-new-form-actions">
+                        <button id="account-new-cancel-btn" class="btn-outline">취소</button>
+                        <button id="account-new-save-btn" class="btn-squared">저장</button>
+                    </div>
+                    <div id="account-new-status"></div>
+                </div>
+                <div id="accounts-list"></div>
+            </section>
+        </main>
+    </div>
+</div>
+
+<div id="reauth-modal" style="display:none;">
+    <div id="reauth-box" role="dialog" aria-labelledby="reauth-title">
+        <div id="reauth-title"><i class="fa-solid fa-lock"></i> 사용자 재인증</div>
+        <div id="reauth-notice">관리 기능을 사용하려면 비밀번호를 다시 입력하세요.<br>인증 후 15분 동안 관리 작업이 없으면 다시 묻습니다.</div>
+        <div id="reauth-error"></div>
+        <input type="password" id="reauth-password" placeholder="비밀번호" autocomplete="current-password" maxlength="100">
+        <button id="reauth-submit">확인</button>
+        <button type="button" id="reauth-cancel" class="pw-link-btn">취소</button>
     </div>
 </div>
 

@@ -7,15 +7,16 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('../db');
 const config = require('../config');
-const { requireAdmin } = require('../middleware/requireAuth');
-const { parseDelivery } = require('../lib/bulkImportParse');
+const { requireAdminReauth } = require('../middleware/requireAuth');
+const { parseDelivery, krrisDefectRows } = require('../lib/bulkImportParse');
 const {
     createEmptyStaging, extractZip, getExtractDir, cleanup, sweepOldStagingDirs,
     resolveIncomingDir, mergeIncomingDir, stageFromIncomingDir, listIncomingFolders,
     getIncomingSourceOfUpload,
 } = require('../lib/bulkImportStaging');
 const { syncRoadSection } = require('../lib/govSectionSync');
-const { findFacilityAttachments, findDrawingFiles } = require('../lib/bulkImportAttachments');
+const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles } = require('../lib/bulkImportAttachments');
+const { autoUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
 const { parseSectorShpFiles } = require('../lib/bulkImportSectors');
 const { convertDwgToDxf } = require('../lib/dwgConvert');
 const { logAction } = require('../lib/auditLog');
@@ -38,7 +39,7 @@ function routeDirName(roadGrade, routeNo, routeName) {
 }
 
 const router = express.Router();
-router.use(requireAdmin); // 이 기능 전체가 관리자 전용(프론트에서도 admin-only-tab)
+router.use(requireAdminReauth); // 이 기능 전체가 관리자 전용 + 관리 콘솔 재인증 필요(15분)
 
 sweepOldStagingDirs();
 setInterval(sweepOldStagingDirs, 60 * 60 * 1000).unref();
@@ -76,6 +77,7 @@ function summarizeForPreview(parsed) {
         })),
         totalNew: parsed.layers.reduce((s, l) => s + l.newRecords.length, 0),
         totalDelete: parsed.layers.reduce((s, l) => s + l.deleteRecords.length, 0),
+        krris: parsed.krris,
     };
 }
 
@@ -94,7 +96,7 @@ async function buildPreviewPayload(extractDir, incomingFolderName, sessionUser) 
     }
     const parsed = await parseDelivery(extractDir);
     const largeFileCount = mergedLargeFiles
-        ? findFacilityAttachments(extractDir).length + findDrawingFiles(extractDir).length
+        ? findFacilityAttachments(extractDir).length + findDrawingFiles(extractDir).length + findLooseDrawingFiles(extractDir).length
         : 0;
     const sectors = parseSectorShpFiles(extractDir);
     return {
@@ -179,7 +181,8 @@ router.post('/preview-from-folder', async (req, res) => {
         const staged = stageFromIncomingDir(folderName);
         uploadId = staged.uploadId;
         const parsed = await parseDelivery(staged.extractDir);
-        const largeFileCount = findFacilityAttachments(staged.extractDir).length + findDrawingFiles(staged.extractDir).length;
+        const largeFileCount = findFacilityAttachments(staged.extractDir).length + findDrawingFiles(staged.extractDir).length
+            + findLooseDrawingFiles(staged.extractDir).length;
         const sectors = parseSectorShpFiles(staged.extractDir);
         res.json({
             uploadId,
@@ -195,6 +198,33 @@ router.post('/preview-from-folder', async (req, res) => {
         if (uploadId) cleanup(uploadId);
         res.status(400).json({ error: '폴더를 처리하는 중 오류가 발생했습니다.' });
     }
+});
+
+// KRRIS 사전검사 결함 목록(CSV) — 미리보기와 같은 업로드를 다시 파싱해서 만든다(따로
+// 저장해두지 않음). 납품 업체에 그대로 보내 보완을 요청할 수 있는 형식.
+function csvCell(v) {
+    let s = v === null || v === undefined ? '' : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // 엑셀 수식 실행 방지
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+router.get('/:uploadId/krris-report', async (req, res) => {
+    let extractDir;
+    try {
+        extractDir = getExtractDir(req.params.uploadId);
+    } catch (e) {
+        return res.status(404).json({ error: '업로드 정보를 찾을 수 없습니다. 다시 검수하세요.' });
+    }
+    const parsed = await parseDelivery(extractDir);
+    const lines = [['검사항목', '레이어코드', '레이어', '대상ID', '필드', '필드명', '내용'].map(csvCell).join(',')];
+    for (const r of krrisDefectRows(parsed)) {
+        lines.push([r.check, r.code, r.layer, r.pk, r.field, r.label, r.detail].map(csvCell).join(','));
+    }
+    const code = (parsed.deliveryCodes || []).join('_') || 'delivery';
+    const filename = `KRRIS사전검사_${code}_${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send('﻿' + lines.join('\r\n') + '\r\n'); // BOM — 한국어 엑셀에서 한글이 안 깨지게
 });
 
 router.post('/:uploadId/confirm', async (req, res) => {
@@ -229,6 +259,7 @@ router.post('/:uploadId/confirm', async (req, res) => {
     let roadSectionsUpserted = 0;
     const pkTableMap = new Map(); // 시설물 PK값(rdid/suid) -> gov_* 테이블명
     const syncedSections = []; // { rdid, roadRankName, routeNo, routeName, deliveryRoot }
+    const replacedDrawingFiles = []; // 재확정으로 교체된 기존 도면의 디스크 파일 — 커밋 후에 지운다
     try {
         await client.query('BEGIN');
         for (const layer of parsed.layers) {
@@ -239,7 +270,12 @@ router.post('/:uploadId/confirm', async (req, res) => {
             const skipInsert = layer.fieldMatch.missingRequired.length > 0;
 
             if (layer.newRecords.length && !skipInsert) {
-                for (const { row, geom } of layer.newRecords) {
+                let insertedCount = 0;
+                for (const { row, geom, skipNnNull } of layer.newRecords) {
+                    // 필수 숫자항목이 비어 있는 레코드(KRRIS M-1)는 INSERT가 NOT NULL 위반으로
+                    // 실패해 전체가 롤백되므로 이 레코드만 건너뛴다(미리보기에서 경고함).
+                    if (skipNnNull) continue;
+                    insertedCount++;
                     const columns = [...Object.keys(row), 'geom', 'sigungu_code'];
                     const values = [...Object.values(row), geom ? JSON.stringify(geom) : null, targetSigunguCode];
                     const placeholders = columns.map((_, i) => `$${i + 1}`).join(',');
@@ -255,7 +291,7 @@ router.post('/:uploadId/confirm', async (req, res) => {
                     const pk = row[layer.pkColumn];
                     if (pk) pkTableMap.set(String(pk), layer.table);
                 }
-                inserted[layer.table] = layer.newRecords.length;
+                inserted[layer.table] = insertedCount;
             }
 
             if (layer.deleteRecords.length) {
@@ -275,8 +311,12 @@ router.post('/:uploadId/confirm', async (req, res) => {
         // 합쳐지기 전에도(즉 이 버그를 고치기 전에도) 구간이 하나만 등록되는
         // 문제가 있었다 — sectionRecords는 납품 루트별로 구분해서 만들어지므로
         // 이제 전부 등록된다.
-        for (const { deliveryRoot, row, geom } of parsed.sectionRecords) {
-            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, req.session.user.id);
+        for (const { deliveryRoot, deliveryCode, row, geom } of parsed.sectionRecords) {
+            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, req.session.user.id, (req.body.roadRankDisplayName || '').trim());
+            // 원본 관리번호를 남겨둬야 노선 내보내기가 파일명을 원본과 똑같이 만들 수 있다.
+            if (deliveryCode) {
+                await client.query('UPDATE road_sections SET delivery_code = $1 WHERE rdid = $2', [deliveryCode, synced.rdid]);
+            }
             syncedSections.push({ ...synced, deliveryRoot });
             roadSectionsUpserted++;
         }
@@ -379,10 +419,14 @@ router.post('/:uploadId/confirm', async (req, res) => {
                 // 일괄등록은 같은 zip을 재확정(재검수)할 수도 있으므로, 이 자동 연결
                 // 경로에서만 같은 구간+같은 파일명의 기존 행을 지우고 새로 넣어
                 // 중복 누적을 막는다.
-                await client.query(
-                    `DELETE FROM route_files WHERE section_rdid = $1 AND file_category = '도면종류' AND original_name = $2`,
+                // 지운 행의 실제 파일(원본+변환 DXF)도 정리해야 재확정할 때마다 디스크에
+                // 고아 파일이 쌓이지 않는다. 롤백되면 파일이 필요하므로 커밋 후에 지운다.
+                const { rows: replaced } = await client.query(
+                    `DELETE FROM route_files WHERE section_rdid = $1 AND file_category = '도면종류' AND original_name = $2
+                     RETURNING stored_path, converted_path`,
                     [section.rdid, base]
                 );
+                replaced.forEach((r) => replacedDrawingFiles.push(r.stored_path, r.converted_path));
                 await client.query(
                     `INSERT INTO route_files (road_grade, route_no, route_name, section_rdid, file_category, original_name, stored_path, converted_path, uploaded_by, sigungu_code)
                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -393,6 +437,27 @@ router.post('/:uploadId/confirm', async (req, res) => {
         }
 
         await client.query('COMMIT');
+        for (const p of replacedDrawingFiles) if (p) fs.rm(p, { force: true }, () => {});
+
+        // 납품 폴더 밖의 도면(500_P/500_Y/500_U, CONT)은 파일명으로 노선·구간을 알아내 붙인다. 방금 등록한 구간을
+        // DB에서 찾아야 하므로 커밋 뒤에 돌리고, 실패해도 이미 저장된 데이터는 그대로 둔다(결과에 실패만 알림).
+        // 이전에 등록된 노선의 도면만 담긴 폴더여도 같은 방식으로 붙는다.
+        const drawingsAuto = { matchedCount: 0, unmatched: [], failed: false };
+        const looseDrawings = findLooseDrawingFiles(extractDir);
+        if (looseDrawings.length) {
+            try {
+                const r = await autoUploadRouteDrawings({
+                    files: looseDrawings.map((p) => ({ path: p, name: path.basename(p) })),
+                    hint: null, userId: req.session.user.id, userSigungu: targetSigunguCode,
+                });
+                drawingsAuto.matchedCount = r.matched.length;
+                drawingsAuto.unmatched = r.unmatched.slice(0, 20);
+                drawingsAuto.unmatchedCount = r.unmatched.length;
+            } catch (e) {
+                console.error('[bulk-import/confirm/loose-drawings]', e);
+                drawingsAuto.failed = true;
+            }
+        }
         // "서버 폴더에서 검수"로 만든 uploadId면(zip 업로드가 아니라
         // bulk-import-incoming을 직접 참조한 경우) 등록이 끝났으니 원본 폴더를
         // 지운다 — cleanup(마커 삭제) 전에 먼저 원본 경로를 읽어와야 한다.
@@ -423,6 +488,7 @@ router.post('/:uploadId/confirm', async (req, res) => {
             facilityFilesAttached, facilityFilesUnmatched, drawingFilesAttached,
             sectorsInserted, sectorsSkipped,
             incomingFolderRemoved: !!incomingSource,
+            drawingsAuto,
         });
     } catch (e) {
         await client.query('ROLLBACK');

@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const AdmZip = require('adm-zip');
+const { openZip } = require('./zipOpen');
 const config = require('../config');
 
 const STAGING_ROOT = path.join(config.uploadDir, 'bulk-import');
@@ -45,8 +45,15 @@ function createEmptyStaging() {
 // 받아 AdmZip이 디스크에서 직접 읽게 한다.
 function extractZip(zipPath) {
     const { uploadId, extractDir } = createEmptyStaging();
-    const zip = new AdmZip(zipPath);
-    zip.extractAllTo(extractDir, true);
+    try {
+        const zip = openZip(zipPath); // 한국어(CP949) 파일명 처리 — lib/zipOpen.js 참고
+        zip.extractAllTo(extractDir, true);
+    } catch (e) {
+        // 손상된 ZIP 등으로 실패하면 방금 만든 빈 작업 폴더가 남지 않게 지운다
+        // (호출 측은 uploadId를 받기 전이라 정리할 방법이 없음).
+        fs.rmSync(stagingDir(uploadId), { recursive: true, force: true });
+        throw e;
+    }
     return { uploadId, extractDir };
 }
 
@@ -110,7 +117,8 @@ function resolveIncomingDir(name) {
     if (!SAFE_INCOMING_NAME_RE.test(name)) throw new Error('폴더명에 사용할 수 없는 문자가 있습니다.');
     const dir = path.join(INCOMING_ROOT, name);
     if (path.relative(INCOMING_ROOT, dir).startsWith('..')) throw new Error('잘못된 폴더명입니다.');
-    return fs.existsSync(dir) ? dir : null;
+    // 같은 이름의 .zip 파일은 폴더가 아니므로 여기선 없는 것으로 본다(zip은 stageFromIncomingDir가 따로 처리).
+    return fs.existsSync(dir) && fs.statSync(dir).isDirectory() ? dir : null;
 }
 
 // incomingDir 이하 전체를 destDir로 복사(병합)한다. destDir은 방금 zip을 푼
@@ -136,6 +144,16 @@ function mergeIncomingDir(incomingDir, destDir) {
 // 복사 비용 회피) — 확정 단계의 첨부 로직은 원본에서 목적지로
 // copyFileSync만 하고 원본을 지우지 않으므로 이렇게 참조만 남겨도 안전하다.
 function stageFromIncomingDir(folderName) {
+    // SFTP로 압축 파일(.zip) 그대로 올려둔 경우 — 폴더와 달리 한 번 풀어서 검수한다.
+    // 원본 zip은 지우지 않는다(대용량 원본이라 등록 후 정리는 관리자가 직접 한다).
+    if (/.zip$/i.test(folderName)) {
+        if (!SAFE_INCOMING_NAME_RE.test(folderName)) throw new Error('파일명에 사용할 수 없는 문자가 있습니다.');
+        const zipPath = path.join(INCOMING_ROOT, folderName);
+        if (path.relative(INCOMING_ROOT, zipPath).startsWith('..') || !fs.existsSync(zipPath) || !fs.statSync(zipPath).isFile()) {
+            throw new Error(`서버(bulk-import-incoming)에서 "${folderName}" 파일을 찾을 수 없습니다.`);
+        }
+        return extractZip(zipPath);
+    }
     const incomingDir = resolveIncomingDir(folderName);
     if (!incomingDir) {
         throw new Error(`서버(bulk-import-incoming)에서 "${folderName}" 폴더를 찾을 수 없습니다.`);
@@ -147,14 +165,15 @@ function stageFromIncomingDir(folderName) {
     return { uploadId, extractDir: incomingDir };
 }
 
-// bulk-import-incoming 바로 아래의 폴더 목록(관리자가 고를 수 있는 후보).
+// bulk-import-incoming 바로 아래의 폴더와 .zip 파일 목록(관리자가 고를 수 있는 후보).
 function listIncomingFolders() {
     fs.mkdirSync(INCOMING_ROOT, { recursive: true });
     return fs.readdirSync(INCOMING_ROOT, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
+        .filter((e) => e.isDirectory() || (e.isFile() && /.zip$/i.test(e.name)))
         .map((e) => {
-            const dir = path.join(INCOMING_ROOT, e.name);
-            return { name: e.name, mtimeMs: fs.statSync(dir).mtimeMs };
+            const p = path.join(INCOMING_ROOT, e.name);
+            const stat = fs.statSync(p);
+            return { name: e.name, mtimeMs: stat.mtimeMs, isZip: e.isFile(), sizeBytes: e.isFile() ? stat.size : null };
         })
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
 }

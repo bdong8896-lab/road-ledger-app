@@ -32,16 +32,68 @@ const CRS_REGISTRY = [
     },
 ];
 
+// Korea 2000(GRS80) 횡메르카토르 계열 — 이름 문자열이 아니라 투영 파라미터(중앙자오선·
+// 원점 가산값·축척)로 구별한다. 예전엔 위 정규식 하나("GRS_1980 뒤에 Korea")로 5179를
+// 판별했는데, 표준 ESRI .prj는 "Korea_2000..." 이름이 GRS_1980보다 앞에 오기 때문에
+// 정상적인 5179 파일조차 "인식할 수 없는 좌표계"가 되어 지오메트리가 버려졌고, 국내에서
+// 흔한 중부원점(5186) 등은 아예 구별할 수 없었다(2026-10 확인).
+const KOREA_2000_TM = [
+    { epsg: 'EPSG:5179', label: 'Korea 2000 / Unified CS (UTM-K)', lon0: 127.5, k: 0.9996, x0: 1000000, y0: 2000000 },
+    { epsg: 'EPSG:5185', label: 'Korea 2000 / West Belt 2010 (서부원점)', lon0: 125, k: 1, x0: 200000, y0: 600000 },
+    { epsg: 'EPSG:5186', label: 'Korea 2000 / Central Belt 2010 (중부원점)', lon0: 127, k: 1, x0: 200000, y0: 600000 },
+    { epsg: 'EPSG:5187', label: 'Korea 2000 / East Belt 2010 (동부원점)', lon0: 129, k: 1, x0: 200000, y0: 600000 },
+    { epsg: 'EPSG:5188', label: 'Korea 2000 / East Sea Belt 2010 (동해원점)', lon0: 131, k: 1, x0: 200000, y0: 600000 },
+    { epsg: 'EPSG:5180', label: 'Korea 2000 / West Belt (서부원점)', lon0: 125, k: 1, x0: 200000, y0: 500000 },
+    { epsg: 'EPSG:5181', label: 'Korea 2000 / Central Belt (중부원점)', lon0: 127, k: 1, x0: 200000, y0: 500000 },
+    { epsg: 'EPSG:5183', label: 'Korea 2000 / East Belt (동부원점)', lon0: 129, k: 1, x0: 200000, y0: 500000 },
+    { epsg: 'EPSG:5184', label: 'Korea 2000 / East Sea Belt (동해원점)', lon0: 131, k: 1, x0: 200000, y0: 500000 },
+];
+
 for (const entry of CRS_REGISTRY) {
     proj4.defs(entry.epsg, entry.def);
 }
+for (const e of KOREA_2000_TM) {
+    proj4.defs(e.epsg, `+proj=tmerc +lat_0=38 +lon_0=${e.lon0} +k=${e.k} +x_0=${e.x0} +y_0=${e.y0} +ellps=GRS80 +units=m +no_defs`);
+}
 
-// .prj WKT 텍스트 → { matched, epsg, label } 판별. GCS_WGS_1984는 Web_Mercator
-// WKT 안에도 등장하므로(내부 GEOGCS 정의) Web_Mercator를 먼저 검사해야 한다
-// (배열 순서가 우선순위 — 위에서부터 순서대로 시도).
+// KRRIS(국가 도로대장 검수) 제출 기준 좌표계 — 도로대장 작성지침에 명시(EPSG:5179).
+const KRRIS_REQUIRED_EPSG = 'EPSG:5179';
+
+// WKT의 PARAMETER["이름",값] 목록 → { 소문자이름: 숫자 } (ESRI/OGC 표기 모두 같은 이름).
+function wktParams(wkt) {
+    const out = {};
+    for (const m of wkt.matchAll(/PARAMETER\s*\[\s*"([^"]+)"\s*,\s*(-?[\d.]+(?:[eE][-+]?\d+)?)\s*\]/g)) {
+        out[m[1].toLowerCase()] = Number(m[2]);
+    }
+    return out;
+}
+
+const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) < 1e-6 * Math.max(1, Math.abs(b));
+
+function detectKorea2000Tm(wkt) {
+    if (!/Transverse_Mercator/i.test(wkt) || !/GRS[_ ]?1980|GRS80|Korea_2000|Korean_Datum_2000/i.test(wkt)) return null;
+    const p = wktParams(wkt);
+    const k = p.scale_factor !== undefined ? p.scale_factor : 1;
+    const lat0 = p.latitude_of_origin !== undefined ? p.latitude_of_origin : 38;
+    return KOREA_2000_TM.find((e) =>
+        near(p.central_meridian, e.lon0) && near(p.false_easting, e.x0) && near(p.false_northing, e.y0) &&
+        near(k, e.k) && near(lat0, 38)) || null;
+}
+
+// .prj WKT 텍스트 → { matched, epsg, label } 판별. 순서: Web Mercator(내부에 GCS_WGS_1984가
+// 들어 있어 WGS84보다 먼저) → Korea 2000 횡메르카토르(파라미터 대조) → 나머지 이름 정규식.
 function detectCrs(wktText) {
-    for (const entry of CRS_REGISTRY) {
-        if (entry.test.test(wktText)) {
+    const wkt = String(wktText || '');
+    if (CRS_REGISTRY[0].test.test(wkt)) {
+        return { matched: true, epsg: CRS_REGISTRY[0].epsg, label: CRS_REGISTRY[0].label };
+    }
+    const tm = detectKorea2000Tm(wkt);
+    if (tm) return { matched: true, epsg: tm.epsg, label: tm.label };
+    for (const entry of CRS_REGISTRY.slice(1)) {
+        // 5179는 위 파라미터 대조로만 판별한다(이 정규식은 다른 Korea 2000 좌표계도 5179로
+        // 오인할 수 있어 이제 쓰지 않음).
+        if (entry.epsg === 'EPSG:5179') continue;
+        if (entry.test.test(wkt)) {
             return { matched: true, epsg: entry.epsg, label: entry.label };
         }
     }
@@ -80,13 +132,14 @@ function reprojectFromWgs84(geometry, targetEpsg) {
     return { type: geometry.type, coordinates: reprojectCoordsFromWgs84(geometry.coordinates, targetEpsg) };
 }
 
-// 노선 내보내기가 쓰는 고정 타깃 좌표계 — 장성군 실제 납품 .prj를 직접 읽어
-// 확인한 값(문서상 "UTM-K"라 적혀 있어도 실제 .prj는 EPSG:3857이었다, 위
-// 클래스 코멘트 참고). WKT는 그 실제 .prj 파일 내용을 그대로 재사용한다.
-const EXPORT_TARGET_EPSG = 'EPSG:3857';
-const EXPORT_PRJ_WKT = 'PROJCS["WGS_1984_Web_Mercator_Auxiliary_Sphere",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Auxiliary_Sphere"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",0.0],PARAMETER["Auxiliary_Sphere_Type",0.0],UNIT["Meter",1.0]]';
+// 노선 내보내기(SHP/DBF zip)가 쓰는 고정 타깃 좌표계 — KRRIS 제출 기준인 EPSG:5179(UTM-K).
+// 예전엔 장성군 실제 납품 .prj(EPSG:3857)에 맞췄는데, 그 형식 자체가 KRRIS에서 C-1(좌표계)
+// 결함으로 지적되는 것이라 우리 내보내기로 만든 파일을 제출하면 같은 결함이 나왔다(2026-10 변경).
+// WKT는 ArcGIS가 5179에 쓰는 표준 ESRI .prj 표기.
+const EXPORT_TARGET_EPSG = KRRIS_REQUIRED_EPSG;
+const EXPORT_PRJ_WKT = 'PROJCS["Korea_2000_Korea_Unified_Coordinate_System",GEOGCS["GCS_Korea_2000",DATUM["D_Korea_2000",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",1000000.0],PARAMETER["False_Northing",2000000.0],PARAMETER["Central_Meridian",127.5],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",38.0],UNIT["Meter",1.0]]';
 
 module.exports = {
     detectCrs, reprojectGeometry, reprojectFromWgs84, CRS_REGISTRY,
-    EXPORT_TARGET_EPSG, EXPORT_PRJ_WKT,
+    EXPORT_TARGET_EPSG, EXPORT_PRJ_WKT, KRRIS_REQUIRED_EPSG,
 };

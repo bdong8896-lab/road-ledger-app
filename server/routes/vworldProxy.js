@@ -14,16 +14,25 @@ router.get('/', (req, res) => {
         return res.status(400).send('Invalid target');
     }
 
-    https
-        .get(target, { headers: { Referer: config.vworld.referer } }, (proxyRes) => {
-            res.writeHead(proxyRes.statusCode, {
-                'Content-Type': proxyRes.headers['content-type'] || 'application/json',
-            });
-            proxyRes.pipe(res);
-        })
-        .on('error', (err) => {
-            res.status(502).send(err.message);
-        });
+    // 응답을 안 주는 경우 연결이 무한정 붙잡히지 않도록 끊는다(자원 고갈 방지).
+    // 오류 내용(DNS·네트워크 메시지 등 서버 내부 정보)은 응답에 싣지 않고 서버 로그에만 남긴다.
+    const request = https.get(target, { headers: { Referer: config.vworld.referer }, timeout: 20000 }, (proxyRes) => {
+        // VWorld가 주는 캐시 헤더(타일은 max-age=3일)를 그대로 넘긴다 — 예전엔 Content-Type만
+        // 넘겨서 브라우저가 지도를 움직일 때마다 같은 타일을 서버·VWorld에서 다시 받았다
+        // (서버 부하 + VWorld 키의 일일 호출 한도 소모).
+        const headers = { 'Content-Type': proxyRes.headers['content-type'] || 'application/json' };
+        for (const h of ['cache-control', 'expires', 'etag', 'last-modified', 'content-length']) {
+            if (proxyRes.headers[h]) headers[h] = proxyRes.headers[h];
+        }
+        res.writeHead(proxyRes.statusCode, headers);
+        proxyRes.pipe(res);
+    });
+    request.on('timeout', () => request.destroy(new Error('VWorld timeout')));
+    request.on('error', (err) => {
+        console.error('[vworld-proxy]', err.message);
+        if (res.headersSent) return res.destroy();
+        res.status(502).send('VWorld 요청에 실패했습니다.');
+    });
 });
 
 // 프론트엔드가 VWorld API 키를 몰라도 되도록, 키가 필요한 부분은

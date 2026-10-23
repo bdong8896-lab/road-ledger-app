@@ -17,8 +17,61 @@
     --radius-md: 0.75rem;
     --radius-lg: 1rem;
     --transition: 0.18s ease;
+    /* 의미 색 — 화면 곳곳에 직접 적혀 있던 값을 한곳에 모았다(값은 예전과 동일) */
+    --danger: #ff5b57;                         /* 삭제·위험 동작 */
+    --danger-text: #ff6b6b;                    /* 오류 문구 */
+    --danger-soft: #ff8a86;                    /* 경고 상자 안 글자 */
+    --danger-bg: rgba(255, 91, 87, 0.1);       /* 경고 상자 바탕 */
+    --danger-bg-strong: rgba(255, 91, 87, 0.12);
+    --danger-border: rgba(255, 91, 87, 0.4);
+    --warn: #ffb020;                           /* 주의(검수 경고 등) */
+    --success: #5ad18f;                        /* 완료·성공 문구 */
+    --edit-mode: #b4381f;                      /* 편집 모드 켜짐 표시 */
+    /* 패널 위 겹침색·지도 위 떠 있는 막대·그림자 — 밝은 테마에서 값이 바뀌는 것들 */
+    --hover-bg: rgba(255, 255, 255, 0.08);
+    --hover-bg-strong: rgba(255, 255, 255, 0.13);
+    --chip-bg: rgba(255, 255, 255, 0.06);
+    --swatch-border: rgba(255, 255, 255, 0.3);
+    --float-bg: rgba(18, 20, 24, 0.8);
+    --shadow-soft: rgba(0, 0, 0, 0.32);
+    --shadow-strong: rgba(0, 0, 0, 0.45);
     font-size: 15px;
 }
+
+/* ===== 밝은 테마 — 상단 해/달 버튼으로 전환(브라우저별로 기억, localStorage 'rl-theme').
+   색 변수만 바꾼다. 도면 캔버스·로드뷰/사진/영상 미리보기·CCTV·지도 위 말풍선은 보기 좋게
+   두 테마 모두 어두운 바탕을 유지한다(뷰어 관례). ===== */
+:root[data-theme="light"] {
+    --accent-hover: #1f63b0;                   /* 흰 바탕 위 글자로 읽히도록 조금 진하게 */
+    --panel-dark: #e8ecf2;
+    --panel-mid: #ffffff;
+    --panel-light: #eef2f7;
+    --panel-sidebar: #f8fafc;
+    --border-dim: rgba(23, 43, 77, 0.10);
+    --border-med: rgba(23, 43, 77, 0.18);
+    --text-primary: #172033;
+    --text-secondary: #3c4a60;
+    --text-muted: #687589;
+    --scrollbar-thumb: #b9c3d1;
+    --scrollbar-thumb-hover: #2e6fae;
+    --danger: #e5484d;
+    --danger-text: #d1363b;
+    --danger-soft: #b4232a;
+    --danger-bg: rgba(229, 72, 77, 0.08);
+    --danger-bg-strong: rgba(229, 72, 77, 0.10);
+    --danger-border: rgba(229, 72, 77, 0.35);
+    --warn: #b26a00;
+    --success: #1d8a4e;
+    --hover-bg: rgba(23, 43, 77, 0.06);
+    --hover-bg-strong: rgba(23, 43, 77, 0.10);
+    --chip-bg: rgba(23, 43, 77, 0.06);
+    --swatch-border: rgba(0, 0, 0, 0.25);
+    --float-bg: rgba(255, 255, 255, 0.92);
+    --shadow-soft: rgba(23, 43, 77, 0.12);
+    --shadow-strong: rgba(23, 43, 77, 0.18);
+    color-scheme: light;
+}
+:root:not([data-theme="light"]) { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; background: var(--panel-dark); color: var(--text-primary); }
@@ -138,7 +191,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
    가능하고, 이건 그 전의 기본값만 바꾼 것(고정 260px였던 걸 %로 변경). */
 #file-preview-div .facility-info-bar {
     flex-shrink: 0; max-height: 50%; overflow-y: auto; background: #21252e;
-    box-shadow: 0 3px 10px rgba(0,0,0,0.3); padding: 12px 16px 14px;
+    box-shadow: 0 3px 10px var(--shadow-soft); padding: 12px 16px 14px;
 }
 #file-preview-div .facility-info-resizer {
     flex-shrink: 0; height: 9px; cursor: row-resize; background: var(--panel-mid);
@@ -207,12 +260,18 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     position: fixed; top: 50%; left: var(--left-sidebar-width); transform: translateY(-50%);
     width: 22px; height: 48px; background: var(--panel-mid); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary);
-    box-shadow: 2px 0 8px rgba(0,0,0,0.3); z-index: 500; transition: left var(--transition);
+    box-shadow: 2px 0 8px var(--shadow-soft); z-index: 500; transition: left var(--transition);
 }
 #leftSidebarToggle.resizing { transition: none; }
 #leftSidebarToggle:hover { color: var(--text-primary); background: var(--accent-dark); }
 #leftSidebarToggle.collapsed { left: 0; }
-#leftSidebarToggle.collapsed i { transform: rotate(180deg); }
+#leftSidebarToggle.collapsed .lst-caret { transform: rotate(180deg); }
+/* 오른쪽 사이드바 접기 버튼(같은 화살표 모양)과 구별되도록 "도면" 아이콘·글자를 붙였다 */
+#leftSidebarToggle { flex-direction: column; gap: 3px; width: 26px; height: 74px; }
+#leftSidebarToggle .lst-icon { font-size: 0.8rem; color: var(--accent-hover); }
+#leftSidebarToggle .lst-label { font-size: 0.62rem; font-weight: 700; writing-mode: vertical-rl; letter-spacing: 0.1em; line-height: 1; }
+#leftSidebarToggle .lst-caret { font-size: 0.7rem; transition: transform var(--transition); }
+#leftSidebarToggle:hover .lst-icon { color: #fff; }
 
 #left-sidebar-header {
     padding: 14px 16px; border-bottom: 1px solid var(--border-dim);
@@ -252,7 +311,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 5px 8px;
     max-width: 100%; box-sizing: border-box;
     background: rgba(22, 26, 34, 0.88); border: 1px solid rgba(255,255,255,0.1);
-    border-radius: var(--radius-sm); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    border-radius: var(--radius-sm); box-shadow: 0 4px 14px var(--shadow-soft);
     backdrop-filter: blur(3px);
 }
 #cad-toolbar button {
@@ -267,9 +326,11 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     display: flex; align-items: center; gap: 10px; padding: 4px 10px;
     max-width: 100%; box-sizing: border-box;
     background: rgba(22, 26, 34, 0.88); border: 1px solid rgba(255,255,255,0.1);
-    border-radius: var(--radius-sm); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    border-radius: var(--radius-sm); box-shadow: 0 4px 14px var(--shadow-soft);
     backdrop-filter: blur(3px); min-height: 20px;
 }
+/* 파일명·측정값이 둘 다 없으면(도면을 아직 안 열었을 때) 빈 상자가 남지 않게 숨긴다 */
+#cad-status-bar:not(:has(span:not(:empty))) { display: none; }
 #cad-filename {
     font-size: 0.72rem; color: var(--text-muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px;
@@ -325,6 +386,78 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #route-upload-btn { width: auto; padding: 6px 14px; margin-top: 0; }
 
 #route-drawings-zip-row { display: flex; gap: 6px; padding: 0 12px 10px; flex-shrink: 0; }
+
+/* ===== 도면 뷰어(왼쪽 패널) 아래쪽 정리 — 사이드바 내장형만(#left-sidebar). 팝업창은 별도 배치.
+   예전: 캔버스 350px + 레이어 160px 고정 뒤 남는 높이에 구간정보(128px 폭)와 파일 탭을 좌우로
+   욱여넣어 탭 글자가 깨지고("공사도면" 두 줄) 구간정보 라벨이 세로로 쌓였다. */
+/* 도면이 없을 땐 빈 캔버스를 낮게 접고 도구 막대도 숨긴다(도면을 열면 has-drawing → 원래 높이) */
+#left-sidebar #cad-viewer-wrap:not(.has-drawing) { height: 120px; }
+#left-sidebar #cad-viewer-wrap:not(.has-drawing) #cad-overlay-controls { display: none; }
+#left-sidebar #cad-viewer-wrap:not(.has-drawing) #cad-empty-msg { font-size: 1.05rem; }
+/* 레이어 목록 — 내용만큼만(최대 160px) */
+#left-sidebar #dxf-layer-panel { height: auto; max-height: 170px; }
+#left-sidebar #dxf-layer-list { flex: 0 1 auto; }
+#left-sidebar #dxf-layer-list .tree-empty { margin: 4px 0 0; text-align: left; font-size: 0.76rem; }
+/* 구간정보 위, 파일 탭 아래로 세로 배치 */
+#left-sidebar #route-detail-row { flex-direction: column; overflow-y: auto; }
+#left-sidebar #route-info-panel {
+    width: auto; flex-shrink: 0; overflow: visible; text-align: left; padding: 10px 12px 12px;
+    border-right: none; border-bottom: 1px solid var(--border-dim);
+}
+#left-sidebar #route-info-panel .list-header { margin-bottom: 8px; }
+/* 구간정보 카드 — [도로종류] 노선명 (구간) / 연장(크게) / 시점●┊●종점(도로 중앙선 같은 점선으로 연결) */
+.ri-card {
+    display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
+    background: var(--panel-light); border: 1px solid var(--border-dim); border-radius: var(--radius-md);
+}
+.ri-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ri-grade {
+    flex-shrink: 0; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 700;
+    padding: 2px 9px; border-radius: 999px; letter-spacing: 0.02em;
+}
+.ri-name {
+    flex: 1; min-width: 0; font-size: 1.02rem; font-weight: 700; color: var(--text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ri-seg {
+    flex-shrink: 0; font-size: 0.74rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap;
+    border: 1px solid var(--border-med); border-radius: 999px; padding: 1px 9px; font-variant-numeric: tabular-nums;
+}
+.ri-length { display: flex; align-items: baseline; gap: 8px; padding-bottom: 10px; border-bottom: 1px dashed var(--border-med); }
+.ri-length-v { font-size: 1.3rem; font-weight: 800; color: var(--text-primary); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.ri-k { font-size: 0.72rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.ri-path { position: relative; display: flex; flex-direction: column; gap: 12px; }
+.ri-path::before {   /* 시점↔종점을 잇는 점선(도로 중앙선) */
+    content: ''; position: absolute; left: 5px; top: 10px; bottom: 10px; width: 2px;
+    background: repeating-linear-gradient(to bottom, var(--border-med) 0 5px, transparent 5px 9px);
+}
+.ri-pt { position: relative; display: grid; grid-template-columns: 12px 30px 1fr; gap: 8px; align-items: baseline; }
+.ri-dot {
+    width: 12px; height: 12px; border-radius: 50%; align-self: center; box-sizing: border-box;
+    background: var(--panel-light); border: 3px solid var(--text-muted);
+}
+.ri-start .ri-dot { border-color: var(--success); }
+.ri-end .ri-dot { border-color: var(--danger); }
+.ri-v { font-size: 0.85rem; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
+/* 값이 없을 때("-": 노선 전체 선택 등) — 흐리게, 구간 칩은 숨김 */
+.ri-card .is-blank { color: var(--text-muted); font-weight: 500; }
+.ri-card .ri-seg.is-blank { display: none; }
+#left-sidebar #route-file-panel { flex: 1 0 auto; min-height: 180px; }
+#left-sidebar #route-file-tabs { overflow-x: auto; }
+#left-sidebar .route-tab-button { flex: 1 0 auto; font-size: 0.78rem; padding: 9px 8px; white-space: nowrap; }
+/* 파일 올리기 줄 — [파일 선택] 고른파일이름 [업로드] */
+#route-upload-pick {
+    flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap;
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-secondary); padding: 6px 10px; font-size: 0.78rem; transition: var(--transition);
+}
+#route-upload-pick:hover { border-color: var(--accent); color: var(--accent-hover); }
+#route-upload-pick:focus-within { outline: 2px solid var(--accent-hover); outline-offset: 1px; }
+#route-upload-name {
+    flex: 1; min-width: 0; align-self: center; font-size: 0.76rem; color: var(--text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#route-upload-name.has-file { color: var(--text-primary); }
 #route-drawings-zip-row input[type=file] { flex: 1; font-size: 0.75rem; color: var(--text-secondary); min-width: 0; }
 #route-drawings-zip-btn { width: auto; padding: 6px 10px; margin-top: 0; font-size: 0.76rem; white-space: nowrap; }
 
@@ -354,10 +487,10 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #dxf-layer-list { flex: 1; min-height: 0; overflow-y: auto; }
 .dxf-layer-row { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; padding: 3px 0; cursor: pointer; flex-wrap: wrap; }
 .dxf-layer-row input { accent-color: var(--accent); }
-.dxf-layer-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
+.dxf-layer-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid var(--swatch-border); }
 .dxf-layer-hint {
     color: var(--text-muted); font-size: 0.72rem; font-style: italic;
-    padding: 1px 6px; border-radius: 999px; background: rgba(255,255,255,0.06);
+    padding: 1px 6px; border-radius: 999px; background: var(--chip-bg);
 }
 .dxf-layer-hint-official {
     color: var(--accent); font-style: normal; font-weight: 600;
@@ -368,7 +501,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     position: absolute; top: 16px; left: 16px; z-index: 50;
     background: var(--panel-mid); border-radius: var(--radius-md);
     display: flex; flex-direction: column; padding: 6px; gap: 4px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    box-shadow: 0 4px 16px var(--shadow-strong);
 }
 #left-toolbar button {
     display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -376,6 +509,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer;
     font-size: 0.7rem; transition: var(--transition);
 }
+#left-toolbar button span { white-space: nowrap; } /* "전체보기"·"지적편집도"가 두 줄로 깨지지 않게 */
 #left-toolbar button:hover { background: var(--panel-light); color: var(--text-primary); }
 #left-toolbar button.active { background: var(--accent); color: #fff; }
 .toolbar-divider { height: 1px; background: var(--border-dim); margin: 4px 2px; }
@@ -385,7 +519,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 .toolbar-dropdown-menu {
     position: absolute; top: 0; left: calc(100% + 8px); z-index: 60;
     background: var(--panel-mid); border-radius: var(--radius-md); padding: 6px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.4); display: flex; flex-direction: column; gap: 2px; min-width: 130px;
+    box-shadow: 0 4px 16px var(--shadow-strong); display: flex; flex-direction: column; gap: 2px; min-width: 130px;
 }
 .toolbar-dropdown-menu button {
     display: flex; align-items: center; gap: 8px; background: transparent; border: none;
@@ -400,11 +534,11 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     display: flex; align-items: center; gap: 8px;
 }
 #map-scale {
-    background: rgba(18,20,24,0.8); color: var(--text-secondary);
+    background: var(--float-bg); color: var(--text-secondary);
     padding: 4px 10px; border-radius: var(--radius-sm); font-size: 0.8rem;
 }
 #map-measure-toolbar {
-    display: flex; align-items: center; gap: 2px; background: rgba(18,20,24,0.8);
+    display: flex; align-items: center; gap: 2px; background: var(--float-bg);
     border-radius: var(--radius-sm); padding: 3px;
 }
 #map-measure-toolbar button {
@@ -430,7 +564,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #click-popup {
     display: none; position: absolute; min-width: 220px; max-width: 340px;
     background: #ffffff; color: #222; border-radius: var(--radius-md);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.35); padding: 14px 16px 12px; z-index: 100;
+    box-shadow: 0 6px 20px var(--shadow-soft); padding: 14px 16px 12px; z-index: 100;
     font-size: 0.85rem; text-align: center;
 }
 #click-popup::after {
@@ -455,7 +589,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #building-popup {
     display: none; position: absolute; min-width: 200px; max-width: 340px; max-height: 320px;
     overflow-y: auto; background: var(--panel-light); color: var(--text-primary); border-radius: var(--radius-md);
-    border: 1px solid var(--border-med); box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+    border: 1px solid var(--border-med); box-shadow: 0 6px 20px var(--shadow-strong);
     padding: 10px 12px; z-index: 100; font-size: 0.82rem;
 }
 #building-popup::after {
@@ -482,7 +616,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #facility-hover-popup {
     display: none; position: absolute; pointer-events: none;
     background: rgba(30, 42, 58, 0.94); color: #eef2f8; border-radius: var(--radius-sm);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.4); padding: 8px 14px; z-index: 90;
+    box-shadow: 0 6px 20px var(--shadow-strong); padding: 8px 14px; z-index: 90;
     font-size: 0.8rem;
 }
 #facility-hover-popup.mode-single { white-space: nowrap; padding: 6px 12px; }
@@ -499,7 +633,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #cctv-hover-popup {
     display: none; position: absolute; pointer-events: none; white-space: nowrap;
     background: #ffffff; color: #222; border-radius: var(--radius-sm);
-    border: 1.5px solid #ff3b30; box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+    border: 1.5px solid #ff3b30; box-shadow: 0 6px 16px var(--shadow-soft);
     padding: 6px 12px; z-index: 95; font-size: 0.8rem; text-align: center;
 }
 #cctv-hover-popup::after {
@@ -517,7 +651,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #roadnet-hover-popup {
     display: none; position: absolute; pointer-events: none; min-width: 170px;
     background: rgba(30, 42, 58, 0.94); color: #eef2f8; border-radius: var(--radius-sm);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.4); padding: 8px 14px; z-index: 92; font-size: 0.8rem;
+    box-shadow: 0 6px 20px var(--shadow-strong); padding: 8px 14px; z-index: 92; font-size: 0.8rem;
 }
 #rnhp-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 #rnhp-badge {
@@ -550,7 +684,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
     position: fixed; top: 50%; right: var(--sidebar-width); transform: translateY(-50%);
     width: 22px; height: 48px; background: var(--panel-mid); border-radius: var(--radius-sm) 0 0 var(--radius-sm);
     display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary);
-    box-shadow: -2px 0 8px rgba(0,0,0,0.3); z-index: 500; transition: right var(--transition);
+    box-shadow: -2px 0 8px var(--shadow-soft); z-index: 500; transition: right var(--transition);
 }
 #sidebarToggle.resizing { transition: none; }
 #sidebarToggle:hover { color: var(--text-primary); background: var(--accent-dark); }
@@ -558,29 +692,46 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 #sidebarToggle.collapsed i { transform: rotate(180deg); }
 
 #sidebar-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 16px; border-bottom: 1px solid var(--border-dim);
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 14px 14px; border-bottom: 1px solid var(--border-dim);
 }
-#sidebar-title { font-weight: 700; font-size: 1.05rem; }
-#sidebar-title i { color: var(--accent); margin-right: 6px; }
-#user-info { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; color: var(--text-secondary); }
-#logout-btn, #pw-change-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
-#logout-btn:hover, #pw-change-btn:hover { color: var(--text-primary); }
+#sidebar-title { font-weight: 700; font-size: 1.05rem; display: flex; align-items: center; min-width: 0; }
+/* 시스템 아이콘(public/favicon.svg — 브라우저 탭 아이콘과 같은 그림: 대장 위로 뻗은 도로) */
+#sidebar-title .app-logo { width: 26px; height: 26px; margin-right: 9px; flex-shrink: 0; }
+#login-logo { display: block; width: 48px; height: 48px; margin: 0 auto 12px; }
+/* 관할이 있는 계정: "장성군" / "도로대장 시스템" 두 줄 */
+#sidebar-title .st-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+#sidebar-title .st-region { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+#sidebar-title .st-name { white-space: nowrap; }
+/* 제목은 줄이지 않고, 오른쪽 묶음이 좁으면 계정 이름이 줄바꿈된다(아이콘 5개 + 이름) */
+#user-info { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 6px; font-size: 0.85rem; color: var(--text-secondary); min-width: 0; }
+#sidebar-title { flex-shrink: 0; }
+/* 이름이 길면 "…"로 자르지 않고 줄바꿈한다(공백이 없는 긴 아이디도 글자 단위로 꺾음) */
+/* 이름이 아이콘 옆에 다 안 들어가면 아이콘 줄 위로 올라가 한 줄 전체 폭을 쓰고, 그래도 길면 줄바꿈한다 */
+#user-display-name { order: -1; min-width: 0; margin-right: 2px; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; text-align: right; }
+#logout-btn, #pw-change-btn, #theme-toggle-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; padding: 4px; min-width: 22px; }
+#logout-btn:hover, #pw-change-btn:hover, #theme-toggle-btn:hover { color: var(--text-primary); }
+/* 로그인 화면 오른쪽 위 테마 전환 */
+#login-theme-btn {
+    position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border-radius: 50%;
+    background: var(--panel-mid); border: 1px solid var(--border-med); color: var(--text-secondary);
+    cursor: pointer; font-size: 0.95rem; transition: var(--transition);
+}
+#login-theme-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+.theme-toggle:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
 #admin-mode-toggle {
     background: transparent; border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     color: var(--text-muted); cursor: pointer; font-size: 0.9rem; padding: 4px 7px; transition: var(--transition);
 }
 #admin-mode-toggle:hover { color: var(--text-primary); border-color: var(--text-muted); }
-#admin-mode-toggle.active { background: #b4381f; border-color: #b4381f; color: #fff; }
-/* 관리자 모드를 켰을 때 admin-mode-toggle 바로 옆에 뜨는 계정관리 버튼 —
-   같은 아이콘 버튼 스타일을 그대로 쓴다(사용자 요청으로 사이드바 탭 줄에서
-   상단 바로 옮김). */
-#accounts-tab-btn {
+#admin-mode-toggle.active { background: var(--edit-mode); border-color: var(--edit-mode); color: #fff; }
+/* 관리 콘솔 열기 버튼(관리자만) — 편집 모드 토글과 같은 아이콘 버튼 스타일 */
+#admin-console-btn {
     background: transparent; border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     color: var(--text-muted); cursor: pointer; font-size: 0.9rem; padding: 4px 7px; transition: var(--transition);
 }
-#accounts-tab-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
-body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
+#admin-console-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px var(--edit-mode); }
 
 /* ===== 레이어 패널 ===== */
 #layer-panel { border-bottom: 1px solid var(--border-dim); flex-shrink: 0; }
@@ -601,7 +752,7 @@ body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
 .layer-toggle-icon { width: 14px; text-align: center; color: var(--text-muted); font-size: 0.8rem; flex-shrink: 0; }
 .layer-toggle-swatch {
     width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
-    background: var(--swatch-color, var(--text-muted)); border: 1px solid rgba(255,255,255,0.3);
+    background: var(--swatch-color, var(--text-muted)); border: 1px solid var(--swatch-border);
 }
 
 /* 국가교통정보도(도로)만 등급별로 켜고 끌 수 있게 펼침 그룹으로 만든 것 —
@@ -619,7 +770,7 @@ body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
     flex-shrink: 0; background: transparent; border: none; color: var(--text-muted);
     cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 0.75rem; transition: var(--transition);
 }
-.layer-toggle-expand-btn:hover { background: rgba(255,255,255,0.12); color: var(--text-primary); }
+.layer-toggle-expand-btn:hover { background: var(--hover-bg-strong); color: var(--text-primary); }
 .layer-toggle-expand-btn i { display: inline-block; transition: transform var(--transition); }
 .layer-toggle-expand-btn.open i { transform: rotate(90deg); }
 .layer-toggle-subgroup {
@@ -642,8 +793,6 @@ body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
     border-bottom: 2px solid transparent; transition: var(--transition);
 }
 #sidebar-tabs .tab-button i { margin-right: 5px; }
-#sidebar-tabs.admin-tabs-visible .tab-button { font-size: 0.68rem; padding: 12px 1px; }
-#sidebar-tabs.admin-tabs-visible .tab-button i { margin-right: 2px; }
 #sidebar-tabs .tab-button:hover { color: var(--text-primary); }
 #sidebar-tabs .tab-button.active { color: var(--accent-hover); border-bottom-color: var(--accent); }
 .sidebar-tab-content { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -668,7 +817,7 @@ body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
     width: 28px; height: 28px; border-radius: var(--radius-sm); flex-shrink: 0;
     background: var(--cat-color, var(--accent)); color: #fff;
     display: flex; align-items: center; justify-content: center; font-size: 0.82rem;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    box-shadow: 0 2px 6px var(--shadow-soft);
 }
 .category-label { font-weight: 700; font-size: 0.88rem; color: var(--text-primary); flex: 1; }
 .collapsible-section:not(.collapsed) > .category-header,
@@ -689,6 +838,9 @@ body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
 .tree-node-label .tree-caret { width: 12px; font-size: 0.7rem; color: var(--text-muted); transition: transform var(--transition); }
 .tree-node.open > .tree-node-label .tree-caret { transform: rotate(90deg); }
 .tree-node-label .tree-count { margin-left: auto; color: var(--text-muted); font-size: 0.75rem; }
+/* 0건 항목 — 흐리게만(클릭·펼치기는 그대로 된다) */
+.tree-node.is-empty > .tree-node-label { opacity: 0.42; }
+.tree-node.is-empty > .tree-node-label:hover { opacity: 0.7; }
 .tree-children { margin-left: 18px; display: none; }
 .tree-node.open > .tree-children { display: block; }
 .tree-leaf > .tree-node-label { color: var(--text-secondary); }
@@ -705,12 +857,18 @@ body.admin-mode #sidebar { box-shadow: inset 0 0 0 1px #b4381f; }
     color: var(--text-secondary); padding: 7px 0; cursor: pointer; transition: var(--transition); font-size: 0.85rem;
 }
 #ledger-tree-toolbar button:hover { background: var(--accent-dark); color: #fff; border-color: var(--accent-dark); }
+/* 트리 조작(아이콘) | 내보내기(아이콘+글자) 두 묶음으로 구분 */
+#ledger-tree-toolbar { align-items: stretch; }
+#ledger-tree-toolbar .tree-tool-icon { flex: 0 0 34px; }
+#ledger-tree-toolbar .tree-tool-labeled { flex: 1; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+#ledger-tree-toolbar .tree-tool-labeled i { margin-right: 4px; }
+.tree-tool-divider { width: 1px; background: var(--border-med); margin: 4px 2px; flex-shrink: 0; }
 
 .tree-node-label .tree-delete-btn {
     display: none; margin-left: 6px; background: transparent; border: none; color: inherit;
     opacity: 0.7; cursor: pointer; font-size: 0.78rem; padding: 2px 4px;
 }
-.tree-node-label .tree-delete-btn:hover { opacity: 1; color: #ff5b57; }
+.tree-node-label .tree-delete-btn:hover { opacity: 1; color: var(--danger); }
 body.admin-mode .tree-node-label .tree-delete-btn { display: inline-flex; }
 
 .tree-node-label .tree-facility-toggle-group {
@@ -744,7 +902,7 @@ body.admin-mode .tree-node-label .tree-delete-btn { display: inline-flex; }
     color: var(--accent-hover); cursor: pointer; padding: 2px 5px; border-radius: var(--radius-sm);
     font-size: 0.78rem; opacity: 0.85; transition: var(--transition);
 }
-.facility-leaf .tree-node-label .facility-vis-toggle:hover { opacity: 1; background: rgba(255,255,255,0.15); }
+.facility-leaf .tree-node-label .facility-vis-toggle:hover { opacity: 1; background: var(--hover-bg-strong); }
 .facility-leaf .tree-node-label .facility-vis-toggle.hidden-state { color: var(--text-muted); opacity: 0.55; }
 #route-facility-section #route-facility-files { margin: 8px 16px 10px; }
 
@@ -766,6 +924,9 @@ body.admin-mode #save-btn { display: block; }
 .sc-tab-button.active { background: var(--accent); color: #fff; font-weight: 700; }
 
 #search-results-wrapper { flex: 1; overflow-y: auto; padding: 0 16px; }
+.search-empty-hint { text-align: center; color: var(--text-muted); font-size: 0.82rem; line-height: 1.6; margin-top: 48px; }
+.search-empty-hint i { font-size: 1.6rem; color: var(--border-med); margin-bottom: 10px; display: block; }
+.search-empty-examples { font-size: 0.75rem; margin-top: 4px; }
 .search-result-item {
     padding: 8px 10px; background: var(--panel-light); border-radius: var(--radius-sm);
     margin-bottom: 6px; cursor: pointer; font-size: 0.85rem; transition: var(--transition);
@@ -780,7 +941,7 @@ body.admin-mode #save-btn { display: block; }
     color: var(--text-muted); flex-shrink: 0; max-width: 55%;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.search-result-item mark.sr-hl { background: none; color: #ff5b57; font-weight: 700; }
+.search-result-item mark.sr-hl { background: none; color: var(--danger); font-weight: 700; }
 .search-result-item:hover mark.sr-hl { color: #ff8a87; }
 
 .sr-section { margin-bottom: 14px; }
@@ -901,8 +1062,8 @@ body.admin-mode #save-btn { display: block; }
 #bulk-incoming-batch-log { max-height: 200px; overflow-y: auto; font-size: 0.78rem; }
 #bulk-incoming-batch-log .bib-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: var(--radius-sm); margin-bottom: 4px; background: var(--panel-light); }
 #bulk-incoming-batch-log .bib-row.ok i { color: #3ecf6e; }
-#bulk-incoming-batch-log .bib-row.error { color: #ff5b57; }
-#bulk-incoming-batch-log .bib-row.error i { color: #ff5b57; }
+#bulk-incoming-batch-log .bib-row.error { color: var(--danger); }
+#bulk-incoming-batch-log .bib-row.error i { color: var(--danger); }
 #bulk-incoming-batch-log .bib-row.pending i { color: var(--text-muted); animation: bulk-spin 1s linear infinite; }
 #bulk-incoming-batch-log .bib-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #bulk-notice, #bulk-notice-incoming, #bulk-notice-route-drawings {
@@ -927,7 +1088,7 @@ body.admin-mode #save-btn { display: block; }
 #bulk-route-drawings-status { font-size: 0.82rem; color: var(--text-muted); margin-top: 8px; }
 #bulk-route-drawings-result { margin-top: 10px; font-size: 0.82rem; }
 .bulk-rd-result-ok { color: var(--accent-hover); font-weight: 700; margin-bottom: 4px; }
-.bulk-rd-result-warn { color: #ffb020; font-weight: 700; margin-bottom: 4px; }
+.bulk-rd-result-warn { color: var(--warn); font-weight: 700; margin-bottom: 4px; }
 .bulk-rd-unmatched-list {
     margin: 0; padding-left: 18px; color: var(--text-muted); max-height: 160px; overflow-y: auto;
     font-family: monospace; font-size: 0.76rem;
@@ -946,7 +1107,7 @@ body.admin-mode #save-btn { display: block; }
 #bulk-file-list .bulk-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #bulk-file-list .bulk-file-size { color: var(--text-muted); font-size: 0.74rem; flex-shrink: 0; }
 #bulk-file-list .bulk-file-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
-#bulk-file-list .bulk-file-remove:hover { color: #ff5b57; }
+#bulk-file-list .bulk-file-remove:hover { color: var(--danger); }
 #bulk-file-list .bulk-empty { color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 10px 0; }
 
 #bulk-upload-status { margin-top: 8px; font-size: 0.82rem; color: var(--text-muted); text-align: center; }
@@ -957,8 +1118,8 @@ body.admin-mode #save-btn { display: block; }
 /* 오류는 진행상황 텍스트(#bulk-upload-status)와 분리된 별도 박스로 보여준다
    — 진행중 메시지와 섞이지 않고 눈에 띄게. #bulk-review-warnings와 같은 스타일. */
 #bulk-upload-error, #bulk-review-error {
-    background: rgba(255, 91, 87, 0.1); border: 1px solid rgba(255, 91, 87, 0.4); border-radius: var(--radius-sm);
-    padding: 8px 10px; font-size: 0.8rem; color: #ff8a86; margin-top: 8px; line-height: 1.6; display: none;
+    background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius-sm);
+    padding: 8px 10px; font-size: 0.8rem; color: var(--danger-soft); margin-top: 8px; line-height: 1.6; display: none;
 }
 #bulk-upload-error i, #bulk-review-error i { margin-right: 4px; }
 #bulk-upload-error.show, #bulk-review-error.show { display: block; }
@@ -982,7 +1143,7 @@ body.app-busy, body.app-busy * { cursor: wait !important; }
 }
 #bulk-review-meta .meta-row { display: flex; justify-content: space-between; gap: 8px; }
 #bulk-review-meta .meta-label { color: var(--text-muted); }
-#bulk-review-meta .crs-bad { color: #ff5b57; font-weight: 700; }
+#bulk-review-meta .crs-bad { color: var(--danger); font-weight: 700; }
 #bulk-review-sigungu-row { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px; }
 #bulk-review-sigungu-input {
     background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
@@ -1000,11 +1161,40 @@ body.app-busy, body.app-busy * { cursor: wait !important; }
 }
 #bulk-review-layers .layer-row .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #bulk-review-layers .layer-row .layer-count { color: var(--text-muted); flex-shrink: 0; }
-#bulk-review-layers .layer-row.has-warning { color: #ffb020; }
-#bulk-review-layers .layer-row.has-warning i { color: #ffb020; }
+#bulk-review-layers .layer-row.has-warning { color: var(--warn); }
+#bulk-review-layers .layer-row.has-warning i { color: var(--warn); }
+/* KRRIS 사전검사(일괄등록 검수 결과 안) — 통과는 강조색, 결함은 경고(주황)색 */
+#bulk-review-krris:empty { display: none; }
+#bulk-review-krris {
+    border: 1px solid var(--border-med); border-radius: var(--radius-sm); background: var(--panel-light);
+    padding: 8px 10px; margin-bottom: 12px; font-size: 0.8rem;
+}
+#bulk-review-krris .kr-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-weight: 700; font-size: 0.82rem; margin-bottom: 6px;
+}
+#bulk-review-krris .kr-dl {
+    background: transparent; border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); font-size: 0.74rem; padding: 3px 8px; cursor: pointer;
+}
+#bulk-review-krris .kr-dl:hover { border-color: var(--accent); color: var(--accent-hover); }
+#bulk-review-krris .kr-dl:disabled { opacity: 0.6; cursor: default; }
+#bulk-review-krris .kr-item { display: flex; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border-dim); }
+#bulk-review-krris .kr-item > i { margin-top: 2px; flex-shrink: 0; }
+#bulk-review-krris .kr-item > div { flex: 1; min-width: 0; }
+#bulk-review-krris .kr-item.pass > i, #bulk-review-krris .kr-item.pass .kr-msg { color: var(--accent-hover); }
+#bulk-review-krris .kr-item.fail > i, #bulk-review-krris .kr-item.fail .kr-msg { color: var(--warn); }
+#bulk-review-krris .kr-sub { color: var(--text-muted); font-size: 0.75rem; margin-top: 2px; line-height: 1.5; }
+#bulk-review-krris .kr-table { width: 100%; border-collapse: collapse; margin-top: 5px; font-size: 0.74rem; }
+#bulk-review-krris .kr-table th { text-align: left; color: var(--text-muted); font-weight: 600; padding: 3px 4px; border-bottom: 1px solid var(--border-dim); }
+#bulk-review-krris .kr-table td { padding: 3px 4px; border-bottom: 1px solid var(--border-dim); vertical-align: top; }
+#bulk-review-krris .kr-table .kr-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#bulk-review-krris .kr-field { display: block; color: var(--text-muted); font-size: 0.7rem; }
+#bulk-review-krris .kr-skip { display: block; color: var(--danger-soft); font-size: 0.7rem; }
+#bulk-review-krris .kr-note { color: var(--text-muted); font-size: 0.72rem; margin-top: 6px; line-height: 1.5; }
 #bulk-review-warnings {
-    background: rgba(255, 91, 87, 0.1); border: 1px solid rgba(255, 91, 87, 0.4); border-radius: var(--radius-sm);
-    padding: 8px 10px; font-size: 0.78rem; color: #ff8a86; margin-bottom: 12px; line-height: 1.6; display: none;
+    background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius-sm);
+    padding: 8px 10px; font-size: 0.78rem; color: var(--danger-soft); margin-bottom: 12px; line-height: 1.6; display: none;
 }
 #bulk-review-warnings.show { display: block; }
 #bulk-review-buttons { display: flex; gap: 8px; }
@@ -1057,6 +1247,18 @@ body.app-busy, body.app-busy * { cursor: wait !important; }
 .field-grid input:disabled, .field-grid select:disabled, .field-grid textarea:disabled {
     background: transparent; color: var(--text-secondary); border-color: var(--border-dim); cursor: default;
 }
+/* 정보 탭 읽기 전용(편집 모드 아님) — 상자 없이 밑줄 하나짜리 텍스트처럼 */
+#parcel-form.is-readonly .field-grid input:disabled,
+#parcel-form.is-readonly .field-grid select:disabled,
+#parcel-form.is-readonly .field-grid textarea:disabled {
+    border: none; border-bottom: 1px solid var(--border-dim); border-radius: 0; padding: 4px 0 5px;
+    color: var(--text-primary); -webkit-text-fill-color: var(--text-primary); opacity: 1;
+    appearance: none; -webkit-appearance: none; resize: none;
+}
+#parcel-form.is-readonly .field-grid input:disabled::placeholder,
+#parcel-form.is-readonly .field-grid textarea:disabled::placeholder {
+    color: var(--text-muted); -webkit-text-fill-color: var(--text-muted);
+}
 
 .btn-squared {
     width: 100%; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
@@ -1091,7 +1293,7 @@ body.admin-mode .file-item .file-del-btn { display: inline-flex; }
     border-radius: 999px; margin-left: 6px; white-space: nowrap;
 }
 .file-dwg-badge-ok { background: rgba(58,133,224,0.18); color: var(--accent-hover); }
-.file-dwg-badge-none { background: rgba(255,255,255,0.06); color: var(--text-muted); }
+.file-dwg-badge-none { background: var(--chip-bg); color: var(--text-muted); }
 
 /* "도면종류" 탭에서 500m 구간 표 위에 얹는 노선 전체 파일(TOP/CON) 요약 줄 —
    .file-item과 비슷하지만 다운로드/삭제 버튼을 .rs-name-dl-btn/.rs-file-del-btn을
@@ -1177,7 +1379,7 @@ body.admin-mode .rs-name-dl-btn { display: inline-flex; }
 }
 .rs-file-btn:hover { background: var(--accent-hover); }
 .rs-file-del-btn { display: none; background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.7rem; padding: 0 2px; }
-.rs-file-del-btn:hover { color: #ff5b57; }
+.rs-file-del-btn:hover { color: var(--danger); }
 body.admin-mode .rs-file-del-btn { display: inline-flex; }
 
 #route-upload-status { font-size: 0.76rem; color: var(--text-muted); margin: 4px 0; min-height: 1em; }
@@ -1188,16 +1390,21 @@ body.admin-mode .rs-file-del-btn { display: inline-flex; }
 
 /* ===== 로그인 ===== */
 #login-overlay {
-    position: fixed; inset: 0; background: var(--panel-dark); display: flex;
+    position: fixed; inset: 0; display: flex;
     align-items: center; justify-content: center; z-index: 1000;
+    /* 흐린 도로망 그림(public/login-bg.svg) + 로그인 상자 뒤의 은은한 파란 빛 */
+    background:
+        radial-gradient(ellipse 60% 55% at 50% 48%, rgba(46, 111, 174, 0.16), transparent 70%),
+        url("login-bg.svg") center / cover no-repeat,
+        var(--panel-dark);
 }
 #login-box {
     background: var(--panel-mid); border-radius: var(--radius-lg); padding: 40px 36px;
-    width: 320px; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    width: 320px; text-align: center; box-shadow: 0 8px 32px var(--shadow-strong);
 }
 #login-title { font-size: 1.4rem; font-weight: 800; }
 #login-subtitle { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px; }
-#login-error { color: #ff6b6b; font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#login-error { color: var(--danger-text); font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
 #login-box input {
     width: 100%; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     color: var(--text-primary); padding: 10px 12px; margin-bottom: 10px; font-size: 0.9rem;
@@ -1250,6 +1457,97 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
     background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.82rem; margin-top: 10px;
 }
 #login-box button.login-link-btn:hover { background: transparent; color: var(--text-primary); text-decoration: underline; }
+/* ===== 관리 콘솔(계정·이력·일괄등록) — 지도 위를 덮는 전체 화면 ===== */
+#admin-console {
+    position: fixed; inset: 0; z-index: 900; background: var(--panel-dark);
+    flex-direction: column;
+}
+#admin-console.open { display: flex !important; }
+#console-header {
+    flex-shrink: 0; height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 24px; background: var(--panel-mid); border-bottom: 1px solid var(--border-dim);
+}
+#console-title { font-weight: 700; font-size: 1.05rem; }
+#console-title i { color: var(--accent); margin-right: 6px; }
+#console-header-right { display: flex; align-items: center; gap: 14px; font-size: 0.85rem; color: var(--text-secondary); }
+#console-close-btn {
+    background: transparent; border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 7px 12px; font-size: 0.82rem; cursor: pointer; transition: var(--transition);
+}
+#console-close-btn:hover { border-color: var(--accent); color: var(--accent-hover); }
+#console-close-btn i { margin-right: 5px; }
+#console-body { flex: 1; min-height: 0; display: flex; }
+#console-nav {
+    width: 210px; flex-shrink: 0; background: var(--panel-sidebar); border-right: 1px solid var(--border-dim);
+    padding: 14px 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.console-nav-btn {
+    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+    background: transparent; border: none; border-radius: var(--radius-sm); color: var(--text-secondary);
+    padding: 10px 12px; font-size: 0.88rem; cursor: pointer; transition: var(--transition);
+}
+.console-nav-btn i { width: 18px; text-align: center; color: var(--text-muted); }
+.console-nav-btn:hover { background: var(--panel-light); color: var(--text-primary); }
+.console-nav-btn.active { background: var(--panel-light); color: var(--accent-hover); font-weight: 700; }
+.console-nav-btn.active i { color: var(--accent-hover); }
+.console-nav-btn:focus-visible, #console-close-btn:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 1px; }
+#console-main { flex: 1; min-width: 0; overflow-y: auto; padding: 24px 32px; }
+/* 사이드바에 있던 화면들을 그대로 옮겨온 것이라 각자의 사이드바용 여백/스크롤을 끄고 넓게 쓴다 */
+#console-main .console-section {
+    max-width: 1080px; margin: 0 auto; padding: 0; overflow: visible; flex-direction: column; min-height: 0;
+}
+#console-main #audit-log-list, #console-main #accounts-list { overflow: visible; }
+/* 지도 하단 저작권 문구(로그인한 관할 지자체 영문명) — 지도 배경(밝은 지도/위성) 어디서나
+   읽히도록 반투명 바탕. 문구가 없으면 숨김. */
+.site-footer { letter-spacing: 0.02em; text-align: center; pointer-events: none; }
+.site-footer:empty { display: none; }
+/* 오른쪽 아래 — 왼쪽 아래의 축척·측정 도구와 지도 폭이 좁아져도(도면 뷰어를 열었을 때) 겹치지 않게 */
+#map-footer {
+    position: absolute; bottom: 12px; right: 12px; z-index: 40;
+    background: var(--float-bg); color: var(--text-secondary); padding: 3px 12px; border-radius: var(--radius-sm);
+    white-space: nowrap; font-size: 0.7rem;
+}
+/* 지도 영역 자체의 폭 기준(도면 뷰어·사이드바를 열면 화면은 넓어도 지도는 좁아진다) —
+   좁으면 왼쪽 아래 축척·측정 도구 줄과 한 줄에 다 안 들어가므로 한 줄 위로 올린다 */
+#map-container { container-type: inline-size; container-name: mapview; }
+@container mapview (max-width: 640px) {
+    #map-footer { bottom: 50px; }
+}
+@media (max-width: 760px) {
+    #console-body { flex-direction: column; }
+    #console-nav { width: auto; flex-direction: row; overflow-x: auto; padding: 8px; border-right: none; border-bottom: 1px solid var(--border-dim); }
+    .console-nav-btn { width: auto; white-space: nowrap; }
+    #console-main { padding: 16px; }
+    #console-user { display: none; }
+    #map-footer { display: none; } /* 좁은 화면에선 축척·측정 도구와 겹쳐서 숨김 */
+}
+
+/* ===== 사용자 재인증 모달(관리 콘솔 진입 / 재인증 만료 시) — 비밀번호 변경 모달과 같은 모양 ===== */
+#reauth-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1200;
+}
+#reauth-modal.open { display: flex !important; }
+#reauth-box {
+    background: var(--panel-mid); border-radius: var(--radius-lg); padding: 30px 30px 24px; width: 340px;
+    text-align: center; box-shadow: 0 8px 32px var(--shadow-strong);
+}
+#reauth-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 6px; }
+#reauth-title i { color: var(--accent); margin-right: 6px; }
+#reauth-notice { color: var(--text-muted); font-size: 0.78rem; line-height: 1.55; margin-bottom: 12px; }
+#reauth-error { color: var(--danger-text); font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#reauth-box input {
+    width: 100%; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    color: var(--text-primary); padding: 10px 12px; margin-bottom: 10px; font-size: 0.9rem;
+}
+#reauth-box button {
+    width: 100%; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 11px 0; font-weight: 700; cursor: pointer; margin-top: 4px; transition: var(--transition);
+}
+#reauth-box button:hover { background: var(--accent-hover); }
+#reauth-box button:disabled { opacity: 0.6; cursor: default; }
+#reauth-box button.pw-link-btn { background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.82rem; margin-top: 8px; }
+#reauth-box button.pw-link-btn:hover { background: transparent; color: var(--text-primary); text-decoration: underline; }
+
 /* ===== 비밀번호 변경 모달 ===== */
 #pw-modal {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1100;
@@ -1257,11 +1555,11 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #pw-modal.open { display: flex !important; }
 #pw-box {
     background: var(--panel-mid); border-radius: var(--radius-lg); padding: 32px 30px; width: 320px;
-    text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    text-align: center; box-shadow: 0 8px 32px var(--shadow-strong);
 }
 #pw-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 4px; }
 #pw-notice { color: var(--text-muted); font-size: 0.78rem; margin-bottom: 14px; min-height: 1em; }
-#pw-error { color: #ff6b6b; font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#pw-error { color: var(--danger-text); font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
 #pw-box input {
     width: 100%; background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
     color: var(--text-primary); padding: 10px 12px; margin-bottom: 10px; font-size: 0.9rem; box-sizing: border-box;
@@ -1275,18 +1573,31 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #pw-box button.pw-link-btn:hover { background: transparent; color: var(--text-primary); text-decoration: underline; }
 #signup-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 4px; }
 #signup-notice { color: var(--text-muted); font-size: 0.78rem; margin-bottom: 14px; }
-#signup-error { color: #ff6b6b; font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
-#signup-error.ok { color: #5ad18f; }
+#signup-error { color: var(--danger-text); font-size: 0.82rem; min-height: 1.2em; margin-bottom: 8px; }
+#signup-error.ok { color: var(--success); }
+#signup-consent-text {
+    max-height: 120px; overflow-y: auto; text-align: left; margin: 2px 0 8px; padding: 9px 10px;
+    background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
+    font-size: 0.74rem; line-height: 1.5; color: var(--text-muted);
+}
+#signup-consent-text b { display: block; color: var(--text-primary); margin-bottom: 4px; font-size: 0.78rem; }
+#signup-consent-text dt { color: var(--text-primary); font-weight: 600; margin-top: 5px; }
+#signup-consent-text dd { margin: 0; }
+#signup-consent-row {
+    display: flex; align-items: center; gap: 7px; text-align: left; margin-bottom: 10px;
+    font-size: 0.8rem; color: var(--text-primary); cursor: pointer;
+}
+#signup-consent-row input { width: auto; margin: 0; flex-shrink: 0; }
 #signup-sigungu-wrap { position: relative; }
 #signup-sigungu-suggest {
     position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: -8px; text-align: left;
     background: var(--panel-light); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
-    max-height: 170px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    max-height: 170px; overflow-y: auto; box-shadow: 0 4px 16px var(--shadow-strong);
 }
 /* 시군구 검색 자동완성 목록 항목 — 로그인 화면 회원가입(#signup-sigungu-suggest)과
    계정관리 새 계정 폼(#acc-sigungu-suggest)이 공용(attachSigunguAutocomplete) */
 .sg-opt { padding: 7px 10px; font-size: 0.82rem; cursor: pointer; }
-.sg-opt:hover { background: rgba(255,255,255,0.08); }
+.sg-opt:hover { background: var(--hover-bg); }
 .sg-empty { padding: 7px 10px; font-size: 0.8rem; color: var(--text-muted); }
 
 /* ===== 사용자도로관리 트리 (데이터보기, 구간 트리 아래) ===== */
@@ -1313,7 +1624,7 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #issue-modal-card {
     background: var(--panel-mid); border-radius: 0; border-right: 1px solid var(--border-dim);
     width: 380px; max-width: calc(100vw - 40px); height: 100%; display: flex; flex-direction: column;
-    box-shadow: 4px 0 24px rgba(0,0,0,0.5); pointer-events: auto;
+    box-shadow: 4px 0 24px var(--shadow-strong); pointer-events: auto;
 }
 #issue-modal-header {
     display: flex; align-items: center; justify-content: space-between; padding: 16px 18px;
@@ -1348,7 +1659,7 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #issue-file-list .issue-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 #issue-file-list .issue-file-name:hover { color: var(--accent-hover); text-decoration: underline; }
 #issue-file-list .issue-file-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
-#issue-file-list .issue-file-remove:hover { color: #ff5b57; }
+#issue-file-list .issue-file-remove:hover { color: var(--danger); }
 #issue-modal-status { text-align: center; font-size: 0.8rem; margin-top: 4px; min-height: 1.2em; color: var(--accent-hover); }
 #issue-modal-footer {
     display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--border-dim); flex-shrink: 0;
@@ -1361,10 +1672,10 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 }
 .btn-outline:hover { background: var(--panel-light); color: var(--text-primary); }
 .btn-danger {
-    background: transparent; border: 1px solid rgba(255, 91, 87, 0.4); color: #ff5b57;
+    background: transparent; border: 1px solid var(--danger-border); color: var(--danger);
     border-radius: var(--radius-sm); padding: 9px 16px; font-weight: 600; cursor: pointer; transition: var(--transition);
 }
-.btn-danger:hover { background: rgba(255, 91, 87, 0.12); }
+.btn-danger:hover { background: var(--danger-bg-strong); }
 
 /* ---------- 계정관리(#accountsview-tab) ---------- */
 /* #auditlogview-tab/.audit-log-row와 같은 패턴(패딩, 카드형 행, 배지+본문
@@ -1380,9 +1691,27 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #acc-sigungu-suggest {
     position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: 2px;
     background: var(--panel-mid); border: 1px solid var(--border-med); border-radius: var(--radius-sm);
-    max-height: 180px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    max-height: 180px; overflow-y: auto; box-shadow: 0 4px 16px var(--shadow-strong);
 }
 #accounts-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1; min-height: 0; }
+/* 등록 데이터 관리(노선 삭제) */
+#datamgmt-header button { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.95rem; padding: 4px 6px; }
+#datamgmt-header button:hover { color: var(--text-primary); }
+#datamgmt-notice { margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger-text); font-size: 0.8rem; line-height: 1.45; }
+#datamgmt-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.dm-row { display: flex; align-items: flex-start; gap: 10px; background: var(--panel-light); border: 1px solid transparent; border-radius: var(--radius-sm); padding: 9px 12px; font-size: 0.82rem; cursor: pointer; }
+.dm-row:hover { background: var(--hover-bg); }
+.dm-row.selected { border-color: var(--danger); background: var(--danger-bg); }
+.dm-row input { margin-top: 3px; flex-shrink: 0; }
+.dm-main { min-width: 0; flex: 1; }
+.dm-top { display: flex; align-items: baseline; gap: 8px; }
+.dm-grade { font-size: 0.72rem; font-weight: 700; padding: 1px 7px; border-radius: 9px; background: var(--chip-bg); color: var(--text-secondary); flex-shrink: 0; }
+.dm-name { font-weight: 700; overflow-wrap: anywhere; flex: 1; min-width: 0; }
+.dm-rank-select { flex-shrink: 0; background: var(--panel-mid); color: var(--text-primary); border: 1px solid var(--border-med); border-radius: var(--radius-sm); font-size: 0.76rem; padding: 2px 4px; }
+.dm-meta { color: var(--text-muted); font-size: 0.76rem; margin-top: 3px; }
+#datamgmt-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid var(--border-dim); margin-top: 10px; font-size: 0.82rem; color: var(--text-secondary); }
+#datamgmt-delete-btn { background: var(--danger); border: none; color: #fff; border-radius: var(--radius-sm); padding: 8px 16px; font-weight: 700; cursor: pointer; }
+#datamgmt-delete-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .account-row { background: var(--panel-light); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.82rem; }
 .account-row .acr-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
 .account-row .acc-username { font-weight: 700; flex-shrink: 0; }
@@ -1399,7 +1728,7 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 }
 .account-row .acc-approve-btn:hover { background: var(--accent-hover); }
 .account-row .acc-del-btn { flex-shrink: 0; background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 2px 4px; }
-.account-row .acc-del-btn:hover { color: #ff5b57; }
+.account-row .acc-del-btn:hover { color: var(--danger); }
 .account-row .acc-reset-btn { flex-shrink: 0; background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 2px 4px; }
 .account-row .acc-reset-btn:hover { color: var(--accent-hover); }
 .account-row .acr-meta { color: var(--text-muted); font-size: 0.72rem; }
@@ -1407,7 +1736,7 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #issue-editroute-bar {
     position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 60;
     background: var(--panel-mid); border: 1px solid var(--border-med); border-radius: var(--radius-md);
-    padding: 10px 14px; display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    padding: 10px 14px; display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 16px var(--shadow-strong);
 }
 #issue-editroute-bar span { font-size: 0.82rem; color: var(--text-secondary); white-space: nowrap; }
 #issue-editroute-bar .btn-squared { width: auto; padding: 7px 14px; font-size: 0.85rem; }

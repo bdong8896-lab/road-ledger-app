@@ -17,7 +17,22 @@ const pool = require('../db');
 const { GOV_LAYER_MAP } = require('./govLayerMap');
 const { parseDbf } = require('./dbfParser');
 const { parseShp } = require('./shpParser');
-const { detectCrs, reprojectGeometry } = require('./crsRegistry');
+const { detectCrs, reprojectGeometry, KRRIS_REQUIRED_EPSG } = require('./crsRegistry');
+const { getTableLabels } = require('./schemaLabels');
+
+// KRRIS(국가 도로대장 검수) 사전검사 — 실제 장성군 납품 심사에서 지적된 결함 중
+// 기계적으로 판정할 수 있는 두 가지를 미리보기 단계에서 잡는다.
+//   C-1: 좌표계가 EPSG:5179(UTM-K)가 아님 — 도로대장 작성지침 43쪽. 우리 시스템은 어떤
+//        좌표계든 변환해 저장하므로 화면상 문제가 없지만, 그 원본을 KRRIS에 내면 반려된다.
+//   M-1: 필수(NN) 항목 값이 비어 있음 — 필수 여부는 테이블정의서 v2.3을 옮긴 DB 스키마
+//        (gov_facility_schema.sql의 NOT NULL)를 그대로 쓴다. 텍스트 필드 빈칸은 ''로
+//        들어와 DB NOT NULL을 통과해버리고(실제 적재분에서 45건 확인), 숫자 필드 빈칸은
+//        null이 되어 확정 단계 INSERT 자체가 실패해 일괄등록 전체가 롤백된다.
+const NN_SAMPLE_LIMIT = 5; // 미리보기 화면에 필드별로 보여줄 대상 ID 개수(전체는 CSV로)
+
+function isBlank(v) {
+    return v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+}
 
 // {관리번호}_{레이어코드}_{N|D}.dbf 패턴
 const LAYER_FILE_RE = /^(\d+)_([A-Z][0-9]{7})_(N|D)\.dbf$/i;
@@ -74,7 +89,7 @@ async function parseDelivery(extractDir) {
     const layersByCode = new Map(); // 레이어 코드 -> 여러 납품 루트의 레코드를 합친 layer 객체
     const sectionRecords = []; // { deliveryRoot, row, geom } — A0020000(도로대장총괄) 레코드, 루트별로 구분
 
-    for (const [deliveryRoot, { dbfFiles: files }] of deliveries) {
+    for (const [deliveryRoot, { code: deliveryCode, dbfFiles: files }] of deliveries) {
         const layerEntries = []; // { code, kind, dbfPath } (이 납품 루트 안에서만)
         for (const dbfPath of files) {
             const [, , code, kind] = path.basename(dbfPath).match(LAYER_FILE_RE);
@@ -92,14 +107,16 @@ async function parseDelivery(extractDir) {
             byCode.get(entry.code)[entry.kind] = entry.dbfPath;
         }
 
+        const deliveryLabel = deliveryCode || path.basename(deliveryRoot);
         for (const [code, kinds] of byCode.entries()) {
             const layerDef = GOV_LAYER_MAP[code];
             if (!layersByCode.has(code)) {
                 layersByCode.set(code, {
                     code, table: layerDef.table, pkColumn: layerDef.pkColumn, koreanName: layerDef.koreanName,
-                    newRecords: [], deleteRecords: [], crs: null, geomType: null,
+                    newRecords: [], deleteRecords: [], crs: null, geomType: null, hasShp: false,
                     fieldMatch: { ok: true, missingInDbf: [], extraInDbf: [], missingRequired: [] },
                     warnings: [],
+                    nnDefects: [], // M-1: { pk, field, kind: 'empty'|'null' }
                 });
             }
             const layer = layersByCode.get(code);
@@ -130,9 +147,31 @@ async function parseDelivery(extractDir) {
                     // 확정을 막는 blockingWarnings로 올린다.
                     const missingRequired = missingInDbf.filter((c) => requiredNoDefault.has(c));
                     layer.fieldMatch = { ok: missingInDbf.length === 0 && extraInDbf.length === 0, missingInDbf, extraInDbf, missingRequired };
+                    // 다른 레이어의 속성표를 이 레이어 파일로 잘못 내보낸 경우(예: 도로중심선교점 DBF에
+                    // 도로대장총괄 속성이 들어옴) — 이 레이어 컬럼은 대부분 비어 있고 다른 테이블 컬럼과는 거의 다 맞는다.
+                    // 그대로 저장하면 의미 없는 행이 들어가므로 이 파일은 건너뛴다.
+                    const nonGeomColumns = [...columns].filter((c) => !['geom', 'sigungu_code'].includes(c));
+                    if (missingInDbf.length >= nonGeomColumns.length / 2 && extraInDbf.length >= 5) {
+                        let lookalike = null;
+                        for (const [otherCode, otherDef] of Object.entries(GOV_LAYER_MAP)) {
+                            if (otherCode === code || otherDef.table === layerDef.table) continue;
+                            const other = (await getTableColumns(otherDef.table)).columns;
+                            const fit = dbfFieldNames.filter((f) => other.has(f)).length / dbfFieldNames.length;
+                            if (fit >= 0.9) { lookalike = otherDef; break; }
+                        }
+                        if (lookalike) {
+                            layer.warnings.push(
+                                `${deliveryLabel}: ${path.basename(dbfPath)}의 속성표가 ${layerDef.koreanName}이(가) 아니라 ${lookalike.koreanName}의 것과 같습니다 — 납품 파일이 잘못 만들어져 이 파일(${parsed.records.length}건)은 등록하지 않습니다.`
+                            );
+                            layer.skippedWrongSchema = (layer.skippedWrongSchema || 0) + parsed.records.length;
+                            continue;
+                        }
+                    }
                     if (extraInDbf.length) {
+                        const shown = extraInDbf.slice(0, 8).join(', ');
+                        const rest = extraInDbf.length > 8 ? ` 외 ${extraInDbf.length - 8}개` : '';
                         layer.warnings.push(
-                            `DBF에 저장 스키마에 없는 필드가 있습니다(무시하고 저장됨): ${extraInDbf.join(', ')}`
+                            `${deliveryLabel}: DBF에 저장 스키마에 없는 필드 ${extraInDbf.length}개(무시하고 저장됨): ${shown}${rest}`
                         );
                     }
                     if (missingRequired.length) {
@@ -147,6 +186,7 @@ async function parseDelivery(extractDir) {
                 const shpPath = `${basePath}.shp`;
                 const prjPath = `${basePath}.prj`;
                 if (fs.existsSync(shpPath)) {
+                    layer.hasShp = true;
                     try {
                         geoms = parseShp(fs.readFileSync(shpPath));
                         if (geoms[0]) layer.geomType = geoms[0].type;
@@ -185,11 +225,32 @@ async function parseDelivery(extractDir) {
                 });
 
                 if (kind === 'N') {
+                    // M-1: DBF에 있는 필수 필드의 값이 비었는지 행마다 확인. (필드 자체가 없는
+                    // 경우는 위의 missingRequired가 레이어 단위로 처리한다.)
+                    const presentFields = new Set(parsed.fields.map((f) => f.name.toLowerCase()));
+                    const nnFields = [...requiredNoDefault].filter((c) => presentFields.has(c));
+                    rows.forEach((rec, i) => {
+                        for (const field of nnFields) {
+                            const v = rec.row[field];
+                            if (!isBlank(v)) continue;
+                            const pkVal = rec.row[layer.pkColumn];
+                            layer.nnDefects.push({
+                                pk: isBlank(pkVal) ? `(${path.basename(dbfPath)} ${i + 1}번째 행)` : String(pkVal),
+                                field,
+                                kind: v === null || v === undefined ? 'null' : 'empty',
+                            });
+                            // null은 확정 단계 INSERT를 실패시켜 일괄등록 전체를 롤백시키므로,
+                            // 이 레코드만 저장에서 빼고 나머지는 정상 진행한다.
+                            if (v === null || v === undefined) rec.skipNnNull = true;
+                        }
+                    });
                     layer.newRecords.push(...rows);
                     // A0020000(도로대장총괄) 자체가 필수 필드 누락이면 road_sections 동기화도
                     // 시도하지 않는다 — gov_section INSERT를 건너뛰는 것과 같은 원칙.
                     if (code === 'A0020000' && !layer.fieldMatch.missingRequired.length) {
-                        for (const rec of rows) sectionRecords.push({ deliveryRoot, row: rec.row, geom: rec.geom });
+                        for (const rec of rows) {
+                            if (!rec.skipNnNull) sectionRecords.push({ deliveryRoot, deliveryCode, row: rec.row, geom: rec.geom });
+                        }
                     }
                 } else {
                     layer.deleteRecords.push(...rows);
@@ -200,6 +261,8 @@ async function parseDelivery(extractDir) {
 
     const layers = [...layersByCode.values()];
 
+    const krris = buildKrrisChecks(layers);
+
     const blockingWarnings = [
         ...layers
             .filter((l) => l.crs && !l.crs.matched)
@@ -207,6 +270,9 @@ async function parseDelivery(extractDir) {
         ...layers
             .filter((l) => l.fieldMatch.missingRequired.length)
             .map((l) => `${l.koreanName}(${l.code}): 필수 필드 없음(${l.fieldMatch.missingRequired.join(', ')}) — 이 레이어는 저장되지 않습니다`),
+        ...krris.nn
+            .filter((n) => n.nullCount)
+            .map((n) => `${n.koreanName}(${n.code}): 필수 숫자항목 "${n.label}" 값 없음 ${n.nullCount}건 — 해당 레코드는 저장되지 않습니다`),
     ];
 
     // gov_section(A0020000)의 MCO 필드값을 참고용으로 뽑아둔다(첫 번째 구간 기준) — 주의:
@@ -225,7 +291,65 @@ async function parseDelivery(extractDir) {
         sectionRecords,
         unknownLayerCodes: [...new Set(unknownLayerCodes)],
         blockingWarnings,
+        krris,
     };
 }
 
-module.exports = { parseDelivery };
+// 레이어별 결과를 KRRIS 사전검사 요약으로 모은다(미리보기 화면용 — 필드별 건수 + 대상 ID 몇 개).
+// 결함 전체 목록은 krrisDefectRows()로 CSV를 만든다.
+function buildKrrisChecks(layers) {
+    const crs = [];
+    for (const l of layers) {
+        if (!l.hasShp) continue; // 속성만 있는 레이어는 좌표계 검사 대상 아님
+        if (!l.crs) crs.push({ code: l.code, koreanName: l.koreanName, status: 'no-prj', epsg: null, label: null });
+        else if (!l.crs.matched) crs.push({ code: l.code, koreanName: l.koreanName, status: 'unknown', epsg: null, label: null });
+        else if (l.crs.epsg !== KRRIS_REQUIRED_EPSG) crs.push({ code: l.code, koreanName: l.koreanName, status: 'mismatch', epsg: l.crs.epsg, label: l.crs.label });
+    }
+    const nn = [];
+    for (const l of layers) {
+        if (!l.nnDefects.length) continue;
+        const labels = getTableLabels(l.table);
+        const byField = new Map();
+        for (const d of l.nnDefects) {
+            if (!byField.has(d.field)) byField.set(d.field, { emptyCount: 0, nullCount: 0, samples: [] });
+            const f = byField.get(d.field);
+            if (d.kind === 'null') f.nullCount++; else f.emptyCount++;
+            if (f.samples.length < NN_SAMPLE_LIMIT) f.samples.push(d.pk);
+        }
+        for (const [field, f] of byField) {
+            nn.push({ code: l.code, koreanName: l.koreanName, field, label: labels[field] || field, ...f });
+        }
+    }
+    return {
+        requiredEpsg: KRRIS_REQUIRED_EPSG,
+        checkedShpLayers: layers.filter((l) => l.hasShp).length,
+        crs,
+        nn,
+        nnTotal: layers.reduce((s, l) => s + l.nnDefects.length, 0),
+    };
+}
+
+// KRRIS 사전검사 결함 전체 목록(CSV 다운로드용) — 한 줄 = 결함 하나.
+function krrisDefectRows(parsed) {
+    const rows = [];
+    for (const c of parsed.krris.crs) {
+        const detail = c.status === 'mismatch'
+            ? `좌표계가 ${c.label}(${c.epsg})입니다 — 제출 기준 ${parsed.krris.requiredEpsg}`
+            : c.status === 'no-prj' ? '.prj 파일이 없어 좌표계를 확인할 수 없습니다' : '인식할 수 없는 좌표계입니다';
+        rows.push({ check: 'C-1 좌표계', code: c.code, layer: c.koreanName, pk: '', field: '', label: '', detail });
+    }
+    for (const l of parsed.layers) {
+        if (!l.nnDefects.length) continue;
+        const labels = getTableLabels(l.table);
+        for (const d of l.nnDefects) {
+            rows.push({
+                check: 'M-1 필수항목', code: l.code, layer: l.koreanName, pk: d.pk, field: d.field,
+                label: labels[d.field] || d.field,
+                detail: d.kind === 'null' ? '값 없음(숫자) — 이 레코드는 저장되지 않음' : '빈 값',
+            });
+        }
+    }
+    return rows;
+}
+
+module.exports = { parseDelivery, krrisDefectRows };

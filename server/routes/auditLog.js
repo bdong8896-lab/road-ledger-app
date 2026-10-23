@@ -4,18 +4,18 @@
 // CSV(텍스트) 파일로 내려받을 수 있다(감사·보고 제출용).
 const express = require('express');
 const pool = require('../db');
-const { requireAdmin } = require('../middleware/requireAuth');
+const { requireAdminReauth } = require('../middleware/requireAuth');
 const { logAction, clientIp } = require('../lib/auditLog');
 
 const router = express.Router();
-router.use(requireAdmin);
+router.use(requireAdminReauth); // 관리 콘솔 재인증(15분) 필요
 
 const ACTION_LABELS = {
     create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록',
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
-    log_export: '이력 다운로드',
+    log_export: '이력 다운로드', admin_reauth: '관리자 재인증',
 };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 

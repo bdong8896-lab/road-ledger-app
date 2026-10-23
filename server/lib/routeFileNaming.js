@@ -45,6 +45,8 @@ function classifyDrawingType(file) {
     if (file.file_category === '도면종류') {
         if (/^TOP/i.test(file.original_name)) return '용지도';
         if (/^CON/i.test(file.original_name)) return '평면도';
+        // SE{노선4}{구간2}{측점5}: 신규 납품의 노선·구간 전체 평면도(CONT 폴더, 장성/화성 납품으로 확인)
+        if (/^SE\d/i.test(file.original_name)) return '평면도';
         return null;
     }
     return null;

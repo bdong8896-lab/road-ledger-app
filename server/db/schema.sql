@@ -26,6 +26,10 @@ END $$;
 -- 비밀번호로 바꾸기 전까지 다른 기능을 못 쓴다(true). 본인이 바꾸면 false.
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
 
+-- 로그인 화면 회원가입에서 개인정보 수집·이용에 동의한 시각(동의 근거 기록). 관리자가
+-- 직접 만든 계정과 이 기능 이전에 만든 계정은 NULL.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS privacy_consent_at TIMESTAMPTZ;
+
 -- ============================================================
 -- 도로(노선/구간) 단위 도로대장 — 국토부 표준의 "01.도로대장총괄" 개념을
 -- 반영한 신규 기본 단위. 지도에서 도로망도(LT_L_MOCTLINK) 선분을 클릭해
@@ -65,6 +69,11 @@ CREATE TABLE IF NOT EXISTS road_sections (
 
 CREATE INDEX IF NOT EXISTS idx_road_sections_rank ON road_sections(road_rank_code);
 CREATE INDEX IF NOT EXISTS idx_road_sections_sigungu ON road_sections(sigungu_code);
+
+-- 일괄등록한 원본 납품의 관리번호(예: 589502026008001 — 납품 폴더명이자 SHP/DBF 파일명
+-- 앞부분). 노선 내보내기가 파일명·폴더명을 원본과 똑같이 만들 때 쓴다. 수동등록이나
+-- 이 컬럼 추가 전에 등록된 구간은 NULL(내보내기가 같은 규칙으로 합성).
+ALTER TABLE road_sections ADD COLUMN IF NOT EXISTS delivery_code VARCHAR(20);
 
 -- 등록된 구간을 500m 단위로 미리 끊어둔 SHP를 그대로 적재한 테이블 — 지도에서
 -- 노선에 마우스오버했을 때 "구간 전체"가 아니라 "지금 가리키는 500m 구간"의

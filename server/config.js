@@ -44,6 +44,13 @@ module.exports = {
     // 있다. 운영 서버는 이 값을 굳이 안 늘리는 게 안전하다(로그인 상태로
     // 방치된 PC가 오래 남는 것 자체가 위험 요소이므로).
     sessionMaxAgeHours: Number(required('SESSION_MAX_AGE_HOURS', '8')),
+    // 관리 콘솔(계정·이력·일괄등록)에 들어갈 때 받는 비밀번호 재인증의 유효시간(분).
+    // 관리 작업을 할 때마다 다시 늘어나므로, 이 시간 동안 관리 작업이 없을 때만 다시 묻는다.
+    adminReauthMinutes: Number(process.env.ADMIN_REAUTH_MINUTES || 15),
+    // 지도 하단 저작권 문구는 로그인한 계정의 관할 지자체 영문명으로 자동 생성된다
+    // (routes/auth.js /site-info). 이 값은 관할이 없는(전체) 계정에만 쓰는 배포처 기본 문구.
+    // 예: SITE_COPYRIGHT=copyright © 2026 HWASEONG CITY. All Rights Reserved.  (비우면 표시 안 함)
+    siteCopyright: process.env.SITE_COPYRIGHT || '',
     vworld: {
         apiKey: process.env.VWORLD_API_KEY || '',
         referer: process.env.VWORLD_REFERER || 'http://localhost/',

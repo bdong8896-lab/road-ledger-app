@@ -10,11 +10,7 @@
 // 뿐 관할 판정에 쓰이지 않으므로 DBF 원본 값을 그대로 저장한다.
 const path = require('path');
 const fs = require('fs');
-const { ROAD_RANK_CODES } = require('../routes/sections');
-
-const ROAD_RANK_NAME_BY_CODE = Object.fromEntries(
-    Object.entries(ROAD_RANK_CODES).map(([name, code]) => [code, name])
-);
+const { ROAD_RANK_NAME_BY_CODE, RANK_NAMES_FOR_1599 } = require('./roadRank');
 
 let managingAgencies = null;
 function getMcoNameByCode(code) {
@@ -28,9 +24,13 @@ function getMcoNameByCode(code) {
 
 // client: pg 트랜잭션 클라이언트. row: gov_section의 파싱된 한 레코드(소문자
 // 필드명). geom: 재투영된 GeoJSON LineString(없으면 null).
-async function syncRoadSection(client, { row, geom }, targetSigunguCode, userId) {
+// rankNameOverride: 검수 화면에서 고른 표시 이름(기타/면도/리도/농도/도시계획도로) — 납품 코드가 1599인
+// 노선에만 적용한다(저장 코드는 1599 그대로). 안 고르면 이미 등록된 노선의 표시 이름을 그대로 유지한다.
+async function syncRoadSection(client, { row, geom }, targetSigunguCode, userId, rankNameOverride) {
     const roadRankCode = row.road_rank;
-    const roadRankName = ROAD_RANK_NAME_BY_CODE[roadRankCode] || null;
+    let roadRankName = ROAD_RANK_NAME_BY_CODE[roadRankCode] || null;
+    const is1599 = roadRankCode === '1599';
+    if (is1599 && RANK_NAMES_FOR_1599.includes(rankNameOverride)) roadRankName = rankNameOverride;
     const mcoName = getMcoNameByCode(row.mco);
 
     // 같은 업무키(도로등급+관리기관+노선번호+구간)로 이미 등록된 구간이 있으면
@@ -38,11 +38,15 @@ async function syncRoadSection(client, { row, geom }, targetSigunguCode, userId)
     // 이미 그 RDID를 참조하고 있을 수 있어(FK는 없지만 업무 관례상 참조),
     // RDID를 바꾸면 기존 첨부파일 연결이 끊긴다.
     const { rows: existingRows } = await client.query(
-        `SELECT rdid FROM road_sections
+        `SELECT rdid, road_rank_name FROM road_sections
          WHERE road_rank_code = $1 AND mco_code = $2 AND route_no = $3 AND sect = $4`,
         [roadRankCode, row.mco, row.road_no, row.sect]
     );
     const rdid = existingRows[0] ? existingRows[0].rdid : row.rdid;
+    // 고른 이름이 없으면 이미 면도 등으로 바꿔 둔 노선은 다시 "기타"로 돌아가지 않게 유지한다.
+    if (is1599 && !RANK_NAMES_FOR_1599.includes(rankNameOverride) && existingRows[0] && RANK_NAMES_FOR_1599.includes(existingRows[0].road_rank_name)) {
+        roadRankName = existingRows[0].road_rank_name;
+    }
 
     await client.query(
         `INSERT INTO road_sections (

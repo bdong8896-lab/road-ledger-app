@@ -10,7 +10,11 @@ function readFieldDescriptors(buf, offset) {
     const fields = [];
     let pos = offset;
     while (buf[pos] !== 0x0d) {
-        const name = buf.slice(pos, pos + 11).toString('latin1').split('\0')[0];
+        // 필드명도 한글이 올 수 있다(예: "사진", "일련번호") — 값과 같은 EUC-KR로 읽는다.
+        // 영문/숫자 이름은 어느 인코딩으로 읽어도 같다.
+        let nameEnd = pos;
+        while (nameEnd < pos + 11 && buf[nameEnd] !== 0) nameEnd++;
+        const name = iconv.decode(buf.slice(pos, nameEnd), 'euc-kr');
         const type = buf.slice(pos + 11, pos + 12).toString('latin1');
         const length = buf.readUInt8(pos + 16);
         const decimals = buf.readUInt8(pos + 17);

@@ -11,6 +11,7 @@ const iconv = require('iconv-lite');
 const pool = require('../db');
 const { GOV_LAYER_MAP } = require('./govLayerMap');
 const { writeDbf } = require('./dbfWriter');
+const { normalizeRankForExport, rankInName } = require('./roadRank');
 const { writeShp } = require('./shpWriter');
 const { reprojectFromWgs84, EXPORT_TARGET_EPSG, EXPORT_PRJ_WKT } = require('./crsRegistry');
 
@@ -61,14 +62,19 @@ function buildDbfFields(colMeta, rows) {
     });
 }
 
-// road_sections.rdid는 R01+도로등급코드(4)+관리기관코드(5)+노선번호(4)+구간(3)
-// +연도(4)+일련번호(4) = 27자. 연도는 인덱스 19~22. 원본 관리번호(예:
-// 589502026008001)는 DB에 안 남아있어 정확히 복원할 수 없으므로, 사람이
-// 알아볼 수 있는 값을 새로 합성한다(재수입 매칭에 쓰이는 값이 아니라 파일명
-// prefix일 뿐이라 자릿수가 원본과 달라도 무방).
+// 내보내기 파일명·폴더명 앞부분 = 원본 납품의 관리번호(예: 589502026008001).
+// 일괄등록으로 들어온 구간은 원본 값(road_sections.delivery_code)을 그대로 쓴다.
+// 없으면(수동등록, 컬럼 추가 전 등록분) 관리번호 규칙대로 합성한다:
+//   관리기관코드(5) + 연도(4) + 노선번호(3) + 구간(3) = 15자리
+// 예전엔 노선번호를 DB 값(4자리, "0008") 그대로 붙여 16자리("5895020260008002")가 되어
+// 원본("589502026008002")과 달랐다(사용자 지적으로 확인). 연도는 rdid의 인덱스 19~22
+// (R01+도로등급4+관리기관5+노선4+구간3+연도4+일련번호4 = 27자).
 function buildPrefix(section) {
+    if (section.delivery_code) return section.delivery_code;
     const year = section.rdid.length >= 23 ? section.rdid.slice(19, 23) : '0000';
-    return `${section.mco_code || '00000'}${year}${section.route_no || ''}${section.sect || ''}`;
+    const routeNo = String(Number(section.route_no) || 0).padStart(3, '0'); // 1000 이상이면 4자리 그대로
+    const sect = String(section.sect || '').padStart(3, '0');
+    return `${section.mco_code || '00000'}${year}${routeNo}${sect}`;
 }
 
 // 구간 하나 분량의 SHP/DBF/사진/보고서/도면 엔트리를 zip에 그대로 추가한다.
@@ -99,32 +105,49 @@ async function addSectionToZip(zip, section, folderPrefix) {
 
         matchedByTable.set(table, rows.map((r) => r[pkColumn]).filter(Boolean));
 
+        // 면도/리도/농도/도시계획도로(1509~1512)는 원본 그대로 저장돼 있다 — KRRIS 규격에 없는 코드라 내려받을 때만 1599로 바꾼다(lib/roadRank.js).
+        rows = normalizeRankForExport(rows);
         const colMeta = await getColumnMeta(table);
         const fields = buildDbfFields(colMeta, rows);
-        const entryBase = `${folderPrefix}LAYER/신규/${prefix}_${code}_N`;
-        zip.addFile(`${entryBase}.dbf`, writeDbf(fields, rows));
-        zip.addFile(`${entryBase}.cpg`, Buffer.from('EUC-KR', 'ascii'));
-
+        // 같은 레이어 파일을 두 곳에 넣는다 — 원본 납품 구조 그대로:
+        //   LAYER/신규/{관리번호}_{코드}_N.*  (신규 레코드)
+        //   LAYER/통합/{관리번호}_{코드}.*    (기존+신규-삭제를 반영한 전체 현황)
+        // 실제 장성군 납품 2건(589502026008001/002)의 통합 파일은 신규와 바이트 단위로
+        // 같았다(첫 납품이라 전체 = 신규). 우리 내보내기는 DB의 현재 전체 상태라 둘 다 같은
+        // 내용이 맞다. 예전엔 신규만 만들어 통합 폴더 파일이 빠져 있었다(사용자 지적으로 확인).
+        const files = { dbf: writeDbf(fields, rows), cpg: Buffer.from('EUC-KR', 'ascii') };
         if (rows.some((r) => r.geom)) {
             const geometries = rows.map((r) => (r.geom ? reprojectFromWgs84(r.geom, EXPORT_TARGET_EPSG) : null));
             const { shpBuffer, shxBuffer } = writeShp(geometries);
-            zip.addFile(`${entryBase}.shp`, shpBuffer);
-            zip.addFile(`${entryBase}.shx`, shxBuffer);
-            zip.addFile(`${entryBase}.prj`, Buffer.from(EXPORT_PRJ_WKT, 'ascii'));
+            Object.assign(files, { shp: shpBuffer, shx: shxBuffer, prj: Buffer.from(EXPORT_PRJ_WKT, 'ascii') });
+        }
+        for (const entryBase of [`${folderPrefix}LAYER/신규/${prefix}_${code}_N`, `${folderPrefix}LAYER/통합/${prefix}_${code}`]) {
+            for (const [ext, buf] of Object.entries(files)) zip.addFile(`${entryBase}.${ext}`, buf);
         }
     }
 
     for (const [table, pks] of matchedByTable) {
         if (!pks.length) continue;
         const { rows: files } = await pool.query(
-            `SELECT file_kind, original_name, stored_path FROM gov_facility_files
+            `SELECT file_kind, original_name, stored_path, facility_rdid FROM gov_facility_files
              WHERE facility_table = $1 AND facility_rdid = ANY($2)`,
             [table, pks]
         );
         for (const f of files) {
             if (!fs.existsSync(f.stored_path)) continue; // 디스크에서 파일이 지워졌으면 조용히 건너뜀
-            const destFolder = f.file_kind === '보고서' ? `${folderPrefix}LAYER/통합/STR` : `${folderPrefix}LAYER/통합/PHOTO`;
-            zip.addLocalFile(f.stored_path, destFolder, safeFileNamePart(f.original_name));
+            let destFolder = f.file_kind === '보고서' ? `${folderPrefix}LAYER/통합/STR` : `${folderPrefix}LAYER/통합/PHOTO`;
+            let fileName = f.original_name;
+            // 일괄등록은 PHOTO 아래 하위 폴더(원본사진/표지사진)의 파일을 "원본사진_<RDID>.jpg"처럼
+            // 폴더명을 앞에 붙여 저장한다(bulkImport.js의 displayName). 원본 납품은
+            // "PHOTO/원본사진/<RDID>.jpg"라서 내보낼 때 폴더 구조로 되돌린다(사용자 지적으로 확인).
+            const ext = path.extname(fileName);
+            const pkSuffix = `_${f.facility_rdid}${ext}`;
+            if (f.facility_rdid && fileName.endsWith(pkSuffix) && fileName.length > pkSuffix.length) {
+                destFolder += `/${safeFileNamePart(fileName.slice(0, -pkSuffix.length))}`;
+                fileName = `${f.facility_rdid}${ext}`;
+            }
+            // DBF의 RDID를 1599로 바꿔 내보내므로, 파일명에 든 RDID도 같은 값으로 맞춘다(사진/보고서와 DBF 키가 어긋나지 않게).
+            zip.addLocalFile(f.stored_path, destFolder, safeFileNamePart(rankInName(fileName)));
         }
     }
 
@@ -137,7 +160,9 @@ async function addSectionToZip(zip, section, folderPrefix) {
     );
     for (const d of wholeDrawings) {
         if (!fs.existsSync(d.stored_path)) continue;
-        zip.addLocalFile(d.stored_path, `${folderPrefix}ETC/TOP`, safeFileNamePart(d.original_name));
+        // SE{노선}{구간}{측점}.dxf(구간 전체 평면도)는 납품 폴더의 CONT에 있다 — 500_P처럼 zip 최상위(41590/58950 납품으로 확인).
+        const destFolder = /^SE\d/i.test(d.original_name) ? 'CONT' : `${folderPrefix}ETC/TOP`;
+        zip.addLocalFile(d.stored_path, destFolder, safeFileNamePart(d.original_name));
     }
 
     // '도로'(500m 단위 구간 도면)는 ETC/TOP이 아니라 500_P/500_Y/500_U라는

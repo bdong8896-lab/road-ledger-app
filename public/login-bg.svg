@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <!-- 로그인 화면 배경: 흐린 도로망(간선은 굵게 + 중앙 점선, 지선은 가늘게) -->
+  <g fill="none" stroke-linecap="round">
+    <g stroke="#8caad2" stroke-opacity="0.07">
+      <path stroke-width="34" d="M-50 820C300 700 520 760 820 560S1300 260 1680 220"/>
+      <path stroke-width="22" d="M200-50C260 200 380 420 520 520S760 900 820 1060"/>
+      <path stroke-width="18" d="M1650 700C1350 660 1180 520 1000 470S620 380 380 250S80 120-60 140"/>
+      <path stroke-width="14" d="M1100-40C1080 200 1150 380 1260 520S1400 820 1380 1050"/>
+      <path stroke-width="9" d="M600 1040C640 900 720 820 900 780S1200 760 1380 640"/>
+      <path stroke-width="9" d="M-40 420C180 460 320 560 420 700S520 960 560 1050"/>
+      <path stroke-width="7" d="M1280 -40C1320 120 1440 200 1650 230"/>
+      <path stroke-width="7" d="M820 560C860 660 980 700 1040 820S1080 980 1120 1050"/>
+    </g>
+    <g stroke="#8caad2" stroke-opacity="0.12" stroke-width="2" stroke-dasharray="18 16">
+      <path d="M-50 820C300 700 520 760 820 560S1300 260 1680 220"/>
+      <path d="M200-50C260 200 380 420 520 520S760 900 820 1060"/>
+      <path d="M1650 700C1350 660 1180 520 1000 470S620 380 380 250S80 120-60 140"/>
+    </g>
+  </g>
+</svg>

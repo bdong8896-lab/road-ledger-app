@@ -7,6 +7,8 @@ const https = require('https');
 const config = require('../config');
 
 const router = express.Router();
+// 외부 API가 응답을 안 주면 연결이 무한정 붙잡히지 않도록 끊는다(자원 고갈 방지).
+const UPSTREAM_TIMEOUT_MS = 15000;
 
 function fetchCctv(roadType, bbox) {
     return new Promise((resolve, reject) => {
@@ -17,13 +19,16 @@ function fetchCctv(roadType, bbox) {
             minX: bbox.minX, maxX: bbox.maxX, minY: bbox.minY, maxY: bbox.maxY,
             getType: 'json',
         });
-        https.get(`https://openapi.its.go.kr:9443/cctvInfo?${params.toString()}`, (res) => {
+        const request = https.get(`https://openapi.its.go.kr:9443/cctvInfo?${params.toString()}`, { timeout: UPSTREAM_TIMEOUT_MS }, (res) => {
             let body = '';
             res.on('data', (chunk) => { body += chunk; });
             res.on('end', () => {
                 try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
             });
-        }).on('error', reject);
+            res.on('error', reject);
+        });
+        request.on('timeout', () => request.destroy(new Error('ITS CCTV API timeout')));
+        request.on('error', reject);
     });
 }
 
@@ -31,6 +36,10 @@ router.get('/', async (req, res) => {
     const { minX, maxX, minY, maxY } = req.query;
     if (!minX || !maxX || !minY || !maxY) {
         return res.status(400).json({ error: 'minX/maxX/minY/maxY가 필요합니다.' });
+    }
+    // 좌표는 숫자만 받는다(외부 API로 넘기는 값이라 형식을 서버에서 확인).
+    if (![minX, maxX, minY, maxY].every((v) => /^-?\d+(\.\d+)?$/.test(String(v)))) {
+        return res.status(400).json({ error: '좌표 형식이 올바르지 않습니다.' });
     }
     if (!config.itsCctvApiKey) {
         return res.json({ items: [] });
@@ -48,6 +57,7 @@ router.get('/', async (req, res) => {
         ];
         res.json({ items });
     } catch (err) {
+        console.error('[cctv]', err.message);
         res.status(502).json({ error: 'CCTV 정보를 가져오지 못했습니다.' });
     }
 });

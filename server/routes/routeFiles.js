@@ -11,7 +11,7 @@ const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const { convertDwgToDxf } = require('../lib/dwgConvert');
 const { sendInlineSafely } = require('../lib/safeInline');
 const { parseStationFilename, classifyDrawingType, DRAWING_TYPES } = require('../lib/routeFileNaming');
-const { bulkUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
+const { bulkUploadRouteDrawings, autoUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
 
 const router = express.Router();
 const CATEGORIES = ['도로', '도면종류', '구조물', '공사도면', '동영상'];
@@ -24,7 +24,8 @@ function fixMultipartFilename(name) {
 
 // 노선 식별자를 안전한 파일 경로 조각으로 변환 (업로드 디렉터리 분리용)
 function routeDirName(roadGrade, routeNo, routeName) {
-    const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim();
+    // 앞쪽 점은 제거 — 노선명이 ".."이면 업로드 폴더 한 단계 위로 올라가 저장되는 경로 조작 방지.
+    const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').replace(/^\.+/, '').trim();
     return [safe(roadGrade), safe(routeNo), safe(routeName)].filter(Boolean).join('__') || 'unspecified';
 }
 
@@ -200,6 +201,27 @@ router.post('/bulk-zip', uploadZip.single('file'), async (req, res) => {
     }
 });
 
+// 도면 자동 인식 업로드 — 노선을 고르지 않고 올려도 파일명에서 노선·구간을 알아내 붙인다
+// (규칙은 lib/routeDrawingsBulk.js 참고). 노선을 골라 둔 경우(road_grade 등)는 파일명이 애매할 때의
+// 힌트로만 쓴다. ':fileId'보다 먼저 등록해야 한다.
+router.post('/auto', upload.array('files'), async (req, res) => {
+    const files = (req.files || []).map((f) => ({ path: f.path, name: fixMultipartFilename(f.originalname) }));
+    if (!files.length) return res.status(400).json({ error: '파일이 없습니다.' });
+    const roadGrade = req.body.road_grade || '';
+    const hint = roadGrade ? { roadGrade, routeNo: req.body.route_no || '' } : null;
+    try {
+        const result = await autoUploadRouteDrawings({
+            files, hint, userId: req.session.user.id, userSigungu: req.session.user.sigunguCode,
+        });
+        res.json(result);
+    } catch (e) {
+        console.error('[route-files/auto]', e);
+        res.status(400).json({ error: '도면을 처리하는 중 오류가 발생했습니다.' });
+    } finally {
+        files.forEach((f) => fs.unlink(f.path, () => {}));
+    }
+});
+
 router.get('/:fileId', async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM route_files WHERE id = $1', [req.params.fileId]);
     const file = rows[0];
@@ -242,6 +264,8 @@ router.delete('/:fileId', requireAdmin, async (req, res) => {
     }
     await pool.query('DELETE FROM route_files WHERE id = $1', [file.id]);
     fs.promises.unlink(file.stored_path).catch(() => {});
+    // DWG의 미리보기용 변환 DXF도 같이 지운다(안 지우면 디스크에 고아 파일로 쌓임).
+    if (file.converted_path) fs.promises.unlink(file.converted_path).catch(() => {});
     res.json({ ok: true });
 });
 
