@@ -20,6 +20,7 @@ const { convertDwgToDxf } = require('./dwgConvert');
 const { logAction } = require('./auditLog');
 const { GOV_LAYER_MAP } = require('./govLayerMap');
 const { getIncomingSourceOfUpload, cleanup } = require('./bulkImportStaging');
+const batchLib = require('./importBatch');
 
 const KOREAN_NAME_BY_TABLE = Object.fromEntries(Object.values(GOV_LAYER_MAP).map((l) => [l.table, l.koreanName]));
 const FACILITY_FILE_KIND_BY_EXT = { '.jpg': '사진', '.jpeg': '사진', '.png': '사진', '.gif': '사진', '.bmp': '사진', '.pdf': '보고서' };
@@ -49,13 +50,14 @@ function isUnder(file, root) {
 }
 
 // 노선(납품 폴더) 하나를 저장한다 — 자기 트랜잭션. 실패하면 던지고(롤백 + 복사한 파일 삭제는 이 함수 안에서 처리).
-async function saveRoute({ root, part, targetSigunguCode, requestedRankName, user, pkTableMap, facilityFilesUnmatched }) {
+async function saveRoute({ root, part, targetSigunguCode, requestedRankName, user, pkTableMap, facilityFilesUnmatched, batchId }) {
     const stats = {
         inserted: {}, deleted: {}, sections: 0, facilityFiles: 0, drawingFiles: 0,
     };
     const copied = []; // 이 노선이 복사한 파일 — 롤백되면 지운다
     const localPk = new Map(); // 이 노선의 시설물 PK -> 테이블 (커밋된 뒤에만 pkTableMap에 합친다 — 취소된 노선의 PK가 남지 않게)
-    const replaced = []; // 같은 이름으로 교체된 예전 파일 — 커밋 뒤에 지운다
+    const trashMoves = []; // 같은 이름으로 교체된 예전 파일 — 커밋 뒤에 휴지통으로 옮긴다(이력이 없으면 그냥 지운다)
+    const replaced = [];  // 이력 기록이 꺼진 경우(batchId 없음) 커밋 뒤에 지울 예전 파일
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -64,6 +66,14 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
             // 필수 필드(NOT NULL, 기본값 없음)가 DBF에 아예 없는 레이어는 INSERT하면 제약조건 위반으로 죽는다 —
             // 검수 단계에서 이미 경고했으니 신규 저장만 건너뛴다(삭제는 pk만 쓰므로 그대로 처리).
             const skipInsert = layer.fieldMatch.missingRequired.length > 0;
+            if (batchId) {
+                // 덮어쓰거나 지우기 직전의 값을 보관한다(되돌리기용)
+                const pkList = [
+                    ...(skipInsert ? [] : newRecords.filter((r) => !r.skipNnNull).map((r) => r.row[layer.pkColumn])),
+                    ...deleteRecords.map((r) => r.row[layer.pkColumn]),
+                ];
+                await batchLib.snapshotRows(client, batchId, layer.table, pkList);
+            }
             if (newRecords.length && !skipInsert) {
                 let insertedCount = 0;
                 for (const { row, geom, skipNnNull } of newRecords) {
@@ -99,7 +109,8 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
         const syncedSections = [];
         for (const { deliveryCode, row, geom } of part.sections) {
             const rankName = requestedRankName || (row.road_rank === '1599' ? detectRankNameInRoot(root) : '') || '';
-            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, user.id, rankName);
+            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, user.id, rankName,
+                batchId ? (rdid) => batchLib.snapshotRows(client, batchId, 'road_sections', [rdid]) : undefined);
             if (deliveryCode) await client.query('UPDATE road_sections SET delivery_code = $1 WHERE rdid = $2', [deliveryCode, synced.rdid]);
             syncedSections.push(synced);
             stats.sections++;
@@ -122,18 +133,23 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
             await fs.promises.copyFile(filePath, storedPath);
             copied.push(storedPath);
             const { rows: old } = await client.query(
-                'SELECT stored_path FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = $2 AND original_name = $3',
+                'SELECT * FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = $2 AND original_name = $3',
                 [table, pkCandidate, displayName]
             );
-            old.forEach((o) => replaced.push(o.stored_path));
-            await client.query(
+            for (const o of old) {
+                if (batchId) trashMoves.push(...await batchLib.recordFileReplaced(client, batchId, 'gov_facility_files', o));
+                else replaced.push(o.stored_path);
+            }
+            const { rows: upserted } = await client.query(
                 `INSERT INTO gov_facility_files (facility_table, facility_rdid, file_kind, original_name, stored_path, sigungu_code, uploaded_by)
                  VALUES ($1,$2,$3,$4,$5,$6,$7)
                  ON CONFLICT (facility_table, facility_rdid, original_name)
                  DO UPDATE SET stored_path = EXCLUDED.stored_path, sigungu_code = EXCLUDED.sigungu_code,
-                     uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()`,
+                     uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()
+                 RETURNING id, stored_path`,
                 [table, pkCandidate, fileKind, displayName, storedPath, targetSigunguCode, user.id]
             );
+            if (batchId && !old.length) await batchLib.recordFileAdded(client, batchId, 'gov_facility_files', upserted[0]);
             stats.facilityFiles++;
         }
 
@@ -155,15 +171,19 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
                 // 같은 구간+같은 파일명의 기존 도면은 지우고 새로 넣는다(재확정할 때 중복이 쌓이지 않게).
                 const { rows: dup } = await client.query(
                     `DELETE FROM route_files WHERE section_rdid = $1 AND file_category = '도면종류' AND original_name = $2
-                     RETURNING stored_path, converted_path`,
+                     RETURNING *`,
                     [section.rdid, base]
                 );
-                dup.forEach((r) => replaced.push(r.stored_path, r.converted_path));
-                await client.query(
+                for (const r of dup) {
+                    if (batchId) trashMoves.push(...await batchLib.recordFileReplaced(client, batchId, 'route_files', r));
+                    else replaced.push(r.stored_path, r.converted_path);
+                }
+                const { rows: newDrawing } = await client.query(
                     `INSERT INTO route_files (road_grade, route_no, route_name, section_rdid, file_category, original_name, stored_path, converted_path, uploaded_by, sigungu_code)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, stored_path, converted_path`,
                     [section.roadRankName, section.routeNo, section.routeName, section.rdid, '도면종류', base, storedPath, convertedPath, user.id, targetSigunguCode]
                 );
+                if (batchId) await batchLib.recordFileAdded(client, batchId, 'route_files', newDrawing[0]);
                 stats.drawingFiles++;
             }
         }
@@ -171,6 +191,7 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
         await client.query('COMMIT');
         localPk.forEach((v, k) => pkTableMap.set(k, v));
         replaced.filter((p) => !copied.includes(p)).forEach(rmQuiet);
+        await batchLib.moveFilesToTrash(trashMoves);
         return stats;
     } catch (e) {
         try { await client.query('ROLLBACK'); } catch (e2) { /* 연결이 이미 끊긴 경우 */ }
@@ -187,11 +208,12 @@ function addCounts(target, add) {
 
 // job: { id, status, stage, done, total, currentRoute, results[], result, error } — 호출한 쪽(라우트)이 만든 객체를 갱신한다.
 async function runBulkConfirm(job, ctx) {
-    const { uploadId, extractDir, targetSigunguCode, requestedRankName, acknowledgeUnrecognizedCrs, user } = ctx;
+    const { uploadId, extractDir, targetSigunguCode, requestedRankName, acknowledgeUnrecognizedCrs, user, batchId } = ctx;
     try {
         job.stage = '납품 파일 분석 중';
         const parsed = await parseDelivery(extractDir);
         if (parsed.blockingWarnings.length && !acknowledgeUnrecognizedCrs) {
+            if (batchId) await batchLib.finishBatch(batchId, { status: 'failed', summary: '좌표계를 인식할 수 없어 시작하지 않음' });
             job.status = 'error';
             job.error = '좌표계를 인식할 수 없는 레이어가 있습니다. 확인 후 다시 시도하세요.';
             job.blockingWarnings = parsed.blockingWarnings;
@@ -229,7 +251,7 @@ async function runBulkConfirm(job, ctx) {
             job.currentRoute = part.code;
             job.stage = `노선 저장 중 (${job.done + 1}/${job.total})`;
             try {
-                const s = await saveRoute({ root, part, targetSigunguCode, requestedRankName, user, pkTableMap, facilityFilesUnmatched });
+                const s = await saveRoute({ root, part, targetSigunguCode, requestedRankName, user, pkTableMap, facilityFilesUnmatched, batchId });
                 addCounts(totals.inserted, s.inserted);
                 addCounts(totals.deleted, s.deleted);
                 totals.roadSectionsUpserted += s.sections;
@@ -249,6 +271,7 @@ async function runBulkConfirm(job, ctx) {
         job.currentRoute = '';
         job.stage = '노선 밖 첨부 연결 중';
         const rootList = [...parts.keys()];
+        const recorder = batchId ? batchLib.makeRecorder(batchId) : null;
         for (const filePath of findFacilityAttachments(extractDir)) {
             if (rootList.some((r) => isUnder(filePath, r))) continue; // 노선 안의 파일은 위에서 처리됨
             const base = path.basename(filePath);
@@ -265,16 +288,19 @@ async function runBulkConfirm(job, ctx) {
                 const storedPath = path.join(dir, `${Date.now()}_${displayName.replace(/[/\\]/g, '_')}`);
                 await fs.promises.copyFile(filePath, storedPath);
                 const { rows: old } = await pool.query(
-                    'SELECT stored_path FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = $2 AND original_name = $3', [table, pk, displayName]
+                    'SELECT * FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = $2 AND original_name = $3', [table, pk, displayName]
                 );
-                await pool.query(
+                if (recorder) for (const o of old) await recorder.replaced('gov_facility_files', o);
+                const { rows: upserted } = await pool.query(
                     `INSERT INTO gov_facility_files (facility_table, facility_rdid, file_kind, original_name, stored_path, sigungu_code, uploaded_by)
                      VALUES ($1,$2,$3,$4,$5,$6,$7)
                      ON CONFLICT (facility_table, facility_rdid, original_name)
-                     DO UPDATE SET stored_path = EXCLUDED.stored_path, sigungu_code = EXCLUDED.sigungu_code, uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()`,
+                     DO UPDATE SET stored_path = EXCLUDED.stored_path, sigungu_code = EXCLUDED.sigungu_code, uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()
+                     RETURNING id, stored_path`,
                     [table, pk, fileKind, displayName, storedPath, targetSigunguCode, user.id]
                 );
-                old.forEach((o) => { if (o.stored_path !== storedPath) rmQuiet(o.stored_path); });
+                if (recorder && !old.length) await recorder.added('gov_facility_files', upserted[0]);
+                if (!recorder) old.forEach((o) => { if (o.stored_path !== storedPath) rmQuiet(o.stored_path); });
                 totals.facilityFilesAttached++;
             } catch (e) {
                 console.error('[bulk-import/confirm] 노선 밖 첨부 저장 실패:', e);
@@ -302,6 +328,7 @@ async function runBulkConfirm(job, ctx) {
                         sectorKeyCache.set(cacheKey, key);
                     }
                     if (!key) { sectorsSkipped++; continue; }
+                    if (batchId) await batchLib.snapshotSector(client, batchId, key.road_rank_code, rec.roadNo, rec.sect, rec.sectSt);
                     await client.query(
                         `INSERT INTO road_sectors (road_rank_code, road_no, sect, sect_st, sect_ed, sect_len, geom, sigungu_code)
                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -330,7 +357,7 @@ async function runBulkConfirm(job, ctx) {
             try {
                 const r = await autoUploadRouteDrawings({
                     files: looseDrawings.map((p) => ({ path: p, name: path.basename(p) })),
-                    hint: null, userId: user.id, userSigungu: targetSigunguCode,
+                    hint: null, userId: user.id, userSigungu: targetSigunguCode, recorder,
                 });
                 drawingsAuto.matchedCount = r.matched.length;
                 drawingsAuto.unmatched = r.unmatched.slice(0, 20);
@@ -364,6 +391,15 @@ async function runBulkConfirm(job, ctx) {
             sigunguCode: targetSigunguCode, user,
         });
 
+        // 저장된 것이 하나라도 있으면 "되돌릴 수 있는 등록"으로 남긴다(전부 실패했으면 보관할 것이 없다).
+        if (batchId) {
+            const anySaved = routeResults.some((r) => r.ok) || sectorsInserted > 0 || drawingsAuto.matchedCount > 0;
+            await batchLib.finishBatch(batchId, {
+                status: anySaved ? 'applied' : 'failed', summary,
+                detail: { ...totals, sectorsInserted, sectorsSkipped, routes: routeResults },
+            });
+        }
+
         job.result = {
             ok: failedRoutes.length === 0,
             inserted: totals.inserted, deleted: totals.deleted, roadSectionsUpserted: totals.roadSectionsUpserted,
@@ -377,6 +413,10 @@ async function runBulkConfirm(job, ctx) {
         job.stage = '완료';
     } catch (e) {
         console.error('[bulk-import/confirm]', e);
+        // 도중에 중단돼도 이미 저장된 노선이 있으면 되돌릴 수 있게 남긴다.
+        if (batchId) {
+            try { await batchLib.finishBatch(batchId, { status: (job.results || []).some((r) => r.ok) ? 'applied' : 'failed', summary: '오류로 중단됨' }); } catch (e2) { /* 무시 */ }
+        }
         job.status = 'error';
         job.error = '저장 중 오류가 발생했습니다.';
     } finally {

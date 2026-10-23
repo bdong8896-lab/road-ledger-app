@@ -296,11 +296,17 @@
                     <i class="fa-solid fa-chevron-down section-caret"></i>
                 </div>
                 <div id="ledger-tree"></div>
+                <div id="tree-multi-bar" hidden>
+                    <span id="tree-multi-info">노선을 체크하세요</span>
+                    <button type="button" id="tree-multi-download-btn" disabled><i class="fa-solid fa-file-zipper"></i> 내려받기</button>
+                    <button type="button" id="tree-multi-cancel-btn" title="선택 모드 끝내기"><i class="fa-solid fa-xmark"></i></button>
+                </div>
                 <div id="ledger-tree-toolbar">
                     <button id="tree-expand-all-btn" class="tree-tool-icon" title="전체 펼치기"><i class="fa-solid fa-angles-down"></i></button>
                     <button id="tree-collapse-all-btn" class="tree-tool-icon" title="전체 접기"><i class="fa-solid fa-angles-up"></i></button>
                     <button id="tree-refresh-btn" class="tree-tool-icon" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
                     <span class="tree-tool-divider" aria-hidden="true"></span>
+                    <button id="tree-multi-btn" class="tree-tool-icon" title="여러 노선을 골라서 자료 내려받기" aria-pressed="false"><i class="fa-solid fa-list-check"></i></button>
                     <button id="tree-export-btn" class="tree-tool-labeled" title="전체 자료(SHP/DBF/도면 등) 압축 다운로드 — 구간 선택 시 그 구간만, 호선 선택 시 호선 전체, 선택 없으면 관할 전체"><i class="fa-solid fa-file-zipper"></i> 자료</button>
                     <button id="ledger-report-preview-btn" class="tree-tool-labeled" title="도로대장 조서 새창에서 바로 보기(선택 구간/전체 자료 다운로드 포함) — 구간을 하나 선택했을 때만 가능"><i class="fa-solid fa-file-lines"></i> 조서</button>
                 </div>
@@ -469,9 +475,12 @@
     </header>
     <div id="console-body">
         <nav id="console-nav">
+            <button type="button" class="console-nav-btn" data-section="dashboardview-tab"><i class="fa-solid fa-gauge-high"></i><span>현황</span></button>
             <button type="button" class="console-nav-btn" data-section="accountsview-tab"><i class="fa-solid fa-users-gear"></i><span>회원·계정 관리</span></button>
             <button type="button" class="console-nav-btn" data-section="auditlogview-tab"><i class="fa-solid fa-clock-rotate-left"></i><span>접속·변경 이력</span></button>
             <button type="button" class="console-nav-btn" data-section="bulkview-tab"><i class="fa-solid fa-file-import"></i><span>일괄등록</span></button>
+            <button type="button" class="console-nav-btn" data-section="importhistoryview-tab"><i class="fa-solid fa-rotate-left"></i><span>일괄등록 이력</span></button>
+            <button type="button" class="console-nav-btn" data-section="qualityview-tab"><i class="fa-solid fa-clipboard-check"></i><span>데이터 품질(KRRIS)</span></button>
             <button type="button" class="console-nav-btn" data-section="datamgmtview-tab"><i class="fa-solid fa-database"></i><span>등록 데이터 관리</span></button>
         </nav>
         <main id="console-main">
@@ -611,6 +620,33 @@
                 </div>
                 <div id="audit-log-list"></div>
                 <div id="audit-log-pagination"></div>
+            </section>
+
+            <section id="dashboardview-tab" class="console-section" style="display:none;">
+                <div id="dashboard-header" class="list-header">
+                    <span>현황</span>
+                    <button id="dashboard-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+                <div id="dashboard-body"><div class="dash-empty">불러오는 중...</div></div>
+            </section>
+
+            <section id="importhistoryview-tab" class="console-section" style="display:none;">
+                <div id="importhistory-header" class="list-header">
+                    <span>일괄등록 이력</span>
+                    <button id="importhistory-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+                <div id="importhistory-notice"><i class="fa-solid fa-circle-info"></i> 일괄등록은 기존 값을 덮어씁니다. 덮어쓰기 전의 값을 보관해 두었다가 <b>가장 최근 등록</b>을 취소(되돌리기)할 수 있습니다. 보관 기간은 30일, 최근 10건까지입니다. 등록 뒤에 화면에서 직접 고친 값도 등록 전 값으로 돌아갑니다.</div>
+                <div id="importhistory-list"><div class="dash-empty">불러오는 중...</div></div>
+            </section>
+
+            <section id="qualityview-tab" class="console-section" style="display:none;">
+                <div id="quality-header" class="list-header">
+                    <span>데이터 품질 — 필수 항목 빈 값</span>
+                    <button id="quality-refresh-btn" title="다시 점검"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+                <div id="quality-notice"><i class="fa-solid fa-circle-info"></i> KRRIS 검수에서는 필수 항목이 비어 있으면 결함으로 지적됩니다. 여기서 빈 칸을 채우면 다음 내려받기부터 채운 값이 파일에 들어갑니다. 이미 값이 있는 칸은 바꾸지 않습니다. 좌표계는 내려받을 때 EPSG:5179로 변환되므로 따로 조치할 필요가 없습니다.</div>
+                <div id="quality-summary"><div class="dash-empty">점검 중...</div></div>
+                <div id="quality-detail" hidden></div>
             </section>
 
             <section id="datamgmtview-tab" class="console-section" style="display:none;">

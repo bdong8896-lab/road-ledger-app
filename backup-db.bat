@@ -43,7 +43,7 @@ if errorlevel 1 goto :error
 docker exec %CONTAINER% rm -f /tmp/road_ledger_backup.dump
 
 echo [2/3] Backing up uploaded files...
-robocopy "%~dp0server\uploads" "%DAY_DIR%\uploads" /MIR /XD bulk-import bulk-import-incoming bulk-import-tmp route-drawings-tmp route-drawings-zip-tmp /NFL /NDL /NJH /NJS
+robocopy "%~dp0server\uploads" "%DAY_DIR%\uploads" /MIR /XD bulk-import bulk-import-incoming bulk-import-tmp route-drawings-tmp route-drawings-zip-tmp _thumbs /NFL /NDL /NJH /NJS
 if %errorlevel% GEQ 8 goto :error
 
 echo [3/3] Cleaning up old backups...

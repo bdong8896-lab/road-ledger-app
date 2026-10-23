@@ -26,7 +26,8 @@ function getMcoNameByCode(code) {
 // 필드명). geom: 재투영된 GeoJSON LineString(없으면 null).
 // rankNameOverride: 검수 화면에서 고른 표시 이름(기타/면도/리도/농도/도시계획도로) — 납품 코드가 1599인
 // 노선에만 적용한다(저장 코드는 1599 그대로). 안 고르면 이미 등록된 노선의 표시 이름을 그대로 유지한다.
-async function syncRoadSection(client, { row, geom }, targetSigunguCode, userId, rankNameOverride) {
+// beforeUpsert(rdid): 덮어쓰기 직전에 부른다(일괄등록 이력이 이전 값을 보관하는 데 쓴다).
+async function syncRoadSection(client, { row, geom }, targetSigunguCode, userId, rankNameOverride, beforeUpsert) {
     const roadRankCode = row.road_rank;
     let roadRankName = ROAD_RANK_NAME_BY_CODE[roadRankCode] || null;
     const is1599 = roadRankCode === '1599';
@@ -48,6 +49,7 @@ async function syncRoadSection(client, { row, geom }, targetSigunguCode, userId,
         roadRankName = existingRows[0].road_rank_name;
     }
 
+    if (beforeUpsert) await beforeUpsert(rdid);
     await client.query(
         `INSERT INTO road_sections (
             rdid, road_rank_code, road_rank_name, route_no, route_name, sect,

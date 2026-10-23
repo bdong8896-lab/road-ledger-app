@@ -2508,11 +2508,16 @@ function downloadScopeParams() {
 // 브라우저의 일반 다운로드(스트리밍)로 받는다 — 서버가 만드는 대로 바로 디스크에 저장되고 다운로드 진행률도 브라우저가 보여준다.
 // 먼저 check=1로 "받을 수 있는지"만 확인해서(구간 없음/권한 없음 등), 오류가 JSON 페이지로 화면을 덮지 않게 한다.
 async function downloadSectionExport() {
+    return downloadSectionExportWith(downloadScopeParams());
+}
+
+// 범위 파라미터를 직접 받아 내려받는다(여러 노선 선택 내려받기 등).
+async function downloadSectionExportWith(scopeParams) {
     // 이 버튼은 index.html/cad-popup.html에서 서로 다른 위치(패널)에 있어
     // 공통으로 잡을 컨테이너가 없으므로 body 전체에 모래시계 커서를 건다.
     document.body.classList.add('app-busy');
     try {
-        const params = new URLSearchParams(downloadScopeParams());
+        const params = new URLSearchParams(scopeParams);
         const base = '/api/sections/export?' + params.toString();
         const check = await fetch(base + (params.toString() ? '&' : '') + 'check=1');
         if (!check.ok) {

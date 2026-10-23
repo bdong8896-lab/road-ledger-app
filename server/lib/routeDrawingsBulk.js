@@ -40,7 +40,8 @@ function matchSectBySuffix(baseName, knownSects) {
 // 도면 파일 하나를 구간(section)에 붙인다 — 디스크 복사, DWG→DXF 변환, 같은
 // 구간+같은 파일명의 기존 행 교체, route_files 행 추가. bulk-zip(노선을 골라서 올림)과
 // 자동 인식 업로드가 같이 쓴다. dir: 저장 폴더(노선별).
-async function placeDrawing({ filePath, base, section, category, segInfo, userId, userSigungu, dir }) {
+// recorder: 일괄등록 이력(importBatch.makeRecorder)이 넘어오면, 교체되는 옛 파일은 지우지 않고 휴지통에 보관하고 추가된 행을 기록한다.
+async function placeDrawing({ filePath, base, section, category, segInfo, userId, userSigungu, dir, recorder }) {
     const roadGrade = section.road_rank_name, routeNo = section.route_no, routeName = section.route_name;
     const storedPath = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}_${base.replace(/[/\\]/g, '_')}`); // 파일명에 경로 구분자가 있어도 폴더 밖으로 나가지 않게
     fs.copyFileSync(filePath, storedPath);
@@ -58,7 +59,7 @@ async function placeDrawing({ filePath, base, section, category, segInfo, userId
     // 파일명이 디스크에 3벌씩 남아있었음) — 그래서 지우기 전에 옛 경로를
     // 먼저 조회해서 같이 정리한다.
     const { rows: oldRows } = await pool.query(
-        'SELECT stored_path, converted_path FROM route_files WHERE section_rdid = $1 AND original_name = $2',
+        'SELECT * FROM route_files WHERE section_rdid = $1 AND original_name = $2',
         [section.rdid, base]
     );
     await pool.query(
@@ -66,18 +67,20 @@ async function placeDrawing({ filePath, base, section, category, segInfo, userId
         [section.rdid, base]
     );
     for (const old of oldRows) {
+        if (recorder) { await recorder.replaced('route_files', old); continue; }
         if (old.stored_path) fs.rm(old.stored_path, { force: true }, () => {});
         if (old.converted_path) fs.rm(old.converted_path, { force: true }, () => {});
     }
     const { rows: inserted } = await pool.query(
         `INSERT INTO route_files (road_grade, route_no, route_name, section_rdid, file_category, original_name, stored_path, converted_path, uploaded_by, sigungu_code, seg_no, seg_start_km, seg_end_km, seg_variant)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-         RETURNING id, file_category, original_name, (converted_path IS NOT NULL) AS has_preview`,
+         RETURNING id, file_category, original_name, stored_path, converted_path, (converted_path IS NOT NULL) AS has_preview`,
         [
             roadGrade, routeNo, routeName, section.rdid, category, base, storedPath, convertedPath, userId, userSigungu || section.sigungu_code || null,
             segInfo ? segInfo.segNo : null, segInfo ? segInfo.segStartKm : null, segInfo ? segInfo.segEndKm : null, segInfo ? segInfo.segVariant : null,
         ]
     );
+    if (recorder) await recorder.added('route_files', inserted[0]);
     return inserted[0];
 }
 
@@ -206,7 +209,7 @@ function resolveDrawingTarget(base, sections, hint) {
 }
 
 // files: [{ path, name }] — .dwg/.dxf 또는 .zip(안의 dwg/dxf를 꺼냄). hint: { roadGrade, routeNo } 또는 null.
-async function autoUploadRouteDrawings({ files, hint, userId, userSigungu }) {
+async function autoUploadRouteDrawings({ files, hint, userId, userSigungu, recorder }) {
     const { rows: sections } = await pool.query(
         `SELECT rdid, sect, length_m, road_rank_name, route_no, route_name, sigungu_code FROM road_sections
           WHERE ($1::text IS NULL OR sigungu_code IS NULL OR sigungu_code = $1)`,
@@ -243,7 +246,7 @@ async function autoUploadRouteDrawings({ files, hint, userId, userSigungu }) {
             const sec = t.section;
             const dir = path.join(config.uploadDir, 'routes', routeDirName(sec.road_rank_name, sec.route_no, sec.route_name));
             fs.mkdirSync(dir, { recursive: true });
-            const file = await placeDrawing({ filePath: item.path, base: item.name, section: sec, category: t.category, segInfo: t.segInfo, userId, userSigungu, dir });
+            const file = await placeDrawing({ filePath: item.path, base: item.name, section: sec, category: t.category, segInfo: t.segInfo, userId, userSigungu, dir, recorder });
             matched.push({ file, name: item.name, roadGrade: sec.road_rank_name, routeNo: sec.route_no, routeName: sec.route_name, sect: sec.sect, category: t.category });
         }
         return { matched, unmatched };

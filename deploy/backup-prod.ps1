@@ -78,7 +78,7 @@ try {
     # --- 3) uploads (skip temporary staging folders, same as backup-db.bat) ---
     $uploads = Join-Path $AppDir 'server\uploads'
     if (Test-Path $uploads) {
-        robocopy $uploads (Join-Path $dir 'uploads') /MIR /XD bulk-import bulk-import-incoming bulk-import-tmp route-drawings-tmp route-drawings-zip-tmp /NFL /NDL /NJH /NJS | Out-Null
+        robocopy $uploads (Join-Path $dir 'uploads') /MIR /XD bulk-import bulk-import-incoming bulk-import-tmp route-drawings-tmp route-drawings-zip-tmp _thumbs /NFL /NDL /NJH /NJS | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
         Write-Log 'uploads copy ok'
     } else {

@@ -51,6 +51,9 @@ module.exports = {
     // (routes/auth.js /site-info). 이 값은 관할이 없는(전체) 계정에만 쓰는 배포처 기본 문구.
     // 예: SITE_COPYRIGHT=copyright © 2026 HWASEONG CITY. All Rights Reserved.  (비우면 표시 안 함)
     siteCopyright: process.env.SITE_COPYRIGHT || '',
+    // 백업이 쌓이는 폴더 — 관리 콘솔 현황판이 "마지막 백업이 언제인지"를 보여주는 데 쓴다(읽기만 한다).
+    // 운영: deploy/backup-prod.ps1의 -BackupRoot와 같은 값(예: E:\Backup\road-ledger). 개발 PC 기본값은 프로젝트의 backups 폴더.
+    backupRoot: process.env.BACKUP_ROOT || path.join(__dirname, '..', 'backups'),
     vworld: {
         apiKey: process.env.VWORLD_API_KEY || '',
         referer: process.env.VWORLD_REFERER || 'http://localhost/',

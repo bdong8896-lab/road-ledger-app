@@ -43,11 +43,15 @@ function createEmptyStaging() {
 // { uploadId, extractDir }를 반환한다. 사진 등이 포함된 실제 납품 폴더를
 // 통째로 zip 하면 수백 MB가 될 수 있어, 메모리 버퍼가 아니라 파일 경로를
 // 받아 AdmZip이 디스크에서 직접 읽게 한다.
-function extractZip(zipPath) {
+// 파일을 하나씩 비동기로 풀어서, 큰 ZIP(1GB 이상)을 풀 때 서버가 수십 초 동안 다른 요청을 못 받던 문제를 없앴다
+// (예전엔 extractAllTo가 동기라 그동안 모든 사용자의 화면이 멈췄다).
+async function extractZip(zipPath) {
     const { uploadId, extractDir } = createEmptyStaging();
     try {
         const zip = openZip(zipPath); // 한국어(CP949) 파일명 처리 — lib/zipOpen.js 참고
-        zip.extractAllTo(extractDir, true);
+        await new Promise((resolve, reject) => {
+            zip.extractAllToAsync(extractDir, true, false, (err) => (err ? reject(err) : resolve()));
+        });
     } catch (e) {
         // 손상된 ZIP 등으로 실패하면 방금 만든 빈 작업 폴더가 남지 않게 지운다
         // (호출 측은 uploadId를 받기 전이라 정리할 방법이 없음).
@@ -143,7 +147,7 @@ function mergeIncomingDir(incomingDir, destDir) {
 // 선택한다. 실제 파일은 복사하지 않고 경로만 marker 파일에 남긴다(대용량
 // 복사 비용 회피) — 확정 단계의 첨부 로직은 원본에서 목적지로
 // copyFileSync만 하고 원본을 지우지 않으므로 이렇게 참조만 남겨도 안전하다.
-function stageFromIncomingDir(folderName) {
+async function stageFromIncomingDir(folderName) {
     // SFTP로 압축 파일(.zip) 그대로 올려둔 경우 — 폴더와 달리 한 번 풀어서 검수한다.
     // 원본 zip은 지우지 않는다(대용량 원본이라 등록 후 정리는 관리자가 직접 한다).
     if (/.zip$/i.test(folderName)) {

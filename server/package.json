@@ -20,7 +20,8 @@
     "iconv-lite": "^0.7.3",
     "multer": "^2.0.0",
     "pg": "^8.11.5",
-    "proj4": "^2.21.0"
+    "proj4": "^2.21.0",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "javascript-obfuscator": "^5.6.0"

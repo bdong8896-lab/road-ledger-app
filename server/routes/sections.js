@@ -15,6 +15,7 @@ const { buildOfficialLedgerZip, buildSectionWorkbook } = require('../lib/officia
 const { logAction } = require('../lib/auditLog');
 const { ROAD_RANK_CODES, ROAD_RANK_NAME_BY_CODE } = require('../lib/roadRank');
 const { deleteSection } = require('../lib/sectionDelete');
+const { getThumbPath, IMAGE_RE } = require('../lib/thumbnail');
 const { decodeCode } = require('../lib/govCodebook');
 
 const router = express.Router();
@@ -407,6 +408,16 @@ router.get('/facility-files/:id', async (req, res) => {
     if (!fs.existsSync(file.stored_path)) {
         return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
     }
+    // thumb=1: 사진은 1000px 이내 JPEG 썸네일을 보낸다(원본의 약 1/5). 못 만들면 아래에서 원본을 보낸다.
+    if (req.query.thumb === '1' && IMAGE_RE.test(file.original_name)) {
+        const thumb = await getThumbPath(file.id, file.stored_path);
+        if (thumb) {
+            res.setHeader('Cache-Control', 'private, no-cache'); // 매번 확인(304) — 원본이 바뀌면 바로 새 것
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.type('image/jpeg');
+            return res.sendFile(path.resolve(thumb));
+        }
+    }
     if (req.query.inline === '1') {
         sendInlineSafely(res, file.stored_path, file.original_name);
     } else {
@@ -508,7 +519,15 @@ router.get('/all-geoms', async (req, res) => {
 // 돌려주는 값, script.js의 currentRoute 참고)이라 road_rank_code 없이도
 // 정확히 매칭된다. rdid/호선 범위도 관할 밖 구간은 조용히 걸러낸다(다른
 // 시군 rdid를 직접 넣어 우회하는 것 방지).
-async function resolveScopedSections(userSigungu, { rdid, roadGrade, routeNo, routeName }) {
+async function resolveScopedSections(userSigungu, { rdid, rdids, roadGrade, routeNo, routeName }) {
+    // 여러 노선을 골라 내려받을 때 — 고른 구간들(rdid 목록)을 그대로 쓴다(노선별 폴더는 내보내기 쪽이 나눈다).
+    if (rdids && rdids.length) {
+        const { rows } = await pool.query(
+            `SELECT * FROM road_sections WHERE rdid = ANY($1) ORDER BY road_rank_code, route_no NULLS LAST, sect NULLS LAST`,
+            [rdids]
+        );
+        return rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code));
+    }
     if (rdid) {
         const { rows } = await pool.query('SELECT * FROM road_sections WHERE rdid = $1', [rdid]);
         return rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code));
@@ -531,13 +550,21 @@ async function resolveScopedSections(userSigungu, { rdid, roadGrade, routeNo, ro
     return rows;
 }
 
+const MAX_EXPORT_RDIDS = 300; // 한 번에 고를 수 있는 구간 수(주소 길이와 서버 부담을 함께 고려)
 function scopeParamsFromQuery(q) {
-    return { rdid: q.rdid || '', roadGrade: q.road_grade || '', routeNo: q.route_no || '', routeName: q.route_name || '' };
+    const rdids = String(q.rdids || '').split(',').map((v) => v.trim()).filter(Boolean).slice(0, MAX_EXPORT_RDIDS + 1);
+    return { rdid: q.rdid || '', rdids, roadGrade: q.road_grade || '', routeNo: q.route_no || '', routeName: q.route_name || '' };
 }
 
 // 범위(구간 하나/호선 전체/관할 전체)에 맞는 파일명 라벨을 만든다 — 조서와
 // 전체자료 다운로드가 같은 이름 규칙을 쓴다.
-function scopeLabel(sections, { rdid, roadGrade, routeNo }, sigunguName) {
+function scopeLabel(sections, { rdid, rdids, roadGrade, routeNo }, sigunguName) {
+    if (rdids && rdids.length) {
+        const routes = new Set(sections.map((s) => `${s.road_rank_code}|${s.route_no}|${s.route_name}`));
+        const first = sections[0];
+        const firstName = first ? (first.route_name || first.route_no || '') : '';
+        return routes.size > 1 ? `${firstName} 외 ${routes.size - 1}개 노선` : (firstName || '선택한 노선');
+    }
     if (rdid) {
         const s = sections[0];
         return s ? `${s.route_name || s.rdid}_${s.sect ? s.sect + '구간' : s.rdid}` : rdid;
@@ -599,6 +626,9 @@ router.get('/ledger-report-preview', async (req, res) => {
 router.get('/export', async (req, res) => {
     try {
         const scope = scopeParamsFromQuery(req.query);
+        if (scope.rdids.length > MAX_EXPORT_RDIDS) {
+            return res.status(400).json({ error: `한 번에 구간 ${MAX_EXPORT_RDIDS}개까지만 선택해서 내려받을 수 있습니다. 나누어 받아 주세요.` });
+        }
         const sections = await resolveScopedSections(req.session.user.sigunguCode, scope);
         if (!sections.length) return res.status(404).json({ error: '내보낼 구간을 찾을 수 없습니다.' });
         const label = scopeLabel(sections, scope, req.session.user.sigunguName);

@@ -9,6 +9,7 @@ const config = require('../config');
 const { requireAdminReauth } = require('../middleware/requireAuth');
 const { parseDelivery, krrisDefectRows } = require('../lib/bulkImportParse');
 const { runBulkConfirm } = require('../lib/bulkImportConfirm');
+const importBatch = require('../lib/importBatch');
 const {
     createEmptyStaging, extractZip, getExtractDir, cleanup, sweepOldStagingDirs,
     resolveIncomingDir, mergeIncomingDir, stageFromIncomingDir, listIncomingFolders,
@@ -94,7 +95,7 @@ router.post('/preview', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'zip 파일이 없습니다.' });
     let uploadId;
     try {
-        const extracted = extractZip(req.file.path);
+        const extracted = await extractZip(req.file.path);
         uploadId = extracted.uploadId;
         // 사진/보고서/도면처럼 용량이 큰 파일은 SFTP로 미리 서버에 올려둔
         // 폴더(bulk-import-incoming/<incomingFolderName>)가 있으면 병합한다 —
@@ -159,7 +160,7 @@ router.post('/preview-from-folder', async (req, res) => {
     if (!folderName) return res.status(400).json({ error: '폴더를 선택하세요.' });
     let uploadId;
     try {
-        const staged = stageFromIncomingDir(folderName);
+        const staged = await stageFromIncomingDir(folderName);
         uploadId = staged.uploadId;
         const parsed = await parseDelivery(staged.extractDir);
         const largeFileCount = findFacilityAttachments(staged.extractDir).length + findDrawingFiles(staged.extractDir).length
@@ -253,13 +254,23 @@ router.post('/:uploadId/confirm', async (req, res) => {
         });
     }
 
+    // 이력(되돌리기용) 시작. 이력 테이블이 아직 없는 서버(schema.sql 재적용 전)에서도 등록은 되도록, 실패하면 이력 없이 진행한다.
+    let batchId = null;
+    try {
+        batchId = await importBatch.createBatch({
+            user: req.session.user, sigunguCode: targetSigunguCode, sourceLabel: String(req.body.sourceLabel || '').trim(),
+        });
+    } catch (e) {
+        console.error('[bulk-import] 등록 이력을 시작하지 못했습니다(이력 없이 진행 — schema.sql 재적용 필요):', e.message);
+    }
+
     const job = {
         id: require('crypto').randomUUID(), uploadId, status: 'running', stage: '시작', done: 0, total: 0,
         currentRoute: '', results: [], startedAt: Date.now(), userId: req.session.user.id,
     };
     bulkJobs.set(job.id, job);
     runBulkConfirm(job, {
-        uploadId, extractDir, targetSigunguCode,
+        uploadId, extractDir, targetSigunguCode, batchId,
         requestedRankName: (req.body.roadRankDisplayName || '').trim(),
         acknowledgeUnrecognizedCrs: !!req.body.acknowledgeUnrecognizedCrs,
         user: req.session.user,
@@ -286,4 +297,5 @@ router.delete('/:uploadId', (req, res) => {
     res.json({ ok: true });
 });
 
+router.getRunningJob = runningJob; // 관리 콘솔 현황판이 진행 중인 작업을 보여줄 때 쓴다
 module.exports = router;

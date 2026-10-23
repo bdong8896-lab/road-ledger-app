@@ -278,3 +278,49 @@ CREATE TABLE IF NOT EXISTS audit_log (
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ip VARCHAR(45);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_table, target_id);
+
+-- ============================================================
+-- 일괄등록 이력과 되돌리기 — 일괄등록(확정)이 덮어쓰기 전의 값을 보관해 두었다가 "이 등록 취소"로 되돌린다.
+--   bulk_import_batches   : 등록 한 번 = 한 줄(누가/언제/무엇을/상태). 상태: running | applied | undone | expired | failed
+--   bulk_import_snapshots : 등록으로 바뀐 DB 행의 이전 값(old_row; NULL이면 이 등록 전엔 없던 행 — 되돌리면 삭제)
+--   bulk_import_file_changes : 첨부(사진/보고서)·도면 파일 행의 추가/교체 기록(교체된 옛 파일은 서버 휴지통 폴더에 보관)
+-- 가장 최근의 등록만 되돌릴 수 있고, 오래된 이력(30일 또는 최근 10건 밖)은 자동으로 정리된다(lib/importBatch.js).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bulk_import_batches (
+    id            SERIAL PRIMARY KEY,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ,
+    user_id       INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    username      VARCHAR(50),
+    sigungu_code  VARCHAR(5),
+    source_label  VARCHAR(200),
+    status        VARCHAR(10) NOT NULL DEFAULT 'running',
+    summary       TEXT,
+    detail        JSONB,
+    undone_at     TIMESTAMPTZ,
+    undone_by     VARCHAR(50)
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_import_batches_created ON bulk_import_batches(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS bulk_import_snapshots (
+    id          BIGSERIAL PRIMARY KEY,
+    batch_id    INTEGER NOT NULL REFERENCES bulk_import_batches(id) ON DELETE CASCADE,
+    table_name  VARCHAR(60) NOT NULL,
+    pk          TEXT NOT NULL,
+    old_row     JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_import_snapshots_batch ON bulk_import_snapshots(batch_id);
+
+CREATE TABLE IF NOT EXISTS bulk_import_file_changes (
+    id               BIGSERIAL PRIMARY KEY,
+    batch_id         INTEGER NOT NULL REFERENCES bulk_import_batches(id) ON DELETE CASCADE,
+    kind             VARCHAR(20) NOT NULL,      -- 'gov_facility_files' | 'route_files'
+    action           VARCHAR(10) NOT NULL,      -- 'added' | 'replaced'
+    row_id           INTEGER,                   -- added: 새로 생긴 행의 id
+    old_row          JSONB,                     -- replaced: 교체되기 전 행
+    stored_path      TEXT,                      -- added: 새 파일 경로(되돌리면 지움)
+    converted_path   TEXT,
+    trash_path       TEXT,                      -- replaced: 옛 파일을 보관해 둔 휴지통 경로
+    trash_converted  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_import_file_changes_batch ON bulk_import_file_changes(batch_id);
