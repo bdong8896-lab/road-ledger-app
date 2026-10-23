@@ -6,7 +6,7 @@
 // (업체 자체 QA 문서, 우리 데이터 아님)는 내보내지 않는다.
 const fs = require('fs');
 const path = require('path');
-const AdmZip = require('adm-zip');
+const archiver = require('archiver');
 const iconv = require('iconv-lite');
 const pool = require('../db');
 const { GOV_LAYER_MAP } = require('./govLayerMap');
@@ -183,37 +183,81 @@ async function addSectionToZip(zip, section, folderPrefix) {
     }
 }
 
-async function buildExportZip(rdid) {
-    const { rows: sectionRows } = await pool.query('SELECT * FROM road_sections WHERE rdid = $1', [rdid]);
-    const section = sectionRows[0];
-    if (!section) return null;
-
-    const zip = new AdmZip();
-    await addSectionToZip(zip, section, '');
-    const zipBuffer = zip.toBuffer();
-    const filename = `${safeFileNamePart(section.route_name) || section.rdid}_${section.rdid}.zip`;
-    return { zipBuffer, filename };
+// ---- 스트리밍 내려받기 ----
+// 예전엔 zip 전체를 서버 메모리에서 조립(AdmZip.toBuffer)한 뒤 한 번에 보냈다 — 사진이 많은 노선을 여럿 받으면 서버 메모리가
+// 부족해지고 ZIP 4GB/65,535개 한계에 걸렸다. 지금은 두 단계로 나눈다:
+//   1) 모으기: addSectionToZip이 SHP/DBF는 메모리 버퍼로(작다), 사진·보고서·도면은 "디스크 경로"만 목록에 모은다.
+//      이 단계에서 DB 오류가 나면 아직 응답을 시작하지 않았으니 호출한 쪽이 일반 오류 응답을 줄 수 있다.
+//   2) 보내기: archiver가 목록을 순서대로 읽어 압축하면서 바로 응답으로 흘려 보낸다(파일 하나만큼의 메모리만 쓴다, ZIP64 자동).
+// 같은 이름의 엔트리가 둘 이상이면 마지막 것만 남긴다(예전 AdmZip이 덮어쓰던 것과 같은 결과).
+function collectingSink() {
+    const entries = new Map(); // 엔트리 이름 -> { buffer } | { filePath }
+    return {
+        entries,
+        addFile(name, buffer) { entries.set(name, { buffer }); },
+        addLocalFile(filePath, folder, name) {
+            const dir = folder ? String(folder).replace(/\/+$/, '') + '/' : '';
+            entries.set(dir + name, { filePath });
+        },
+    };
 }
 
-// 호선 전체(구간이 여럿) 또는 관할 전체를 한 zip으로 묶어 내려받는다 —
-// downloadSectionExport 버튼이 "구간 선택 없이 호선만 선택" 또는 "아무것도
-// 선택 안 함"일 때 쓴다. 구간마다 폴더를 나눠 같은 zip 안에서 섞이지 않게
-// 하는데, 그 폴더명은 실제 원본 납품 폴더(예: "589502026008001")와 같은
-// 관리번호(buildPrefix) 코드를 그대로 쓴다 — 노선명으로 만든 폴더명은
-// 우리가 임의로 붙인 것일 뿐 실제 규격이 아니었다(사용자 지적으로 확인).
-async function buildExportZipMulti(sections, zipLabel) {
-    if (!sections.length) return null;
-    const zip = new AdmZip();
-    const usedFolders = new Set();
-    for (const section of sections) {
-        let folder = buildPrefix(section);
-        if (usedFolders.has(folder)) folder = `${folder}_${section.rdid}`; // 이론상 중복 안 나야 정상이지만 방어적으로 대비
-        usedFolders.add(folder);
-        await addSectionToZip(zip, section, `${folder}/`);
+// 이미 압축된 형식은 다시 압축해도 안 줄어 CPU만 쓰니 그대로 담는다.
+const STORE_ONLY_RE = /\.(jpe?g|png|gif|bmp|pdf|zip|mp4|mov)$/i;
+
+function exportFilename(sections, zipLabel) {
+    if (sections.length === 1) {
+        const s = sections[0];
+        return `${safeFileNamePart(s.route_name) || s.rdid}_${s.rdid}.zip`;
     }
-    const zipBuffer = zip.toBuffer();
-    const filename = `${safeFileNamePart(zipLabel) || '전체자료'}_${new Date().toISOString().slice(0, 10)}.zip`;
-    return { zipBuffer, filename };
+    return `${safeFileNamePart(zipLabel) || '전체자료'}_${new Date().toISOString().slice(0, 10)}.zip`;
 }
 
-module.exports = { buildExportZip, buildExportZipMulti };
+// sections(1개 이상)을 zip으로 만들어 res에 스트리밍한다. 구간이 하나면 폴더 없이 LAYER/ETC 구조로, 여럿이면
+// 구간마다 관리번호 폴더를 나눈다(buildPrefix — 원본 납품 폴더명과 같다). 반환: { filename, bytes, entryCount }.
+// 응답을 시작하기 전에 던진 오류는 호출한 쪽이 처리하고, 시작한 뒤의 오류는 연결을 끊는다(다운로드가 중간에 실패로 보임).
+async function streamExportZip(res, sections, zipLabel) {
+    if (!sections.length) throw new Error('내보낼 구간이 없습니다.');
+    const sink = collectingSink();
+    if (sections.length === 1) {
+        await addSectionToZip(sink, sections[0], '');
+    } else {
+        const usedFolders = new Set();
+        for (const section of sections) {
+            let folder = buildPrefix(section);
+            if (usedFolders.has(folder)) folder = `${folder}_${section.rdid}`; // 이론상 중복 안 나야 정상이지만 방어적으로 대비
+            usedFolders.add(folder);
+            await addSectionToZip(sink, section, `${folder}/`);
+        }
+    }
+
+    const filename = exportFilename(sections, zipLabel);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader('X-Accel-Buffering', 'no'); // 프록시가 응답을 모아 두지 말고 바로 넘기게
+
+    const archive = archiver('zip', { zlib: { level: 5 } });
+    await new Promise((resolve, reject) => {
+        let settled = false;
+        const done = (err) => {
+            if (settled) return;
+            settled = true;
+            if (err) { archive.abort(); res.destroy(err); reject(err); } else resolve();
+        };
+        archive.on('warning', (e) => console.warn('[export] 경고:', e.message)); // 디스크에서 파일이 사라진 경우 등 — 그 파일만 빼고 계속
+        archive.on('error', (e) => done(e));
+        res.on('finish', () => done());
+        res.on('close', () => {
+            if (!res.writableFinished) { const err = new Error('받는 쪽이 연결을 끊었습니다.'); err.clientAborted = true; done(err); }
+        });
+        archive.pipe(res);
+        for (const [name, e] of sink.entries) {
+            if (e.buffer) archive.append(e.buffer, { name });
+            else archive.file(e.filePath, { name, store: STORE_ONLY_RE.test(name) });
+        }
+        archive.finalize().catch((e) => done(e));
+    });
+    return { filename, bytes: archive.pointer(), entryCount: sink.entries.size };
+}
+
+module.exports = { streamExportZip, exportFilename };

@@ -227,7 +227,7 @@ async function parseDelivery(extractDir) {
                     if (geoms && geoms[i] && layer.crs && layer.crs.matched) {
                         geom = reprojectGeometry(geoms[i], layer.crs.epsg);
                     }
-                    return { row, geom };
+                    return { row, geom, deliveryRoot }; // deliveryRoot: 확정 때 노선(납품 폴더)별로 나눠 저장하는 데 쓴다
                 });
 
                 if (kind === 'N') {

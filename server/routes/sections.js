@@ -9,7 +9,7 @@ const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
 const SIGN_NAME_CODES = require('../lib/signNameCodes');
 const { sendInlineSafely } = require('../lib/safeInline');
-const { buildExportZip, buildExportZipMulti } = require('../lib/sectionExport');
+const { streamExportZip, exportFilename } = require('../lib/sectionExport');
 const { getTableLabels } = require('../lib/schemaLabels');
 const { buildOfficialLedgerZip, buildSectionWorkbook } = require('../lib/officialLedgerZip');
 const { logAction } = require('../lib/auditLog');
@@ -602,16 +602,27 @@ router.get('/export', async (req, res) => {
         const sections = await resolveScopedSections(req.session.user.sigunguCode, scope);
         if (!sections.length) return res.status(404).json({ error: '내보낼 구간을 찾을 수 없습니다.' });
         const label = scopeLabel(sections, scope, req.session.user.sigunguName);
-        const result = sections.length === 1
-            ? await buildExportZip(sections[0].rdid)
-            : await buildExportZipMulti(sections, label);
-        if (!result) return res.status(404).json({ error: '내보낼 구간을 찾을 수 없습니다.' });
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
-        res.send(result.zipBuffer);
+
+        // check=1: 실제로 만들지 않고 "받을 수 있는지"만 확인한다. 프론트가 먼저 이걸로 오류를 알아낸 뒤 브라우저의
+        // 일반 다운로드(스트리밍)를 시작한다 — 그래야 오류가 JSON 페이지로 화면을 덮지 않는다.
+        if (req.query.check) return res.json({ ok: true, filename: exportFilename(sections, label), sectionCount: sections.length });
+
+        // 오래 걸리는 큰 전송이 서버 기본 시간 제한에 끊기지 않게 한다.
+        req.setTimeout(0);
+        res.setTimeout(0);
+        const result = await streamExportZip(res, sections, label);
+        await logAction(null, {
+            action: 'export', targetTable: 'road_sections', targetId: sections.length === 1 ? sections[0].rdid : null,
+            summary: `전체자료 내려받기: ${label} (구간 ${sections.length}개, ${(result.bytes / 1048576).toFixed(1)}MB)`,
+            detail: { sectionCount: sections.length, bytes: result.bytes, entryCount: result.entryCount },
+            sigunguCode: sections[0].sigungu_code, user: req.session.user, ip: req.ip,
+        });
     } catch (e) {
+        // 받는 쪽이 다운로드를 취소한 경우는 오류가 아니다 — 짧게만 남긴다.
+        if (e && e.clientAborted) { console.warn('[sections/export] 받는 쪽이 다운로드를 중간에 취소했습니다.'); return; }
         console.error('[sections/export]', e);
-        res.status(500).json({ error: '내보내기 중 오류가 발생했습니다.' });
+        // 응답을 이미 시작했으면(다운로드 도중) 연결이 끊긴 것으로 끝난다 — 아직이면 일반 오류 응답.
+        if (!res.headersSent) res.status(500).json({ error: '내보내기 중 오류가 발생했습니다.' });
     }
 });
 

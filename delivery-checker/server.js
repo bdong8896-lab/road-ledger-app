@@ -73,6 +73,15 @@ function pickPath(type, skipDialog = false) {
 
 const server = http.createServer(async (req, res) => {
     try {
+        // 이 PC의 로컬 프로그램이라, 다른 웹사이트가 브라우저를 통해 몰래 요청을 보내는 것(교차 출처 요청, DNS 리바인딩)을 막는다:
+        // 주소(Host)가 이 PC 주소가 아니거나, 출처(Origin)가 이 프로그램 화면이 아니면 거절한다.
+        const host = String(req.headers.host || '');
+        const hostName = host.split(':')[0];
+        const origin = req.headers.origin;
+        if ((hostName !== '127.0.0.1' && hostName !== 'localhost') || (origin && origin !== `http://${host}`)) {
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+            return res.end('허용되지 않은 요청입니다.');
+        }
         const url = new URL(req.url, 'http://localhost');
         if (req.method === 'GET' && url.pathname === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

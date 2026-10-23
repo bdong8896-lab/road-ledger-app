@@ -900,8 +900,14 @@ function refreshRegisteredHighlight() {
         const pnus = wfsSource.getFeatures().map((f) => f.get('pnu')).filter(Boolean);
         if (pnus.length === 0) return;
         const unique = [...new Set(pnus)];
-        const res = await fetch('/api/parcels?pnus=' + unique.join(',')).then((r) => r.json());
-        registeredPnuSet = new Set(res.pnus || []);
+        // 필지 번호를 GET 주소에 붙여 보내므로, 한 번에 너무 많으면(도심에서 수백 개) 주소가 길어 서버가 431로 거부한다.
+        // 150개(약 3KB)씩 나눠 요청하고 합친다. 일부가 실패해도 성공한 것만으로 색을 칠한다.
+        const CHUNK = 150;
+        const chunks = [];
+        for (let i = 0; i < unique.length; i += CHUNK) chunks.push(unique.slice(i, i + CHUNK));
+        const results = await Promise.all(chunks.map((c) => fetch('/api/parcels?pnus=' + c.join(','))
+            .then((r) => (r.ok ? r.json() : { pnus: [] })).catch(() => ({ pnus: [] }))));
+        registeredPnuSet = new Set(results.flatMap((r) => r.pnus || []));
         wfsLayer.changed();
     }, 300);
 }
@@ -3396,7 +3402,7 @@ const AUDIT_ACTION_LABELS = {
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
-    log_export: '이력 다운로드', admin_reauth: '관리자 재인증',
+    log_export: '이력 다운로드', admin_reauth: '관리자 재인증', export: '자료 내려받기',
 };
 
 // 화면 목록과 다운로드가 같은 조건(작업 종류 + 기간)을 쓴다.
@@ -3944,19 +3950,24 @@ function initBulkRegister() {
                 });
                 const pData = await pRes.json();
                 if (!pRes.ok) throw new Error(pData.error || '검수 실패');
-                const cRes = await adminFetch(`/api/bulk-import/${pData.uploadId}/confirm`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sigunguCode, acknowledgeUnrecognizedCrs: true, roadRankDisplayName: document.getElementById('bulk-incoming-rank-name').value }),
-                });
-                const cData = await cRes.json();
-                if (!cRes.ok) throw new Error(cData.error || '등록 실패');
+                const cData = await confirmAndWait(
+                    pData.uploadId,
+                    { sigunguCode, acknowledgeUnrecognizedCrs: true, roadRankDisplayName: document.getElementById('bulk-incoming-rank-name').value },
+                    (job) => { row.querySelector('.bib-msg').textContent = job.total ? `${job.stage} ${job.done}/${job.total}${job.currentRoute ? ' — ' + job.currentRoute : ''}` : job.stage; }
+                );
                 const insertedTotal = Object.values(cData.inserted || {}).reduce((sum, n) => sum + n, 0);
                 const sectorPart = cData.sectorsInserted ? `, 500m 구간 ${cData.sectorsInserted}건` : '';
                 const da = cData.drawingsAuto || {};
                 const looseDrawingPart = da.failed ? ', 도면 자동 분류 실패'
                     : (da.matchedCount || da.unmatchedCount) ? `, 구간도면 ${da.matchedCount || 0}건${da.unmatchedCount ? `(인식 못함 ${da.unmatchedCount}건)` : ''}` : '';
-                setBatchLogRow(row, true, `${insertedTotal}건 저장, 첨부 ${cData.facilityFilesAttached || 0}건, 도면 ${cData.drawingFilesAttached || 0}건${looseDrawingPart}${sectorPart}`);
-                okCount++;
+                const resultText = `${insertedTotal}건 저장, 첨부 ${cData.facilityFilesAttached || 0}건, 도면 ${cData.drawingFilesAttached || 0}건${looseDrawingPart}${sectorPart}`;
+                if (cData.failedRoutes && cData.failedRoutes.length) {
+                    // 일부 노선만 실패: 성공한 노선은 저장됐고, 서버 폴더는 다시 시도할 수 있게 그대로 남아 있다.
+                    setBatchLogRow(row, false, `${resultText} — 실패한 노선 ${cData.failedRoutes.length}개: ${failedRoutesText(cData)} (서버 폴더는 남아 있습니다)`);
+                } else {
+                    setBatchLogRow(row, true, resultText);
+                    okCount++;
+                }
             } catch (e) {
                 setBatchLogRow(row, false, e.message);
             }
@@ -4256,16 +4267,17 @@ function initBulkRegister() {
         resultEl.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>저장 중입니다...';
         bulkTabEl.classList.add('bulk-loading');
         try {
-            const res = await adminFetch(`/api/bulk-import/${currentPreview.uploadId}/confirm`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+            const data = await confirmAndWait(
+                currentPreview.uploadId,
+                {
                     sigunguCode,
                     acknowledgeUnrecognizedCrs: currentPreview.blockingWarnings.length > 0,
                     roadRankDisplayName: document.getElementById('bulk-review-rank-name').value,
-                }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '등록에 실패했습니다.');
+                },
+                (job) => {
+                    resultEl.innerHTML = `<i class="fa-solid fa-hourglass-half bulk-spinner"></i>${escapeHtml(job.stage)}${job.total ? ` (노선 ${job.done}/${job.total}${job.currentRoute ? ' — ' + escapeHtml(job.currentRoute) : ''})` : ''}`;
+                }
+            );
             const insertedTotal = Object.values(data.inserted || {}).reduce((sum, n) => sum + n, 0);
             let msg = `등록 완료: ${insertedTotal}건 저장, 노선 ${data.roadSectionsUpserted}건이 데이터보기 트리에 동기화됐습니다.`;
             if (data.facilityFilesAttached || data.drawingFilesAttached) {
@@ -4291,7 +4303,12 @@ function initBulkRegister() {
             resultEl.textContent = msg;
             loadLedgerTree();
             if (data.incomingFolderRemoved) { selectedIncomingFolders.clear(); loadIncomingFolders(); }
-            setTimeout(resetToUploadStep, unmatched.length ? 6000 : 2500);
+            if (data.failedRoutes && data.failedRoutes.length) {
+                // 일부 노선이 실패: 성공한 노선은 저장됐다. 검수 화면을 닫지 않고 남겨 두어 확인한 뒤 다시 시도할 수 있게 한다.
+                showReviewError(`노선 ${data.failedRoutes.length}개는 저장하지 못했습니다: ${failedRoutesText(data)}. 나머지 노선은 저장됐습니다. 원인을 해결한 뒤 같은 납품을 다시 등록하면 이어서 저장됩니다.`);
+            } else {
+                setTimeout(resetToUploadStep, unmatched.length ? 6000 : 2500);
+            }
         } catch (e) {
             resultEl.textContent = '';
             showReviewError(e.message);
@@ -4302,6 +4319,40 @@ function initBulkRegister() {
     });
 
     renderBulkFileList();
+}
+
+// 일괄등록 확정: 서버가 백그라운드로 저장하는 작업(job)을 시작하고, 끝날 때까지 진행 상황을 조회해서 최종 결과를 돌려준다.
+// 노선이 많아도 요청 하나가 오래 걸리지 않아 프록시 시간 제한에 걸리지 않는다. onProgress(job): 진행 중 호출(화면 표시용).
+async function confirmAndWait(uploadId, body, onProgress) {
+    const res = await adminFetch(`/api/bulk-import/${uploadId}/confirm`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const start = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(start.error || '등록에 실패했습니다.');
+    let netFailures = 0;
+    for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        let job;
+        try {
+            const r = await adminFetch(`/api/bulk-import/jobs/${start.jobId}`);
+            job = await r.json();
+            if (!r.ok) throw new Error(job.error || '진행 상황을 확인하지 못했습니다.');
+        } catch (e) {
+            // 네트워크가 잠깐 끊긴 정도는 몇 번 더 시도한다(서버 작업은 계속 진행 중이다).
+            if (++netFailures > 5 || /찾을 수 없습니다/.test(e.message)) throw e;
+            continue;
+        }
+        netFailures = 0;
+        if (onProgress) onProgress(job);
+        if (job.status === 'done') return job.result;
+        if (job.status === 'error') throw new Error(job.error || '등록에 실패했습니다.');
+    }
+}
+
+// 실패한 노선 안내 문구: "415902026201001(필수 값이 비어 있는…), …"
+function failedRoutesText(data) {
+    const f = (data && data.failedRoutes) || [];
+    return f.slice(0, 5).map((r) => `${r.code}(${r.error})`).join(', ') + (f.length > 5 ? ` 외 ${f.length - 5}개` : '');
 }
 
 function initLedgerTreeToolbar() {

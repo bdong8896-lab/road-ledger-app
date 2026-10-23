@@ -5,39 +5,17 @@ const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const pool = require('../db');
 const config = require('../config');
 const { requireAdminReauth } = require('../middleware/requireAuth');
 const { parseDelivery, krrisDefectRows } = require('../lib/bulkImportParse');
+const { runBulkConfirm } = require('../lib/bulkImportConfirm');
 const {
     createEmptyStaging, extractZip, getExtractDir, cleanup, sweepOldStagingDirs,
     resolveIncomingDir, mergeIncomingDir, stageFromIncomingDir, listIncomingFolders,
-    getIncomingSourceOfUpload,
 } = require('../lib/bulkImportStaging');
-const { syncRoadSection } = require('../lib/govSectionSync');
 const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles } = require('../lib/bulkImportAttachments');
-const { autoUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
-const { detectRankNameInRoot, detectRankNameHints } = require('../lib/bulkImportRank');
+const { detectRankNameHints } = require('../lib/bulkImportRank');
 const { parseSectorShpFiles } = require('../lib/bulkImportSectors');
-const { convertDwgToDxf } = require('../lib/dwgConvert');
-const { logAction } = require('../lib/auditLog');
-const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
-
-const KOREAN_NAME_BY_TABLE = Object.fromEntries(
-    Object.values(GOV_LAYER_MAP).map((l) => [l.table, l.koreanName])
-);
-
-const FACILITY_FILE_KIND_BY_EXT = {
-    '.jpg': '사진', '.jpeg': '사진', '.png': '사진', '.gif': '사진', '.bmp': '사진',
-    '.pdf': '보고서',
-};
-
-// routeFiles.js의 routeDirName()과 동일한 규칙(업로드 디렉터리 분리용) —
-// 라우트 파일끼리 서로 require하지 않는 기존 관례를 따라 여기 그대로 둔다.
-function routeDirName(roadGrade, routeNo, routeName) {
-    const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim();
-    return [safe(roadGrade), safe(routeNo), safe(routeName)].filter(Boolean).join('__') || 'unspecified';
-}
 
 const router = express.Router();
 router.use(requireAdminReauth); // 이 기능 전체가 관리자 전용 + 관리 콘솔 재인증 필요(15분)
@@ -230,6 +208,29 @@ router.get('/:uploadId/krris-report', async (req, res) => {
     res.send('﻿' + lines.join('\r\n') + '\r\n'); // BOM — 한국어 엑셀에서 한글이 안 깨지게
 });
 
+// ---- 확정(저장)은 백그라운드 작업이다 ----
+// 요청은 바로 202와 jobId를 돌려주고, 화면은 /jobs/:jobId로 진행 상황(노선 n/N)을 조회한다. 노선 수가 많아도 요청이
+// 프록시 응답 대기 시간에 걸리지 않고, 노선마다 따로 저장해서 한 노선이 실패해도 나머지는 저장된다(lib/bulkImportConfirm.js).
+// 서버를 다시 시작하면 진행 중이던 작업 정보는 사라지고(이미 저장된 노선은 그대로), 같은 납품을 다시 확정하면 이어서 저장된다.
+const bulkJobs = new Map(); // jobId -> job
+const JOB_KEEP_MS = 60 * 60 * 1000;
+function pruneJobs() {
+    const now = Date.now();
+    for (const [id, j] of bulkJobs) if (j.finishedAt && now - j.finishedAt > JOB_KEEP_MS) bulkJobs.delete(id);
+}
+function runningJob() {
+    // 6시간 넘게 "진행 중"인 작업은 멈춘 것으로 보고 무시한다(서버가 어딘가에서 응답 없는 상태로 잠금이 영원히 남는 것을 막는다).
+    for (const j of bulkJobs.values()) if (j.status === 'running' && Date.now() - j.startedAt < 6 * 60 * 60 * 1000) return j;
+    return null;
+}
+function jobView(j) {
+    return {
+        id: j.id, status: j.status, stage: j.stage, done: j.done, total: j.total, currentRoute: j.currentRoute,
+        results: j.results, result: j.status === 'done' ? j.result : undefined,
+        error: j.status === 'error' ? j.error : undefined, blockingWarnings: j.blockingWarnings,
+    };
+}
+
 router.post('/:uploadId/confirm', async (req, res) => {
     const { uploadId } = req.params;
     const targetSigunguCode = (req.body.sigunguCode || '').trim() || null;
@@ -242,271 +243,43 @@ router.post('/:uploadId/confirm', async (req, res) => {
         return res.status(404).json({ error: '업로드 정보를 찾을 수 없습니다.' });
     }
 
-    let parsed;
-    try {
-        parsed = await parseDelivery(extractDir);
-    } catch (e) {
-        console.error('[bulk-import/confirm/parseDelivery]', e);
-        return res.status(400).json({ error: '파일을 처리하는 중 오류가 발생했습니다.' });
-    }
-    if (parsed.blockingWarnings.length && !req.body.acknowledgeUnrecognizedCrs) {
-        return res.status(400).json({
-            error: '좌표계를 인식할 수 없는 레이어가 있습니다. 확인 후 다시 시도하세요.',
-            blockingWarnings: parsed.blockingWarnings,
+    // 한 번에 하나만 — 서버와 DB를 오래 붙잡는 작업이라 겹치면 서로 느려진다.
+    pruneJobs();
+    const busy = runningJob();
+    if (busy) {
+        return res.status(409).json({
+            error: '다른 일괄등록이 진행 중입니다. 끝난 뒤에 다시 시도하세요.',
+            jobId: busy.id, stage: busy.stage, done: busy.done, total: busy.total,
         });
     }
 
-    const client = await pool.connect();
-    const inserted = {};
-    const deleted = {};
-    let roadSectionsUpserted = 0;
-    const pkTableMap = new Map(); // 시설물 PK값(rdid/suid) -> gov_* 테이블명
-    const syncedSections = []; // { rdid, roadRankName, routeNo, routeName, deliveryRoot }
-    const replacedDrawingFiles = []; // 재확정으로 교체된 기존 도면의 디스크 파일 — 커밋 후에 지운다
-    try {
-        await client.query('BEGIN');
-        for (const layer of parsed.layers) {
-            // 필수 필드(NOT NULL, 기본값 없음)가 DBF에 아예 없는 레이어는 INSERT하면
-            // 제약조건 위반으로 트랜잭션 전체가 죽는다 — bulkImportParse.js가 이미
-            // blockingWarnings로 admin에게 경고했으니, 여기서는 이 레이어의 신규
-            // 레코드 저장만 건너뛴다(삭제 레코드는 pkColumn만 쓰므로 영향 없이 그대로 처리).
-            const skipInsert = layer.fieldMatch.missingRequired.length > 0;
+    const job = {
+        id: require('crypto').randomUUID(), uploadId, status: 'running', stage: '시작', done: 0, total: 0,
+        currentRoute: '', results: [], startedAt: Date.now(), userId: req.session.user.id,
+    };
+    bulkJobs.set(job.id, job);
+    runBulkConfirm(job, {
+        uploadId, extractDir, targetSigunguCode,
+        requestedRankName: (req.body.roadRankDisplayName || '').trim(),
+        acknowledgeUnrecognizedCrs: !!req.body.acknowledgeUnrecognizedCrs,
+        user: req.session.user,
+    });
+    res.status(202).json({ jobId: job.id, status: job.status });
+});
 
-            if (layer.newRecords.length && !skipInsert) {
-                let insertedCount = 0;
-                for (const { row, geom, skipNnNull } of layer.newRecords) {
-                    // 필수 숫자항목이 비어 있는 레코드(KRRIS M-1)는 INSERT가 NOT NULL 위반으로
-                    // 실패해 전체가 롤백되므로 이 레코드만 건너뛴다(미리보기에서 경고함).
-                    if (skipNnNull) continue;
-                    insertedCount++;
-                    const columns = [...Object.keys(row), 'geom', 'sigungu_code'];
-                    const values = [...Object.values(row), geom ? JSON.stringify(geom) : null, targetSigunguCode];
-                    const placeholders = columns.map((_, i) => `$${i + 1}`).join(',');
-                    const updateSet = columns
-                        .filter((c) => c !== layer.pkColumn)
-                        .map((c) => `${c} = EXCLUDED.${c}`)
-                        .join(', ');
-                    await client.query(
-                        `INSERT INTO ${layer.table} (${columns.join(',')}) VALUES (${placeholders})
-                         ON CONFLICT (${layer.pkColumn}) DO UPDATE SET ${updateSet}`,
-                        values
-                    );
-                    const pk = row[layer.pkColumn];
-                    if (pk) pkTableMap.set(String(pk), layer.table);
-                }
-                inserted[layer.table] = insertedCount;
-            }
-
-            if (layer.deleteRecords.length) {
-                for (const { row } of layer.deleteRecords) {
-                    const pk = row[layer.pkColumn];
-                    if (!pk) continue;
-                    await client.query(`DELETE FROM ${layer.table} WHERE ${layer.pkColumn} = $1`, [pk]);
-                }
-                deleted[layer.table] = layer.deleteRecords.length;
-            }
-        }
-
-        // road_sections 동기화 — zip 하나에 노선(납품 폴더)이 여러 개 있을 수
-        // 있어(bulkImportParse.js), 레이어 루프와 분리해 parsed.sectionRecords를
-        // 전부 순회한다. 예전엔 레이어 루프 안에서 A0020000의 newRecords만
-        // 돌았는데, 납품 폴더가 여러 개면 같은 레이어 코드의 레코드가 하나로
-        // 합쳐지기 전에도(즉 이 버그를 고치기 전에도) 구간이 하나만 등록되는
-        // 문제가 있었다 — sectionRecords는 납품 루트별로 구분해서 만들어지므로
-        // 이제 전부 등록된다.
-        // 도로종류 표시 이름: 화면에서 이름을 직접 골랐으면 모든 노선에 그 이름을, 비워 두면(자동) 노선마다
-        // 500m 구간 SHP 파일명(면도0101.shp 등)에서 알아낸 이름을 쓴다. 둘 다 없으면 납품 그대로(기타).
-        const requestedRankName = (req.body.roadRankDisplayName || '').trim();
-        for (const { deliveryRoot, deliveryCode, row, geom } of parsed.sectionRecords) {
-            const rankName = requestedRankName || (row.road_rank === '1599' ? detectRankNameInRoot(deliveryRoot) : '') || '';
-            const synced = await syncRoadSection(client, { row, geom }, targetSigunguCode, req.session.user.id, rankName);
-            // 원본 관리번호를 남겨둬야 노선 내보내기가 파일명을 원본과 똑같이 만들 수 있다.
-            if (deliveryCode) {
-                await client.query('UPDATE road_sections SET delivery_code = $1 WHERE rdid = $2', [deliveryCode, synced.rdid]);
-            }
-            syncedSections.push({ ...synced, deliveryRoot });
-            roadSectionsUpserted++;
-        }
-
-        // 500m 구간(road_sectors) 저장 — 위 road_sections 동기화가 끝난 뒤에
-        // 돌아야, 이번 zip에 같이 실려온 노선도 바로 (route_no, sect) 매칭이
-        // 된다. road_sections에 해당 노선이 아예 없으면(이 PC에 등록 안 된
-        // 노선) 조용히 skip한다 — import-road-sectors-0008.js의 기존 원칙과 동일.
-        let sectorsInserted = 0;
-        let sectorsSkipped = 0;
-        const sectorKeyCache = new Map();
-        for (const rec of parseSectorShpFiles(extractDir).records) {
-            const cacheKey = `${rec.roadNo}|${rec.sect}`;
-            let key = sectorKeyCache.get(cacheKey);
-            if (key === undefined) {
-                const r = await client.query(
-                    'SELECT road_rank_code, sigungu_code FROM road_sections WHERE route_no = $1 AND sect = $2 LIMIT 1',
-                    [rec.roadNo, rec.sect]
-                );
-                key = r.rows[0] ? { road_rank_code: r.rows[0].road_rank_code, sigungu_code: r.rows[0].sigungu_code } : null;
-                sectorKeyCache.set(cacheKey, key);
-            }
-            if (!key) { sectorsSkipped++; continue; }
-            await client.query(
-                `INSERT INTO road_sectors (road_rank_code, road_no, sect, sect_st, sect_ed, sect_len, geom, sigungu_code)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                 ON CONFLICT (road_rank_code, road_no, sect, sect_st)
-                 DO UPDATE SET sect_ed = EXCLUDED.sect_ed, sect_len = EXCLUDED.sect_len,
-                     geom = EXCLUDED.geom, sigungu_code = EXCLUDED.sigungu_code`,
-                [key.road_rank_code, rec.roadNo, rec.sect, rec.sectSt, rec.sectEd, rec.sectLen, JSON.stringify(rec.geom), key.sigungu_code]
-            );
-            sectorsInserted++;
-        }
-
-        // 시설물 사진/보고서 자동 연결 — 파일명(확장자 제외)이 방금 저장한
-        // gov_* 레코드의 PK와 정확히 일치하는 경우만 매칭한다(실제 납품
-        // 데이터로 검증된 규칙, server/lib/govSectionSync.js 주석 참고).
-        // 주의: 같은 시설물에 "원본사진"/"표지사진"처럼 하위 폴더별로 서로
-        // 다른 사진이 같은 파일명으로 들어오는 경우가 실제 납품에 있어서
-        // (PHOTO/원본사진/R23....jpg, PHOTO/표지사진/R23....jpg 둘 다 존재),
-        // 상위 폴더명이 PHOTO/STR가 아니면(=하위 분류 폴더가 있으면) 파일명
-        // 앞에 그 폴더명을 붙여 서로 다른 첨부로 구분해서 저장한다.
-        let facilityFilesAttached = 0;
-        const facilityFilesUnmatched = [];
-        for (const filePath of findFacilityAttachments(extractDir)) {
-            const base = path.basename(filePath);
-            const ext = path.extname(base).toLowerCase();
-            const pkCandidate = base.slice(0, base.length - ext.length);
-            const table = pkTableMap.get(pkCandidate);
-            const fileKind = FACILITY_FILE_KIND_BY_EXT[ext];
-            const parentFolder = path.basename(path.dirname(filePath));
-            const displayName = ['PHOTO', 'STR'].includes(parentFolder) ? base : `${parentFolder}_${base}`;
-            if (!table || !fileKind) {
-                facilityFilesUnmatched.push(base);
-                continue;
-            }
-            const dir = path.join(config.uploadDir, 'gov-facility-files', targetSigunguCode || 'unassigned', table);
-            fs.mkdirSync(dir, { recursive: true });
-            const storedPath = path.join(dir, `${Date.now()}_${displayName.replace(/[/\\]/g, '_')}`);
-            fs.copyFileSync(filePath, storedPath);
-            await client.query(
-                `INSERT INTO gov_facility_files (facility_table, facility_rdid, file_kind, original_name, stored_path, sigungu_code, uploaded_by)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7)
-                 ON CONFLICT (facility_table, facility_rdid, original_name)
-                 DO UPDATE SET stored_path = EXCLUDED.stored_path, sigungu_code = EXCLUDED.sigungu_code,
-                     uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()`,
-                [table, pkCandidate, fileKind, displayName, storedPath, targetSigunguCode, req.session.user.id]
-            );
-            facilityFilesAttached++;
-        }
-
-        // 도면(DXF/DWG) 자동 연결 — 납품 루트(zip 안의 노선 폴더)별로 도면을
-        // 그 루트에 딸린 구간에만 연결한다. 한 루트에 구간이 정확히 1개일 때만
-        // (보통 그렇다) 자동 연결하고, 0개/2개 이상이면 그 루트는 건너뛴다
-        // (어느 구간 도면인지 특정할 수 없음). zip 하나에 노선이 여러 개
-        // 있어도 각자 자기 루트의 ETC/TOP만 보므로 서로 섞이지 않는다.
-        const sectionsByRoot = new Map();
-        for (const s of syncedSections) {
-            if (!sectionsByRoot.has(s.deliveryRoot)) sectionsByRoot.set(s.deliveryRoot, []);
-            sectionsByRoot.get(s.deliveryRoot).push(s);
-        }
-
-        let drawingFilesAttached = 0;
-        for (const [deliveryRoot, sections] of sectionsByRoot) {
-            if (sections.length !== 1) continue;
-            const section = sections[0];
-            const dir = path.join(config.uploadDir, 'routes', routeDirName(section.roadRankName, section.routeNo, section.routeName));
-            for (const filePath of findDrawingFiles(deliveryRoot)) {
-                const base = path.basename(filePath);
-                fs.mkdirSync(dir, { recursive: true });
-                const storedPath = path.join(dir, `${Date.now()}_${base.replace(/[/\\]/g, '_')}`);
-                fs.copyFileSync(filePath, storedPath);
-                let convertedPath = null;
-                if (/\.dwg$/i.test(base)) {
-                    const candidate = storedPath.replace(/\.dwg$/i, '.dxf');
-                    if (await convertDwgToDxf(storedPath, candidate)) convertedPath = candidate;
-                }
-                // route_files는 원래 수동 업로드 전용이라 중복 방지 제약이 없다(동일
-                // 파일을 여러 번 올려 이력으로 남기는 것도 허용하는 설계). 하지만
-                // 일괄등록은 같은 zip을 재확정(재검수)할 수도 있으므로, 이 자동 연결
-                // 경로에서만 같은 구간+같은 파일명의 기존 행을 지우고 새로 넣어
-                // 중복 누적을 막는다.
-                // 지운 행의 실제 파일(원본+변환 DXF)도 정리해야 재확정할 때마다 디스크에
-                // 고아 파일이 쌓이지 않는다. 롤백되면 파일이 필요하므로 커밋 후에 지운다.
-                const { rows: replaced } = await client.query(
-                    `DELETE FROM route_files WHERE section_rdid = $1 AND file_category = '도면종류' AND original_name = $2
-                     RETURNING stored_path, converted_path`,
-                    [section.rdid, base]
-                );
-                replaced.forEach((r) => replacedDrawingFiles.push(r.stored_path, r.converted_path));
-                await client.query(
-                    `INSERT INTO route_files (road_grade, route_no, route_name, section_rdid, file_category, original_name, stored_path, converted_path, uploaded_by, sigungu_code)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-                    [section.roadRankName, section.routeNo, section.routeName, section.rdid, '도면종류', base, storedPath, convertedPath, req.session.user.id, targetSigunguCode]
-                );
-                drawingFilesAttached++;
-            }
-        }
-
-        await client.query('COMMIT');
-        for (const p of replacedDrawingFiles) if (p) fs.rm(p, { force: true }, () => {});
-
-        // 납품 폴더 밖의 도면(500_P/500_Y/500_U, CONT)은 파일명으로 노선·구간을 알아내 붙인다. 방금 등록한 구간을
-        // DB에서 찾아야 하므로 커밋 뒤에 돌리고, 실패해도 이미 저장된 데이터는 그대로 둔다(결과에 실패만 알림).
-        // 이전에 등록된 노선의 도면만 담긴 폴더여도 같은 방식으로 붙는다.
-        const drawingsAuto = { matchedCount: 0, unmatched: [], failed: false };
-        const looseDrawings = findLooseDrawingFiles(extractDir);
-        if (looseDrawings.length) {
-            try {
-                const r = await autoUploadRouteDrawings({
-                    files: looseDrawings.map((p) => ({ path: p, name: path.basename(p) })),
-                    hint: null, userId: req.session.user.id, userSigungu: targetSigunguCode,
-                });
-                drawingsAuto.matchedCount = r.matched.length;
-                drawingsAuto.unmatched = r.unmatched.slice(0, 20);
-                drawingsAuto.unmatchedCount = r.unmatched.length;
-            } catch (e) {
-                console.error('[bulk-import/confirm/loose-drawings]', e);
-                drawingsAuto.failed = true;
-            }
-        }
-        // "서버 폴더에서 검수"로 만든 uploadId면(zip 업로드가 아니라
-        // bulk-import-incoming을 직접 참조한 경우) 등록이 끝났으니 원본 폴더를
-        // 지운다 — cleanup(마커 삭제) 전에 먼저 원본 경로를 읽어와야 한다.
-        const incomingSource = getIncomingSourceOfUpload(uploadId);
-        cleanup(uploadId);
-        if (incomingSource) {
-            try { fs.rmSync(incomingSource, { recursive: true, force: true }); } catch (e) { /* 무시 */ }
-        }
-
-        // 일괄등록은 기존 시설물 데이터를 upsert(덮어쓰기)하므로, 어느 관리자가
-        // 언제 무엇을 얼마나 반영했는지 감사 로그에 요약 1건으로 남긴다(레코드
-        // 단위로 남기면 수천 건씩 쌓여 노이즈가 크므로 배치 단위 요약만).
-        const insertedParts = Object.entries(inserted).map(([t, c]) => `${KOREAN_NAME_BY_TABLE[t] || t} ${c}건`);
-        const deletedParts = Object.entries(deleted).map(([t, c]) => `${KOREAN_NAME_BY_TABLE[t] || t} ${c}건 삭제`);
-        const summary = [`일괄등록: 구간 ${roadSectionsUpserted}건`, ...insertedParts, ...deletedParts,
-            facilityFilesAttached ? `첨부 ${facilityFilesAttached}건` : null, drawingFilesAttached ? `도면 ${drawingFilesAttached}건` : null,
-            sectorsInserted ? `500m 구간 ${sectorsInserted}건` : null]
-            .filter(Boolean).join(', ');
-        await logAction(null, {
-            action: 'bulk_import', targetTable: 'road_sections', targetId: null,
-            summary,
-            detail: { inserted, deleted, roadSectionsUpserted, facilityFilesAttached, drawingFilesAttached, sectorsInserted, sectorsSkipped },
-            sigunguCode: targetSigunguCode, user: req.session.user,
-        });
-
-        res.json({
-            ok: true, inserted, deleted, roadSectionsUpserted,
-            facilityFilesAttached, facilityFilesUnmatched, drawingFilesAttached,
-            sectorsInserted, sectorsSkipped,
-            incomingFolderRemoved: !!incomingSource,
-            drawingsAuto,
-        });
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error('[bulk-import/confirm]', e);
-        res.status(500).json({ error: '저장 중 오류가 발생했습니다.' });
-    } finally {
-        client.release();
-    }
+router.get('/jobs/:jobId', (req, res) => {
+    const job = bulkJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '작업 정보를 찾을 수 없습니다(서버가 다시 시작됐거나 오래되어 지워졌습니다).' });
+    res.json(jobView(job));
 });
 
 router.delete('/:uploadId', (req, res) => {
+    // 이 업로드를 저장하는 작업이 진행 중이면 임시 폴더를 지울 수 없다(저장하던 파일이 사라져 작업이 실패한다).
+    for (const j of bulkJobs.values()) {
+        if (j.status === 'running' && j.uploadId === req.params.uploadId) {
+            return res.status(409).json({ error: '이 업로드를 저장하는 중이라 취소할 수 없습니다. 끝난 뒤에 다시 시도하세요.' });
+        }
+    }
     try {
         cleanup(req.params.uploadId);
     } catch (e) { /* 이미 없어도 무시 */ }

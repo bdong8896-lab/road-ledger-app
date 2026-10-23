@@ -2504,31 +2504,31 @@ function downloadScopeParams() {
 
 // 선택 범위(구간/호선/관할 전체)의 모든 자료(속성+지오메트리+사진+보고서+도면)를
 // 일괄등록 때 받는 것과 같은 SHP/DBF 납품 폴더 구조의 zip으로 내려받는다.
-// "사용자도로관리"의 GeoJSON 다운로드(downloadIssueGeoJson, script.js)와
-// 같은 fetch→blob→<a download> 방식.
+// zip은 용량이 수 GB가 될 수 있어 파일 전체를 브라우저 메모리에 받았다가 저장하는 방식(fetch→blob)이 아니라,
+// 브라우저의 일반 다운로드(스트리밍)로 받는다 — 서버가 만드는 대로 바로 디스크에 저장되고 다운로드 진행률도 브라우저가 보여준다.
+// 먼저 check=1로 "받을 수 있는지"만 확인해서(구간 없음/권한 없음 등), 오류가 JSON 페이지로 화면을 덮지 않게 한다.
 async function downloadSectionExport() {
     // 이 버튼은 index.html/cad-popup.html에서 서로 다른 위치(패널)에 있어
     // 공통으로 잡을 컨테이너가 없으므로 body 전체에 모래시계 커서를 건다.
     document.body.classList.add('app-busy');
     try {
         const params = new URLSearchParams(downloadScopeParams());
-        const qs = params.toString();
-        const res = await fetch('/api/sections/export' + (qs ? '?' + qs : ''));
-        if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
+        const base = '/api/sections/export?' + params.toString();
+        const check = await fetch(base + (params.toString() ? '&' : '') + 'check=1');
+        if (!check.ok) {
+            const data = await check.json().catch(() => ({}));
             alert(data.error || '다운로드에 실패했습니다.');
             return;
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
+        const info = await check.json();
         const a = document.createElement('a');
-        a.href = url;
-        const cd = res.headers.get('Content-Disposition') || '';
-        const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
-        a.download = m ? decodeURIComponent(m[1]) : '전체자료.zip';
+        a.href = base;
+        a.download = info.filename || '전체자료.zip';
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(url);
+        a.remove();
     } finally {
+        // 다운로드는 브라우저가 이어서 진행하므로 모래시계는 바로 푼다.
         document.body.classList.remove('app-busy');
     }
 }

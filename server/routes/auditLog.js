@@ -15,7 +15,7 @@ const ACTION_LABELS = {
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
-    log_export: '이력 다운로드', admin_reauth: '관리자 재인증',
+    log_export: '이력 다운로드', admin_reauth: '관리자 재인증', export: '자료 내려받기',
 };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 

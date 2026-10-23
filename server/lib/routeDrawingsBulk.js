@@ -42,7 +42,7 @@ function matchSectBySuffix(baseName, knownSects) {
 // 자동 인식 업로드가 같이 쓴다. dir: 저장 폴더(노선별).
 async function placeDrawing({ filePath, base, section, category, segInfo, userId, userSigungu, dir }) {
     const roadGrade = section.road_rank_name, routeNo = section.route_no, routeName = section.route_name;
-    const storedPath = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}_${base}`);
+    const storedPath = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}_${base.replace(/[/\\]/g, '_')}`); // 파일명에 경로 구분자가 있어도 폴더 밖으로 나가지 않게
     fs.copyFileSync(filePath, storedPath);
 
     let convertedPath = null;
