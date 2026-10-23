@@ -219,9 +219,9 @@ router.get('/:uploadId/krris-report', async (req, res) => {
         return res.status(404).json({ error: '업로드 정보를 찾을 수 없습니다. 다시 검수하세요.' });
     }
     const parsed = await parseDelivery(extractDir);
-    const lines = [['검사항목', '레이어코드', '레이어', '대상ID', '필드', '필드명', '내용'].map(csvCell).join(',')];
+    const lines = [['검사항목', '레이어코드', '레이어', '대상ID', '파일', '행', '필드', '필드명', '내용'].map(csvCell).join(',')];
     for (const r of krrisDefectRows(parsed)) {
-        lines.push([r.check, r.code, r.layer, r.pk, r.field, r.label, r.detail].map(csvCell).join(','));
+        lines.push([r.check, r.code, r.layer, r.pk, r.file, r.row, r.field, r.label, r.detail].map(csvCell).join(','));
     }
     const code = (parsed.deliveryCodes || []).join('_') || 'delivery';
     const filename = `KRRIS사전검사_${code}_${new Date().toISOString().slice(0, 10)}.csv`;

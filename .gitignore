@@ -17,3 +17,6 @@ deploy/신안 오류사항.txt
 
 # 개발 중 서버 출력을 리다이렉트한 임시 파일
 server/server.log
+
+# 검수 프로그램 배포용 빌드 결과(node.exe 포함 90MB) — build-portable.js로 언제든 다시 만든다
+delivery-checker/dist/

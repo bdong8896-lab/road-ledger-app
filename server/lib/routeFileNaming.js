@@ -54,4 +54,22 @@ function classifyDrawingType(file) {
 
 const DRAWING_TYPES = ['평면도', '용지도', '매설물도', '구조물도'];
 
-module.exports = { parseStationFilename, classifyDrawingType, DRAWING_TYPES };
+// 도면 파일명에서 노선번호/구간을 읽는 규칙들(도면 자동 인식 업로드와 별도 검수 프로그램이 같이 쓴다).
+//   2) 노선·구간 도면:      [영문접두어]{노선4}{구간2}            예) TOP010101.dxf, 010101.dxf
+//   3) 구간 전체 도면(CONT): {영문접두어}{노선4}{구간2}{측점5}      예) SE01010100000.dxf
+// (1) 500m 단위 구간도면은 위 parseStationFilename.
+const ROUTE_SECT_FILE_RE = /^[A-Za-z]*(\d{4})(\d{2})\.(dwg|dxf)$/i;
+const SECTION_WHOLE_FILE_RE = /^[A-Za-z]+(\d{4})(\d{2})\d{5}\.(dwg|dxf)$/i;
+
+// DB 없이 파일명만으로 읽을 수 있는 정보. 못 읽으면 null. sect는 3자리로 맞춰 돌려준다.
+function parseDrawingFilename(base) {
+    const st = parseStationFilename(base, null);
+    if (st) return { kind: 'station', routeNo: st.routeNo, sect: st.sect.padStart(3, '0'), category: '도로', variant: st.segVariant };
+    let m = ROUTE_SECT_FILE_RE.exec(base);
+    if (m) return { kind: 'route-sect', routeNo: m[1], sect: m[2].padStart(3, '0'), category: '도면종류' };
+    m = SECTION_WHOLE_FILE_RE.exec(base);
+    if (m) return { kind: 'section-whole', routeNo: m[1], sect: m[2].padStart(3, '0'), category: '도면종류' };
+    return null;
+}
+
+module.exports = { parseStationFilename, classifyDrawingType, DRAWING_TYPES, ROUTE_SECT_FILE_RE, SECTION_WHOLE_FILE_RE, parseDrawingFilename };

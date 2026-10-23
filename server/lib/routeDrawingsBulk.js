@@ -10,7 +10,7 @@ const { openZip } = require('./zipOpen');
 const pool = require('../db');
 const config = require('../config');
 const { convertDwgToDxf } = require('./dwgConvert');
-const { parseStationFilename } = require('./routeFileNaming');
+const { parseStationFilename, ROUTE_SECT_FILE_RE, SECTION_WHOLE_FILE_RE } = require('./routeFileNaming');
 
 function routeDirName(roadGrade, routeNo, routeName) {
     const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim();
@@ -158,9 +158,7 @@ async function bulkUploadRouteDrawings({ zipPath, roadGrade, routeNo, routeName,
 // 기존 규칙(끝자리 구간번호)으로 붙이고 아니면 "인식 못함"으로 돌려준다.
 // 같은 노선번호가 도로종류 두 곳 이상에 있으면(예: 군도 0008, 시도 0008) 파일명만으로 정할 수 없으므로
 // hint(선택한 노선)의 도로종류로 좁히고, 그래도 못 정하면 인식 못함으로 둔다.
-const ROUTE_SECT_FILE_RE = /^[A-Za-z]*(\d{4})(\d{2})\.(dwg|dxf)$/i;
-// 구간 전체 도면(CONT 폴더): SE{노선4}{구간2}{측점5} — 측점은 구간 전체라 보통 00000
-const SECTION_WHOLE_FILE_RE = /^[A-Za-z]+(\d{4})(\d{2})\d{5}\.(dwg|dxf)$/i;
+// (파일명 정규식 ROUTE_SECT_FILE_RE/SECTION_WHOLE_FILE_RE는 routeFileNaming.js에 있다 — 검수 프로그램과 공유)
 
 function sameRouteNo(a, b) {
     const x = Number(a), y = Number(b);

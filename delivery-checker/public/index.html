@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>도로대장 납품 검수</title>
+<style>
+:root {
+    --bg: #f4f6f9; --panel: #ffffff; --panel-2: #eef2f7; --text: #1b2430; --muted: #66758a; --line: #d9e0ea;
+    --accent: #2c6db5; --accent-text: #ffffff;
+    --ok: #1f8a4c; --ok-bg: #e5f5ec; --warn: #a96a00; --warn-bg: #fff3d9; --err: #c0392b; --err-bg: #fdeceb;
+    --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #12161c; --panel: #1b212a; --panel-2: #232b36; --text: #e6ebf2; --muted: #93a1b5; --line: #323c4a;
+        --accent: #4a90d9; --ok: #4cc17f; --ok-bg: #16301f; --warn: #e6a94b; --warn-bg: #352a14; --err: #ff7468; --err-bg: #3a1c1a;
+    }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
+h1 { font-size: 1.35rem; margin: 0 0 2px; }
+.sub { color: var(--muted); margin-bottom: 18px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px; }
+.card h2 { font-size: 1rem; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+input[type=text] { flex: 1; min-width: 260px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; }
+button { padding: 9px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.hint { color: var(--muted); font-size: .85rem; margin-top: 8px; }
+.status { display: none; align-items: center; gap: 10px; margin-top: 12px; color: var(--muted); }
+.status.on { display: flex; }
+.spin { width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.banner { border-radius: var(--radius); padding: 14px 18px; margin-bottom: 14px; border: 1px solid; }
+.banner.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+.banner.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+.banner.error { background: var(--err-bg); border-color: var(--err); color: var(--err); }
+.banner h2 { margin: 0 0 6px; font-size: 1.1rem; }
+.banner ul { margin: 6px 0 0; padding-left: 20px; color: var(--text); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+.stat b { display: block; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: .8rem; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: .75rem; margin: 1px 3px 1px 0; }
+.chip.ok { background: var(--ok-bg); color: var(--ok); }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.err { background: var(--err-bg); color: var(--err); }
+.chip.gray { background: var(--panel-2); color: var(--muted); }
+details { margin-top: 4px; }
+summary { cursor: pointer; color: var(--accent); font-size: .8rem; }
+.warnline { font-size: .8rem; color: var(--muted); margin: 3px 0; word-break: break-all; }
+.mono { font-family: Consolas, monospace; font-size: .8rem; }
+.section-actions { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.more { color: var(--muted); font-size: .8rem; margin-top: 6px; }
+@media print { .noprint { display: none !important; } body { background: #fff; } }
+</style>
+</head>
+<body>
+<main>
+    <h1>도로대장 납품 검수</h1>
+    <div class="sub">납품 폴더나 ZIP을 서버에 올리기 전에 이 PC에서 미리 검사합니다. 서버 연결과 로그인이 필요 없고, 파일은 이 PC 밖으로 나가지 않습니다.</div>
+
+    <section class="card noprint">
+        <h2>1. 검수할 납품 선택</h2>
+        <div class="row">
+            <input type="text" id="path" placeholder="납품 폴더 또는 ZIP 파일 경로 (선택 버튼으로 고르거나 붙여넣기)" spellcheck="false">
+            <button id="pickFolder">폴더 선택</button>
+            <button id="pickZip">ZIP 선택</button>
+            <button id="run" class="primary">검수 시작</button>
+        </div>
+        <div class="hint">폴더는 관리번호 폴더(예: 415902026101001)가 들어 있는 상위 폴더를 고르세요. 용량이 큰 ZIP은 푸는 데 시간이 걸립니다.<br>선택 창이 안 열리면 탐색기에서 폴더 주소창(또는 ZIP 파일을 Shift+우클릭 → "경로로 복사")의 경로를 위 입력칸에 붙여넣으세요.</div>
+        <div class="hint" id="pickNote" style="color:var(--accent)"></div>
+        <div class="status" id="status"><span class="spin"></span><span id="statusText">검수 중입니다...</span></div>
+    </section>
+
+    <div id="result"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (n) => Number(n || 0).toLocaleString();
+
+async function api(url, body) {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '요청 실패');
+    return data;
+}
+
+let picking = false;
+async function pick(type) {
+    if (picking) { $('pickNote').textContent = '선택 창이 이미 열려 있습니다. 작업 표시줄에서 선택 창을 찾아 주세요.'; return; }
+    picking = true;
+    const note = $('pickNote');
+    note.textContent = '선택 창을 여는 중입니다... 창이 보이지 않으면 작업 표시줄을 확인하세요.';
+    const slow = setTimeout(() => { note.textContent = '선택 창이 열리지 않으면 아래 입력칸에 폴더/ZIP 경로를 직접 붙여넣어도 됩니다.'; }, 8000);
+    try {
+        const { path } = await api('/api/pick', { type });
+        if (path) { $('path').value = path; note.textContent = ''; }
+        else note.textContent = '선택을 취소했습니다.';
+    } catch (e) {
+        note.textContent = e.message;
+        $('path').focus();
+    }
+    clearTimeout(slow);
+    picking = false;
+}
+$('pickFolder').onclick = () => pick('folder');
+$('pickZip').onclick = () => pick('zip');
+
+$('run').onclick = async () => {
+    const p = $('path').value.trim();
+    if (!p) { alert('먼저 검수할 폴더 또는 ZIP을 선택하세요.'); return; }
+    $('run').disabled = true; $('result').innerHTML = '';
+    $('status').classList.add('on');
+    $('statusText').textContent = '검수 중입니다... (파일이 많거나 ZIP이 크면 몇 분 걸릴 수 있습니다)';
+    try {
+        render(await api('/api/check', { path: p }));
+    } catch (e) {
+        $('result').innerHTML = `<div class="banner error"><h2>검수하지 못했습니다</h2>${esc(e.message)}</div>`;
+    }
+    $('status').classList.remove('on');
+    $('run').disabled = false;
+};
+
+const VERDICT = {
+    ok: ['ok', '문제가 발견되지 않았습니다', '이 납품은 서버 일괄등록 검수를 통과할 것으로 보입니다.'],
+    warn: ['warn', '등록은 가능하지만 확인할 항목이 있습니다', '아래 경고를 확인하세요. 경고 항목은 KRRIS 제출 때 결함으로 지적될 수 있습니다.'],
+    error: ['error', '등록할 수 없거나 일부가 등록되지 않는 문제가 있습니다', '아래 오류를 먼저 해결한 뒤 다시 올리세요.'],
+};
+
+function render(r) {
+    const [cls, title, desc] = VERDICT[r.verdict];
+    const list = (arr) => arr.length ? `<ul>${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+    let html = `<div class="banner ${cls}"><h2>${title}</h2>${desc}
+        ${r.errors.length ? `<div style="margin-top:8px"><b>오류 ${r.errors.length}건</b>${list(r.errors)}</div>` : ''}
+        ${r.warnings.length ? `<div style="margin-top:8px"><b>경고 ${r.warnings.length}건</b>${list(r.warnings)}</div>` : ''}</div>`;
+
+    html += `<div class="stats">
+        <div class="stat"><b>${(r.deliveryCodes || []).length}</b><span>납품 폴더(노선)</span></div>
+        <div class="stat"><b>${r.layers.length}</b><span>레이어</span></div>
+        <div class="stat"><b>${fmt(r.totalNew)}</b><span>신규 레코드</span></div>
+        <div class="stat"><b>${fmt(r.totalDelete)}</b><span>삭제 레코드</span></div>
+        <div class="stat"><b>${(r.elapsedMs / 1000).toFixed(1)}초</b><span>검수 시간</span></div>
+    </div>`;
+
+    html += `<section class="card"><h2>관리번호</h2><div class="mono">${esc((r.deliveryCodes || []).join(', ') || '-')}</div>
+        ${r.rankHints.length ? `<div class="hint">도로종류(파일명 인식): ${r.rankHints.map((h) => `${esc(h.deliveryCode)} → <b>${esc(h.name)}</b>`).join(', ')}</div>` : ''}
+        <div class="hint">입력: ${esc(r.input.path)} (${r.input.kind === 'zip' ? 'ZIP' : '폴더'})</div></section>`;
+
+    // 레이어 표
+    html += `<section class="card"><h2>레이어별 결과</h2><div class="scroll"><table>
+        <thead><tr><th>코드</th><th>레이어</th><th class="num">신규</th><th class="num">삭제</th><th>좌표계</th><th>도형</th><th class="num">필수값 빈칸</th><th>확인 사항</th></tr></thead><tbody>`;
+    for (const l of r.layers) {
+        const crsChip = !l.hasShp ? '<span class="chip gray">속성만</span>'
+            : l.epsg === r.krris.requiredEpsg ? `<span class="chip ok">${esc(l.epsg)}</span>`
+            : `<span class="chip warn">${esc(l.epsg || l.crsLabel)}</span>`;
+        const chips = [];
+        if (l.missingRequired.length) chips.push(`<span class="chip err">필수 필드 없음 ${l.missingRequired.length}</span>`);
+        if (l.skippedWrongSchema) chips.push(`<span class="chip err">잘못된 속성표 ${l.skippedWrongSchema}건 제외</span>`);
+        if (l.extraFields.length) chips.push(`<span class="chip warn">스키마에 없는 필드 ${l.extraFields.length}</span>`);
+        if (l.missingFields.length && !l.missingRequired.length) chips.push(`<span class="chip gray">없는 필드 ${l.missingFields.length}(빈 값으로 저장)</span>`);
+        const detail = l.warnings.length ? `<details><summary>자세히</summary>${l.warnings.map((w) => `<div class="warnline">${esc(w)}</div>`).join('')}</details>` : '';
+        html += `<tr><td class="mono">${esc(l.code)}</td><td>${esc(l.name)}</td><td class="num">${fmt(l.newCount)}</td><td class="num">${fmt(l.deleteCount)}</td>
+            <td>${crsChip}</td><td>${esc(l.geomType || '-')}</td><td class="num">${l.nnCount ? `<span class="chip warn">${fmt(l.nnCount)}</span>` : '0'}</td><td>${chips.join('') || '<span class="chip ok">이상 없음</span>'}${detail}</td></tr>`;
+    }
+    html += `</tbody></table></div></section>`;
+
+    // KRRIS 사전검사
+    const c1 = r.krris.crs;
+    html += `<section class="card"><div class="section-actions"><h2 style="margin:0">KRRIS 사전검사</h2>
+        ${r.defectTotal ? `<a class="noprint" href="/api/defects.csv"><button>결함 목록 CSV 내려받기 (${fmt(r.defectTotal)}건)</button></a>` : ''}</div>`;
+    html += `<div><b>C-1 좌표계</b> — 제출 기준 ${esc(r.krris.requiredEpsg)}: ${c1.length ? `<span class="chip warn">${c1.length}개 레이어 불일치</span>` : '<span class="chip ok">모두 일치</span>'}</div>`;
+    if (c1.length) {
+        html += `<div class="scroll"><table style="margin-top:6px"><thead><tr><th>레이어</th><th>상태</th></tr></thead><tbody>${c1.map((c) =>
+            `<tr><td>${esc(c.code)} ${esc(c.koreanName)}</td><td>${c.status === 'mismatch' ? `${esc(c.label)} (${esc(c.epsg)})` : c.status === 'no-prj' ? '.prj 파일 없음' : '인식할 수 없는 좌표계'}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+    html += `<div style="margin-top:10px"><b>M-1 필수항목 빈 값</b>: ${r.krris.nnTotal ? `<span class="chip warn">${fmt(r.krris.nnTotal)}건</span>` : '<span class="chip ok">없음</span>'}</div>`;
+    const m1 = r.defects.filter((d) => d.check.startsWith('M-1'));
+    if (m1.length) {
+        html += `<div class="scroll"><table style="margin-top:6px"><thead><tr><th>레이어</th><th>대상 ID</th><th>파일</th><th class="num">행</th><th>항목</th><th>내용</th></tr></thead><tbody>${m1.map((d) =>
+            `<tr><td>${esc(d.code)} ${esc(d.layer)}</td><td class="mono">${esc(d.pk)}</td><td class="mono">${esc(d.file)}</td><td class="num">${esc(d.row)}</td><td>${esc(d.label)} <span class="mono">(${esc(d.field)})</span></td><td>${esc(d.detail)}</td></tr>`).join('')}</tbody></table></div>`;
+        if (r.defectTotal > r.defects.length) html += `<div class="more">화면에는 앞의 ${r.defects.length}건만 보입니다. 전체는 CSV로 내려받으세요.</div>`;
+    }
+    html += `<div class="hint">좌표계는 변환해서 저장되므로 등록에는 영향이 없지만, 원본 그대로 KRRIS에 제출하면 반려됩니다. 빈 값은 납품 업체에서 채워야 합니다. QGIS에서는 CSV의 파일/행 열로 바로 찾을 수 있습니다.</div></section>`;
+
+    // 첨부
+    const a = r.attachments;
+    html += `<section class="card"><h2>사진·보고서 (PHOTO/STR)</h2>${a.total ? `전체 ${fmt(a.total)}건 중 시설물과 연결 <span class="chip ok">${fmt(a.matched)}건</span>
+        ${a.unmatchedTotal ? `연결 안 됨 <span class="chip warn">${fmt(a.unmatchedTotal)}건</span>` : ''}` : '<span class="chip gray">없음</span> (서버 폴더로 따로 올리는 경우 정상입니다)'}
+        ${a.unmatched.length ? `<details><summary>연결되지 않는 파일 보기</summary><div class="scroll"><table><tbody>${a.unmatched.map((u) => `<tr><td class="mono">${esc(u.name)}</td><td>${esc(u.reason)}</td></tr>`).join('')}</tbody></table></div>
+        ${a.unmatchedTotal > a.unmatched.length ? `<div class="more">앞의 ${a.unmatched.length}건만 표시</div>` : ''}</details>` : ''}
+        <div class="hint">파일 이름(확장자 제외)이 시설물 ID(RDID 등)와 같아야 자동으로 연결됩니다.</div></section>`;
+
+    // 도면
+    const d = r.drawings;
+    html += `<section class="card"><h2>도면</h2>ETC 폴더 도면 <span class="chip gray">${fmt(d.etc)}건</span> · 구간 도면(500_P/500_Y/500_U, CONT) <span class="chip gray">${fmt(d.looseTotal)}건</span>`;
+    if (d.loose.length) {
+        const label = { 'in-package': ['ok', '노선 인식'], 'other-route': ['warn', '다른 노선'], unrecognized: ['err', '인식 못함'] };
+        html += `<details open><summary>구간 도면 파일명 인식 결과</summary><div class="scroll"><table><thead><tr><th>파일</th><th>노선</th><th>구간</th><th>결과</th></tr></thead><tbody>${d.loose.map((x) =>
+            `<tr><td class="mono">${esc(x.name)}</td><td>${esc(x.routeNo || '-')}</td><td>${esc(x.sect || '-')}</td><td><span class="chip ${label[x.status][0]}">${label[x.status][1]}</span> ${esc(x.note)}</td></tr>`).join('')}</tbody></table></div>
+            ${d.looseTotal > d.loose.length ? `<div class="more">앞의 ${d.loose.length}건만 표시</div>` : ''}</details>`;
+    }
+    html += `<div class="hint">구간 도면은 파일명의 노선번호·구간번호로 서버에서 자동 분류됩니다. 인식 못한 파일은 서버의 "도면 업로드"에서 노선을 골라 올려야 합니다.</div></section>`;
+
+    // 500m SHP
+    html += `<section class="card"><h2>500m 구간 SHP</h2>${r.sectors.count ? `<span class="chip ok">${fmt(r.sectors.count)}건 발견</span>` : '<span class="chip warn">발견되지 않음</span> 지도의 500m 구간별 시설물 선택이 이 납품으로는 동작하지 않습니다'}
+        ${r.sectors.warnings.length ? r.sectors.warnings.map((w) => `<div class="warnline">${esc(w)}</div>`).join('') : ''}
+        <div class="hint">관리번호 폴더 바로 아래의 {도로종류}{노선번호}.shp(예: 면도0101.shp) 또는 500SHP 폴더 안의 SHP를 찾습니다.</div></section>`;
+
+    html += `<div class="noprint" style="text-align:right"><button onclick="window.print()">결과 인쇄/PDF 저장</button></div>`;
+    html += `<div class="hint">검사 기준 스키마: ${esc(String(r.schemaGeneratedAt || '').slice(0, 10))} 생성본</div>`;
+    $('result').innerHTML = html;
+    $('result').scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+</body>
+</html>

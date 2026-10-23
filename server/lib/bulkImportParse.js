@@ -13,7 +13,6 @@
 // 단계에서 구간별로 도면(ETC/TOP)을 정확히 그 구간에만 연결할 수 있게 한다.
 const fs = require('fs');
 const path = require('path');
-const pool = require('../db');
 const { GOV_LAYER_MAP } = require('./govLayerMap');
 const { parseDbf } = require('./dbfParser');
 const { parseShp } = require('./shpParser');
@@ -58,7 +57,14 @@ function deliveryRootOf(dbfPath) {
 // 특정 테이블의 실제 컬럼 목록(소문자)을 information_schema에서 가져온다.
 // requiredNoDefault는 NOT NULL이면서 DEFAULT도 없는 컬럼 — DBF에 이 필드가
 // 없으면 INSERT가 제약조건 위반으로 죽는, 진짜로 위험한 케이스만 추려낸 것.
+// 별도 검수 프로그램(delivery-checker)은 DB 없이 돌아야 하므로, 컬럼 정보를 DB 대신 넘겨받을 수 있다
+// (setTableColumnProvider). 서버에서는 기본값(DB 조회)을 그대로 쓰고, DB 모듈은 이때만 불러온다.
+let tableColumnProvider = null;
+function setTableColumnProvider(fn) { tableColumnProvider = fn; }
+
 async function getTableColumns(table) {
+    if (tableColumnProvider) return tableColumnProvider(table);
+    const pool = require('../db');
     const { rows } = await pool.query(
         `SELECT column_name, is_nullable, column_default
          FROM information_schema.columns WHERE table_schema='public' AND table_name = $1`,
@@ -236,6 +242,7 @@ async function parseDelivery(extractDir) {
                             const pkVal = rec.row[layer.pkColumn];
                             layer.nnDefects.push({
                                 pk: isBlank(pkVal) ? `(${path.basename(dbfPath)} ${i + 1}번째 행)` : String(pkVal),
+                                file: path.basename(dbfPath), row: i + 1, // QGIS 등에서 바로 찾을 수 있게 파일과 행 번호도 남긴다
                                 field,
                                 kind: v === null || v === undefined ? 'null' : 'empty',
                             });
@@ -336,14 +343,14 @@ function krrisDefectRows(parsed) {
         const detail = c.status === 'mismatch'
             ? `좌표계가 ${c.label}(${c.epsg})입니다 — 제출 기준 ${parsed.krris.requiredEpsg}`
             : c.status === 'no-prj' ? '.prj 파일이 없어 좌표계를 확인할 수 없습니다' : '인식할 수 없는 좌표계입니다';
-        rows.push({ check: 'C-1 좌표계', code: c.code, layer: c.koreanName, pk: '', field: '', label: '', detail });
+        rows.push({ check: 'C-1 좌표계', code: c.code, layer: c.koreanName, pk: '', file: '', row: '', field: '', label: '', detail });
     }
     for (const l of parsed.layers) {
         if (!l.nnDefects.length) continue;
         const labels = getTableLabels(l.table);
         for (const d of l.nnDefects) {
             rows.push({
-                check: 'M-1 필수항목', code: l.code, layer: l.koreanName, pk: d.pk, field: d.field,
+                check: 'M-1 필수항목', code: l.code, layer: l.koreanName, pk: d.pk, file: d.file || '', row: d.row || '', field: d.field,
                 label: labels[d.field] || d.field,
                 detail: d.kind === 'null' ? '값 없음(숫자) — 이 레코드는 저장되지 않음' : '빈 값',
             });
@@ -352,4 +359,4 @@ function krrisDefectRows(parsed) {
     return rows;
 }
 
-module.exports = { parseDelivery, krrisDefectRows };
+module.exports = { parseDelivery, krrisDefectRows, setTableColumnProvider };
