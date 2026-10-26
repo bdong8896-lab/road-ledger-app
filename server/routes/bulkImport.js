@@ -28,7 +28,7 @@ const tmpUploadDir = path.join(config.uploadDir, 'bulk-import-tmp');
 fs.mkdirSync(tmpUploadDir, { recursive: true });
 const upload = multer({
     storage: multer.diskStorage({
-        destination: tmpUploadDir,
+        destination: (req, file, cb) => { fs.mkdirSync(tmpUploadDir, { recursive: true }); cb(null, tmpUploadDir); }, // 폴더가 지워져도 다시 만든다
         filename: (req, file, cb) => cb(null, `${Date.now()}_${Math.random().toString(36).slice(2)}.zip`),
     }),
     limits: { fileSize: 500 * 1024 * 1024 }, // 사진 등이 포함된 실제 납품은 수백 MB일 수 있음

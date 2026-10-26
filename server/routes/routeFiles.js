@@ -8,10 +8,12 @@ const multer = require('multer');
 const pool = require('../db');
 const config = require('../config');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
+const { routeFilesDir } = require('../lib/uploadPaths');
 const { convertDwgToDxf } = require('../lib/dwgConvert');
 const { sendInlineSafely } = require('../lib/safeInline');
 const { parseStationFilename, classifyDrawingType, DRAWING_TYPES } = require('../lib/routeFileNaming');
-const { bulkUploadRouteDrawings, autoUploadRouteDrawings } = require('../lib/routeDrawingsBulk');
+const { bulkUploadRouteDrawings, autoUploadRouteDrawings, resolvePending, findExisting } = require('../lib/routeDrawingsBulk');
+const pending = require('../lib/pendingUploads');
 
 const router = express.Router();
 const CATEGORIES = ['도로', '도면종류', '구조물', '공사도면', '동영상'];
@@ -23,12 +25,6 @@ function fixMultipartFilename(name) {
 }
 
 // 노선 식별자를 안전한 파일 경로 조각으로 변환 (업로드 디렉터리 분리용)
-function routeDirName(roadGrade, routeNo, routeName) {
-    // 앞쪽 점은 제거 — 노선명이 ".."이면 업로드 폴더 한 단계 위로 올라가 저장되는 경로 조작 방지.
-    const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').replace(/^\.+/, '').trim();
-    return [safe(roadGrade), safe(routeNo), safe(routeName)].filter(Boolean).join('__') || 'unspecified';
-}
-
 function parseRouteQuery(q) {
     const roadGrade = q.road_grade;
     if (!roadGrade) return null;
@@ -46,7 +42,7 @@ const routeFileTmpDir = path.join(config.uploadDir, 'route-files-tmp');
 fs.mkdirSync(routeFileTmpDir, { recursive: true });
 const upload = multer({
     storage: multer.diskStorage({
-        destination: routeFileTmpDir,
+        destination: (req, file, cb) => { fs.mkdirSync(routeFileTmpDir, { recursive: true }); cb(null, routeFileTmpDir); }, // 폴더가 지워져도 다시 만든다
         filename: (req, file, cb) => cb(null, `${Date.now()}_${Math.random().toString(36).slice(2)}`),
     }),
     limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB — 360도 영상 등 큰 파일 감안
@@ -58,7 +54,7 @@ const zipTmpDir = path.join(config.uploadDir, 'route-drawings-zip-tmp');
 fs.mkdirSync(zipTmpDir, { recursive: true });
 const uploadZip = multer({
     storage: multer.diskStorage({
-        destination: zipTmpDir,
+        destination: (req, file, cb) => { fs.mkdirSync(zipTmpDir, { recursive: true }); cb(null, zipTmpDir); }, // 폴더가 지워져도 다시 만든다
         filename: (req, file, cb) => cb(null, `${Date.now()}_${Math.random().toString(36).slice(2)}.zip`),
     }),
     limits: { fileSize: 1024 * 1024 * 1024 },
@@ -83,7 +79,7 @@ router.get('/', async (req, res) => {
     // 호선 전체 모드에서 sect/length_m이 비어있어서 그것만으로는 안 됐다.
     let sql = `SELECT f.id, f.file_category, f.original_name, f.uploaded_at, f.sigungu_code,
                       (f.converted_path IS NOT NULL) AS has_preview, a.display_name AS uploaded_by_name,
-                      f.seg_no, f.seg_start_km, f.seg_end_km, f.seg_variant,
+                      f.seg_no, f.seg_start_km, f.seg_end_km, f.seg_variant, f.section_rdid,
                       sec.sect AS section_sect, sec.length_m AS section_length_m
                FROM route_files f
                LEFT JOIN accounts a ON a.id = f.uploaded_by
@@ -116,7 +112,8 @@ router.get('/', async (req, res) => {
     res.json({ files });
 });
 
-router.post('/', upload.single('file'), async (req, res) => {
+// 도면 올리기는 편집 모드(관리자)에서만 한다 — 화면에서 숨기는 것만으로는 API를 직접 부르는 것을 막지 못해 서버에서도 막는다.
+router.post('/', requireAdmin, upload.single('file'), async (req, res) => {
     const route = parseRouteQuery(req.body);
     if (!route) {
         if (req.file) fs.unlink(req.file.path, () => {});
@@ -129,19 +126,17 @@ router.post('/', upload.single('file'), async (req, res) => {
     const userSigungu = req.session.user.sigunguCode;
     const originalName = fixMultipartFilename(req.file.originalname);
 
-    const dir = path.join(config.uploadDir, 'routes', routeDirName(route.roadGrade, route.routeNo, route.routeName));
-    fs.mkdirSync(dir, { recursive: true });
-    const storedPath = path.join(dir, `${Date.now()}_${originalName.replace(/[/\\]/g, '_')}`);
-    fs.renameSync(req.file.path, storedPath);
-
-    // DWG는 브라우저에서 직접 볼 수 없으니 미리보기용 DXF를 미리 변환해둔다.
-    // 변환기가 설정 안 됐거나 실패해도 원본 업로드 자체는 그대로 성공시킨다.
-    let convertedPath = null;
-    if (/\.dwg$/i.test(originalName)) {
-        const candidatePath = storedPath.replace(/\.dwg$/i, '.dxf');
-        const ok = await convertDwgToDxf(storedPath, candidatePath);
-        if (ok) convertedPath = candidatePath;
+    // 파일이 속하는 시군구: 구간이 정해져 있으면 그 구간의 시군구, 아니면 올린 계정의 관할. 폴더와 DB 태그가 같은 값을 쓴다.
+    let sectionSigungu = null;
+    if (route.sectionRdid) {
+        const { rows: [sec] } = await pool.query('SELECT sigungu_code FROM road_sections WHERE rdid = $1', [route.sectionRdid]);
+        sectionSigungu = sec ? sec.sigungu_code : null;
+        if (userSigungu && sectionSigungu && sectionSigungu !== userSigungu) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(403).json({ error: '관할 시군구 밖의 구간입니다.' });
+        }
     }
+    const fileSigungu = sectionSigungu || userSigungu || null;
 
     // "도로" 카테고리이고 파일명이 500m 단위 구간 도면 패턴(예: 000801100500P.dwg)과
     // 맞으면 시점/종점/구간번호를 파싱해둔다 — 좌측 CAD 패널의 "도로" 탭이 이 값으로
@@ -157,12 +152,37 @@ router.post('/', upload.single('file'), async (req, res) => {
         seg = parseStationFilename(originalName, sectionLengthKm);
     }
 
+    // 같은 구간에 같은 이름의 파일이 이미 있으면 쌓지 않는다 — 새 파일은 따로 빼 두고(lib/pendingUploads.js) 기존 파일은 그대로 둔다.
+    // 화면이 "교체할지" 물어본 뒤 /pending/resolve로 교체(기존 파일은 보관, 이력에서 되돌리기 가능)하거나 버린다.
+    const existing = await findExisting(route, originalName, fileSigungu);
+    if (existing.length) {
+        const token = pending.create({
+            userId, sigungu: userSigungu,
+            items: [{ srcPath: req.file.path, move: true, name: originalName, route, category, segInfo: seg, sigungu: fileSigungu, existing: { id: existing[0].id, uploadedAt: existing[0].uploaded_at } }],
+        });
+        return res.json({ duplicate: { name: originalName, pendingToken: token, existingUploadedAt: existing[0].uploaded_at } });
+    }
+
+    const dir = routeFilesDir(fileSigungu, route.roadGrade, route.routeNo, route.routeName);
+    fs.mkdirSync(dir, { recursive: true });
+    const storedPath = path.join(dir, `${Date.now()}_${originalName.replace(/[/\\]/g, '_')}`);
+    fs.renameSync(req.file.path, storedPath);
+
+    // DWG는 브라우저에서 직접 볼 수 없으니 미리보기용 DXF를 미리 변환해둔다.
+    // 변환기가 설정 안 됐거나 실패해도 원본 업로드 자체는 그대로 성공시킨다.
+    let convertedPath = null;
+    if (/\.dwg$/i.test(originalName)) {
+        const candidatePath = storedPath.replace(/\.dwg$/i, '.dxf');
+        const ok = await convertDwgToDxf(storedPath, candidatePath);
+        if (ok) convertedPath = candidatePath;
+    }
+
     const { rows } = await pool.query(
         `INSERT INTO route_files (road_grade, route_no, route_name, section_rdid, file_category, original_name, stored_path, converted_path, uploaded_by, sigungu_code, seg_no, seg_start_km, seg_end_km, seg_variant)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id, file_category, original_name, uploaded_at, (converted_path IS NOT NULL) AS has_preview, seg_no, seg_start_km, seg_end_km, seg_variant`,
         [
-            route.roadGrade, route.routeNo, route.routeName, route.sectionRdid || null, category, originalName, storedPath, convertedPath, userId, userSigungu || null,
+            route.roadGrade, route.routeNo, route.routeName, route.sectionRdid || null, category, originalName, storedPath, convertedPath, userId, fileSigungu,
             seg ? seg.segNo : null, seg ? seg.segStartKm : null, seg ? seg.segEndKm : null, seg ? seg.segVariant : null,
         ]
     );
@@ -175,7 +195,7 @@ router.post('/', upload.single('file'), async (req, res) => {
 // (한 노선의 여러 구간에 걸쳐 나눠 붙이는 게 목적이라 특정 구간 하나로 못
 // 좁힘) — 대신 road_grade+route_no로 이 노선에 등록된 구간 전체를 대상으로
 // 삼는다. ':fileId'보다 먼저 등록해야 한다.
-router.post('/bulk-zip', uploadZip.single('file'), async (req, res) => {
+router.post('/bulk-zip', requireAdmin, uploadZip.single('file'), async (req, res) => {
     const route = parseRouteQuery(req.body);
     if (!route) {
         if (req.file) fs.unlink(req.file.path, () => {});
@@ -204,14 +224,14 @@ router.post('/bulk-zip', uploadZip.single('file'), async (req, res) => {
 // 도면 자동 인식 업로드 — 노선을 고르지 않고 올려도 파일명에서 노선·구간을 알아내 붙인다
 // (규칙은 lib/routeDrawingsBulk.js 참고). 노선을 골라 둔 경우(road_grade 등)는 파일명이 애매할 때의
 // 힌트로만 쓴다. ':fileId'보다 먼저 등록해야 한다.
-router.post('/auto', upload.array('files'), async (req, res) => {
+router.post('/auto', requireAdmin, upload.array('files'), async (req, res) => {
     const files = (req.files || []).map((f) => ({ path: f.path, name: fixMultipartFilename(f.originalname) }));
     if (!files.length) return res.status(400).json({ error: '파일이 없습니다.' });
     const roadGrade = req.body.road_grade || '';
     const hint = roadGrade ? { roadGrade, routeNo: req.body.route_no || '' } : null;
     try {
         const result = await autoUploadRouteDrawings({
-            files, hint, userId: req.session.user.id, userSigungu: req.session.user.sigunguCode,
+            files, hint, userId: req.session.user.id, userSigungu: req.session.user.sigunguCode, holdDuplicates: true,
         });
         res.json(result);
     } catch (e) {
@@ -219,6 +239,20 @@ router.post('/auto', upload.array('files'), async (req, res) => {
         res.status(400).json({ error: '도면을 처리하는 중 오류가 발생했습니다.' });
     } finally {
         files.forEach((f) => fs.unlink(f.path, () => {}));
+    }
+});
+
+// 따로 빼 둔 같은 이름의 파일 처리 — { tokens: [...], action: 'replace' | 'discard' }.
+// replace: 기존 도면은 보관함으로 옮기고 새 파일로 바꾼다(일괄등록 이력에 한 건으로 남아 "이 등록 취소"로 되돌릴 수 있음). discard: 새 파일을 버린다.
+router.post('/pending/resolve', requireAdmin, async (req, res) => {
+    const tokens = Array.isArray(req.body.tokens) ? req.body.tokens.filter((t) => typeof t === 'string').slice(0, 500) : [];
+    const action = req.body.action === 'replace' ? 'replace' : 'discard';
+    if (!tokens.length) return res.status(400).json({ error: '처리할 파일이 없습니다.' });
+    try {
+        res.json(await resolvePending({ tokens, action, user: req.session.user }));
+    } catch (e) {
+        console.error('[route-files/pending/resolve]', e);
+        res.status(500).json({ error: '교체하는 중 오류가 발생했습니다. 이력에서 확인하세요.' });
     }
 });
 

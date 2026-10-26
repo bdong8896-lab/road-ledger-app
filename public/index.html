@@ -101,6 +101,7 @@
                     <button id="cad-measure-area-btn" title="면적 측정"><i class="fa-solid fa-draw-polygon"></i></button>
                     <button id="cad-measure-clear-btn" title="측정 지우기"><i class="fa-solid fa-eraser"></i></button>
                     <div class="cad-toolbar-divider"></div>
+                    <button id="cad-overlay-btn" title="도면을 지도 위에 겹쳐 보기"><i class="fa-solid fa-layer-group"></i></button>
                     <button id="cad-popup-btn" title="큰 화면으로 새 창에서 보기"><i class="fa-regular fa-window-restore"></i></button>
                 </div>
                 <div id="cad-status-bar">
@@ -161,6 +162,17 @@
     <div id="left-pane">
         <div id="map-container">
             <div id="map"></div>
+            <div id="cad-overlay-panel" style="display:none;">
+                <div class="cov-head"><b><i class="fa-solid fa-layer-group"></i> 도면 겹쳐 보기</b><button type="button" id="cad-overlay-close" title="끄기"><i class="fa-solid fa-xmark"></i></button></div>
+                <div id="cad-overlay-status"></div>
+                <label>좌표계 <select id="cad-overlay-crs"></select></label>
+                <label>투명도 <input type="range" id="cad-overlay-opacity" min="10" max="100" value="70"></label>
+                <div class="cov-row">
+                    <label>동서 보정 <input type="number" id="cad-overlay-dx" value="0" step="0.5"> m</label>
+                    <label>남북 보정 <input type="number" id="cad-overlay-dy" value="0" step="0.5"> m</label>
+                </div>
+                <div class="cov-row"><button type="button" id="cad-overlay-fit">도면 위치로 이동</button><button type="button" id="cad-overlay-redraw" title="지웠다면 다시 얹고, 레이어 목록에서 켜고 끈 것을 반영합니다">다시 그리기</button><button type="button" id="cad-overlay-clear" title="지도에 얹은 도면을 지웁니다(패널은 그대로)"><i class="fa-solid fa-eraser"></i> 투영 지우기</button></div>
+            </div>
             <div id="left-toolbar">
                 <button onclick="map.getView().setZoom(map.getView().getZoom() + 1)" title="확대"><i class="fa-solid fa-plus"></i></button>
                 <button onclick="map.getView().setZoom(map.getView().getZoom() - 1)" title="축소"><i class="fa-solid fa-minus"></i></button>

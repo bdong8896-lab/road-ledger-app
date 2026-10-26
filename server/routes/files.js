@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const { parcelDir } = require('../lib/uploadPaths');
 const multer = require('multer');
 const pool = require('../db');
 const config = require('../config');
@@ -31,7 +32,7 @@ const storage = multer.diskStorage({
         const pnu = req.params.pnu;
         if (!PNU_RE.test(pnu)) return cb(new Error('잘못된 PNU 형식입니다.'));
         if (outsideJurisdiction(req, pnu)) return cb(new Error('관할 시군구 밖의 필지입니다.'));
-        const dir = path.join(config.uploadDir, pnu);
+        const dir = parcelDir(pnu); // uploads/parcels/<시군구>/<PNU>
         fs.mkdirSync(dir, { recursive: true });
         cb(null, dir);
     },

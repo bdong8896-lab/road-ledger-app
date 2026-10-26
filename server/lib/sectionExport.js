@@ -87,12 +87,15 @@ async function addSectionToZip(zip, section, folderPrefix) {
     for (const [code, layerDef] of Object.entries(GOV_LAYER_MAP)) {
         const { table, pkColumn } = layerDef;
         const hasRoadRank = table !== 'gov_road_bound';
-        const where = hasRoadRank
+        let where = hasRoadRank
             ? 'road_rank = $1 AND road_no = $2 AND sect = $3'
             : 'road_no = $1 AND sect = $2';
         const params = hasRoadRank
             ? [section.road_rank_code, section.route_no, section.sect]
             : [section.route_no, section.sect];
+        // 같은 업무키가 다른 시군구에도 있을 수 있어 이 구간의 시군구 것만 내보낸다.
+        params.push(section.sigungu_code || null);
+        where += ` AND (sigungu_code IS NOT DISTINCT FROM $${params.length} OR sigungu_code IS NULL)`;
 
         let rows;
         try {

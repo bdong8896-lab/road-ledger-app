@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('../db');
 const config = require('../config');
+const { routeFilesDir, facilityFilesDir } = require('./uploadPaths');
 const { parseDelivery } = require('./bulkImportParse');
 const { syncRoadSection } = require('./govSectionSync');
 const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles } = require('./bulkImportAttachments');
@@ -24,11 +25,6 @@ const batchLib = require('./importBatch');
 
 const KOREAN_NAME_BY_TABLE = Object.fromEntries(Object.values(GOV_LAYER_MAP).map((l) => [l.table, l.koreanName]));
 const FACILITY_FILE_KIND_BY_EXT = { '.jpg': '사진', '.jpeg': '사진', '.png': '사진', '.gif': '사진', '.bmp': '사진', '.pdf': '보고서' };
-
-function routeDirName(roadGrade, routeNo, routeName) {
-    const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim();
-    return [safe(roadGrade), safe(routeNo), safe(routeName)].filter(Boolean).join('__') || 'unspecified';
-}
 
 // 사용자에게 보여줄 오류 문구 — DB/파일 시스템의 원문은 서버 로그에만 남긴다.
 function friendlyError(e) {
@@ -127,7 +123,7 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
             const parentFolder = path.basename(path.dirname(filePath));
             const displayName = ['PHOTO', 'STR'].includes(parentFolder) ? base : `${parentFolder}_${base}`;
             if (!table || !fileKind) { facilityFilesUnmatched.push(base); continue; }
-            const dir = path.join(config.uploadDir, 'gov-facility-files', targetSigunguCode || 'unassigned', table);
+            const dir = facilityFilesDir(targetSigunguCode, table);
             await fs.promises.mkdir(dir, { recursive: true });
             const storedPath = path.join(dir, `${Date.now()}_${displayName.replace(/[/\\]/g, '_')}`);
             await fs.promises.copyFile(filePath, storedPath);
@@ -156,7 +152,7 @@ async function saveRoute({ root, part, targetSigunguCode, requestedRankName, use
         // 도면(ETC 폴더의 DXF/DWG) — 이 노선에 구간이 정확히 1개일 때만 그 구간에 연결한다(여러 개면 어느 구간 것인지 알 수 없음).
         if (syncedSections.length === 1) {
             const section = syncedSections[0];
-            const dir = path.join(config.uploadDir, 'routes', routeDirName(section.roadRankName, section.routeNo, section.routeName));
+            const dir = routeFilesDir(targetSigunguCode, section.roadRankName, section.routeNo, section.routeName);
             for (const filePath of findDrawingFiles(root)) {
                 const base = path.basename(filePath);
                 await fs.promises.mkdir(dir, { recursive: true });
@@ -283,7 +279,7 @@ async function runBulkConfirm(job, ctx) {
             const parentFolder = path.basename(path.dirname(filePath));
             const displayName = ['PHOTO', 'STR'].includes(parentFolder) ? base : `${parentFolder}_${base}`;
             try {
-                const dir = path.join(config.uploadDir, 'gov-facility-files', targetSigunguCode || 'unassigned', table);
+                const dir = facilityFilesDir(targetSigunguCode, table);
                 await fs.promises.mkdir(dir, { recursive: true });
                 const storedPath = path.join(dir, `${Date.now()}_${displayName.replace(/[/\\]/g, '_')}`);
                 await fs.promises.copyFile(filePath, storedPath);

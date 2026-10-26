@@ -453,6 +453,12 @@ async function loadRouteFileList() {
     files.forEach((f) => listEl.appendChild(buildRouteFileRow(f)));
 }
 
+function requireEditModeForUpload() {
+    if (document.body.classList.contains('admin-mode')) return true;
+    alert('편집 모드에서만 파일을 올릴 수 있습니다.');
+    return false;
+}
+
 async function uploadOneRouteFile(file) {
     // 주의: multer는 파일 필드보다 뒤에 오는 텍스트 필드를 destination() 콜백
     // 시점에 아직 못 읽는다 — road_grade 등은 반드시 file보다 먼저 append해야 한다.
@@ -468,7 +474,7 @@ async function uploadOneRouteFile(file) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `${file.name}: 업로드 실패`);
     }
-    return (await res.json()).file;
+    return res.json(); // { file } 또는, 같은 이름이 이미 있으면 { duplicate: { name, pendingToken, existingUploadedAt } }
 }
 
 // 500m 단위 구간 도면처럼 한 노선에 파일이 수십 개씩(P/Y 합쳐 50개 이상) 딸린
@@ -511,6 +517,7 @@ function sameRouteTarget(m) {
 }
 
 async function uploadRouteFile() {
+    if (!requireEditModeForUpload()) return;
     const isDrawingTab = currentRouteCategory === '도로' || currentRouteCategory === '도면종류';
     if (!currentRoute && !isDrawingTab) { alert('먼저 데이터보기 트리에서 노선을 선택하세요.'); return; }
     const fileInput = document.getElementById('route-upload-file');
@@ -524,12 +531,16 @@ async function uploadRouteFile() {
     let autoMatched = [];
     let toUploadOneByOne = files;
     let autoUnmatched = [];
+    const dupNames = [];   // 같은 이름이 이미 있어 따로 빼 둔 파일
+    const dupTokens = [];
     try {
         if (isDrawingTab) {
             if (statusEl) statusEl.textContent = `노선·구간 자동 인식 중... (${files.length}개)`;
             try {
                 const result = await uploadRouteFilesAuto(files);
                 autoMatched = result.matched || [];
+                (result.duplicates || []).forEach((d) => dupNames.push(d.name));
+                if (result.pendingToken) dupTokens.push(result.pendingToken);
                 const unmatchedNames = new Set((result.unmatched || []).map((u) => u.name));
                 // 노선을 골라 둔 경우 인식 못 한 낱개 파일은 예전처럼 그 노선에 붙인다.
                 // (ZIP 안의 파일은 원본 File과 이름이 대응하지 않아 낱개 폴백 대상이 아니다.)
@@ -545,7 +556,8 @@ async function uploadRouteFile() {
         for (let i = 0; i < toUploadOneByOne.length; i++) {
             if (statusEl) statusEl.textContent = `업로드 중... (${i + 1}/${toUploadOneByOne.length}) ${toUploadOneByOne[i].name}`;
             try {
-                lastUploaded = await uploadOneRouteFile(toUploadOneByOne[i]);
+                const r = await uploadOneRouteFile(toUploadOneByOne[i]);
+                if (r.duplicate) { dupNames.push(r.duplicate.name); dupTokens.push(r.duplicate.pendingToken); } else lastUploaded = r.file;
             } catch (e) {
                 errors.push(e.message);
             }
@@ -580,19 +592,42 @@ async function uploadRouteFile() {
         alert(lines.join('\n'));
     }
     if (errors.length) alert(`${errors.length}건 실패:\n${errors.slice(0, 10).join('\n')}`);
+    if (dupTokens.length) await resolveDuplicateRouteUploads(dupTokens, dupNames);
     if (!errors.length && !autoUnmatched.length && autoMatched.length + toUploadOneByOne.length === 1) {
         const single = autoMatched.length === 1 ? (sameRouteTarget(autoMatched[0]) ? autoMatched[0].file : null) : lastUploaded;
         if (single) openRouteFileInViewer(single);
     }
 }
 
+// 같은 구간에 같은 이름의 파일이 이미 있어 따로 빼 둔 새 파일을 어떻게 할지 묻는다.
+// 기존 파일은 이 질문에 답하기 전까지 그대로이고, 교체해도 기존 파일은 보관함으로 옮겨져 [일괄등록 이력]의 "이 등록 취소"로 되돌릴 수 있다.
+async function resolveDuplicateRouteUploads(tokens, names) {
+    const list = names.slice(0, 10).map((n) => `  · ${n}`).join('\n') + (names.length > 10 ? `\n  … 외 ${names.length - 10}개` : '');
+    const replace = confirm(
+        `같은 이름의 도면이 이미 올라와 있어 따로 빼 두었습니다 (${names.length}개):\n${list}\n\n` +
+        '[확인] 새 파일로 교체합니다. 기존 파일은 보관되어 [일괄등록 이력]에서 "이 등록 취소"로 되돌릴 수 있습니다.\n' +
+        '[취소] 교체하지 않습니다. 기존 파일은 그대로 두고 새로 올린 파일은 버립니다.'
+    );
+    try {
+        const res = await fetch('/api/routes/files/pending/resolve', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tokens, action: replace ? 'replace' : 'discard' }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '처리하지 못했습니다.');
+        if (replace) { await loadRouteFileList(); alert(`${data.replaced || 0}개를 교체했습니다.`); }
+    } catch (e) {
+        alert(e.message || '처리하지 못했습니다.');
+    }
+}
+
 function openRouteFileInViewer(file) {
     const ext = (file.original_name.split('.').pop() || '').toLowerCase();
     if (ext === 'dxf') {
-        loadDxfFile(`/api/routes/files/${file.id}?inline=1`, file.original_name);
+        loadDxfFile(`/api/routes/files/${file.id}?inline=1`, file.original_name, file);
     } else if (ext === 'dwg') {
         if (file.has_preview) {
-            loadDxfFile(`/api/routes/files/${file.id}?inline=1&variant=dxf`, file.original_name);
+            loadDxfFile(`/api/routes/files/${file.id}?inline=1&variant=dxf`, file.original_name, file);
         } else {
             alert('이 DWG 파일은 미리보기를 사용할 수 없습니다.\n(서버에 DWG 변환 도구가 설정되지 않았거나 변환에 실패했습니다)\n다운로드 버튼으로 원본 파일은 받을 수 있습니다.');
         }
@@ -652,10 +687,16 @@ async function openFacilityFileList(label) {
             bodyEl.innerHTML = '<div class="rff-empty">연결된 첨부파일이 없습니다.</div>';
         } else {
             bodyEl.innerHTML = files
-                .map((f) => `<div class="rff-row" data-id="${f.id}" data-name="${escapeHtml(f.original_name)}" data-table="${escapeHtml(f.facility_table || '')}" data-facility-rdid="${escapeHtml(f.facility_rdid || '')}"><span>${escapeHtml(f.file_kind)}</span><span>${escapeHtml(f.original_name)}</span></div>`)
+                .map((f) => `<div class="rff-row" data-id="${f.id}" data-name="${escapeHtml(f.original_name)}" data-table="${escapeHtml(f.facility_table || '')}" data-facility-rdid="${escapeHtml(f.facility_rdid || '')}"><span>${escapeHtml(f.file_kind)}</span><span>${escapeHtml(f.original_name)}</span><button type="button" class="rs-file-del-btn rff-del" title="${escapeHtml(f.original_name)} 삭제"><i class="fa-solid fa-trash"></i></button></div>`)
                 .join('');
             bodyEl.querySelectorAll('.rff-row').forEach((row) => {
                 row.addEventListener('click', () => openFacilityFileRowClick(row));
+                row.querySelector('.rff-del').addEventListener('click', async (ev) => {
+                    ev.stopPropagation();
+                    if (typeof deleteFacilityFile !== 'function') return;
+                    const { id, name, table, facilityRdid } = row.dataset;
+                    if (await deleteFacilityFile(id, name, table, facilityRdid)) openFacilityFileList(label);
+                });
             });
         }
     } catch (e) {
@@ -682,7 +723,7 @@ async function openFacilityFileRowClick(row) {
             const params = new URLSearchParams({ table, facility_rdid: facilityRdid });
             const data = await fetch('/api/sections/facility-detail?' + params.toString()).then((r) => r.json());
             if (data.record) {
-                facilityInfo = { label: data.record.label, name: data.record.name, attributes: data.record.attributes };
+                facilityInfo = { label: data.record.label, name: data.record.name, attributes: data.record.attributes, table: data.record.table, rdid: data.record.rdid };
                 if (typeof map !== 'undefined' && map && data.record.geom) {
                     jumpToFacilityLocation(data.record.geom);
                 }
@@ -901,9 +942,32 @@ function formatSlopeAnnotationText(raw, layer) {
     return raw;
 }
 
+const NO_DASH = [];
+
+// 레이어 테이블에서 레이어별 선 종류(그룹코드 6)를 뽑는다 — dxf-parser는 이 값을 읽지 않는다.
+// 레이어에 점선이 지정돼 있고 엔티티는 ByLayer인 경우가 대부분이라(중심선 CC-CNTL 등) 이게 없으면 전부 실선이 된다.
+function extractLayerLineTypes(text) {
+    const section = extractSectionText(text, 'TABLES');
+    const out = {};
+    if (!section) return out;
+    const lines = section.split(/\r\n|\r|\n/);
+    let inLayer = false; let name = null; let lt = null;
+    const flush = () => { if (inLayer && name && lt) out[name] = lt; name = null; lt = null; };
+    for (let i = 0; i + 1 < lines.length; i += 2) {
+        const code = lines[i].trim(); const value = lines[i + 1].trim();
+        if (code === '0') { flush(); inLayer = value === 'LAYER'; continue; }
+        if (!inLayer) continue;
+        if (code === '2' && name === null) name = value;
+        else if (code === '6') lt = value;
+    }
+    flush();
+    return out;
+}
+
 const dxfViewer = {
     canvas: null, ctx: null,
     entities: [], layers: {}, layerVisible: {}, blocks: {},
+    lineTypes: {}, layerLineType: {}, ltScale: 1, _insertLt: null, // 선 종류 정의(LTYPE), 레이어별 선 종류, 전체 선 종류 축척
     bbox: null,
     scale: 1, panX: 0, panY: 0,
     bgDark: true,
@@ -917,6 +981,8 @@ const dxfViewer = {
         this.entities = dxf.entities || [];
         this.layers = (dxf.tables && dxf.tables.layer && dxf.tables.layer.layers) || {};
         this.blocks = dxf.blocks || {};
+        this.lineTypes = (dxf.tables && dxf.tables.lineType && dxf.tables.lineType.lineTypes) || {};
+        this.ltScale = (dxf.header && Number(dxf.header.$LTSCALE)) || 1;
         this.layerVisible = {};
         // dxf-parser는 LAYER 테이블의 그룹코드 70(플래그)·62(색상)을 이미 layer.frozen
         // (동결)·layer.visible(off 레이어면 false, 색상값이 음수)로 해석해서 넘겨준다.
@@ -1113,6 +1179,7 @@ const dxfViewer = {
 
             try { this._drawEntity(e, null, 1, 0, defaultColor, 0, color); } catch (err) { /* 지원하지 않는 엔티티 형태는 조용히 무시 */ }
         });
+        ctx.setLineDash([]);
 
         // 측정 모드일 때만 도면 그림을 캐시한다 — 마우스를 움직일 때마다 큰 도면을
         // 통째로 다시 그리면 느려서, 그 뒤엔 캐시 위에 측정선만 덧그린다(renderOverlay).
@@ -1160,6 +1227,40 @@ const dxfViewer = {
         return layerColor || fallback;
     },
 
+    // 엔티티의 선 종류 이름 — 자기 값 → (ByLayer면) 레이어 값 → (ByBlock이면) 이 엔티티를 담은 INSERT의 값.
+    _ltNameOf(e) {
+        const n = e.lineType;
+        if (n && !/^bylayer$/i.test(n)) {
+            if (/^byblock$/i.test(n)) return this._insertLt || 'Continuous';
+            return n;
+        }
+        return (e.layer && this.layerLineType[e.layer]) || 'Continuous';
+    },
+
+    // 선 종류 패턴(양수=선, 음수=공백, 0=점)을 화면 픽셀 단위 점선 배열로 바꾼다. 연속 선이거나 너무 촘촘하면 빈 배열(실선).
+    _dashFor(e, radiusScale) {
+        const name = this._ltNameOf(e);
+        if (!name || /^continuous$/i.test(name)) return NO_DASH;
+        const lt = this.lineTypes[name];
+        const pat = lt && lt.pattern;
+        if (!pat || pat.length < 2) return NO_DASH;
+        const k = (this.ltScale || 1) * (e.lineTypeScale || 1) * radiusScale * this.scale;
+        const segs = [];
+        for (const v of pat) {
+            const isOn = v >= 0;
+            const len = v === 0 ? 0.8 : Math.abs(v) * k; // 점(0)은 1픽셀 안팎의 점으로
+            const last = segs[segs.length - 1];
+            if (last && last.on === isOn) last.len += len; else segs.push({ on: isOn, len });
+        }
+        if (!segs.length) return NO_DASH;
+        if (!segs[0].on) segs.unshift({ on: true, len: 0 });
+        const out = segs.map((sg) => (sg.on ? Math.max(0.5, sg.len) : sg.len));
+        if (out.length % 2) out.push(0);
+        const total = out.reduce((x, y) => x + y, 0);
+        if (!(total >= 2.5)) return NO_DASH; // 한 주기가 2.5px도 안 되면 점선이 아니라 회색 띠로 보이므로 실선으로
+        return out;
+    },
+
     // tf: 로컬(블록) 좌표 → 월드 좌표 변환 함수(없으면 항등). INSERT 내부 엔티티를 그릴 때 쓰인다.
     _pt(tf, x, y) {
         const [wx, wy] = tf ? tf(x, y) : [x, y];
@@ -1192,13 +1293,17 @@ const dxfViewer = {
         const radiusScale = parentRadiusScale * ((Math.abs(sx) + Math.abs(sy)) / 2);
         const rot = parentRot + angleRad;
 
-        block.entities.forEach((be) => {
-            if (be.layer && this.layerVisible[be.layer] === false) return;
-            const color = this._resolveColor(be, defaultColor, insertColor);
-            this.ctx.strokeStyle = color;
-            this.ctx.fillStyle = color;
-            try { this._drawEntity(be, tf, radiusScale, rot, defaultColor, depth + 1, color); } catch (err) { /* 무시 */ }
-        });
+        const prevLt = this._insertLt;
+        this._insertLt = this._ltNameOf(e);
+        try {
+            block.entities.forEach((be) => {
+                if (be.layer && this.layerVisible[be.layer] === false) return;
+                const color = this._resolveColor(be, defaultColor, insertColor);
+                this.ctx.strokeStyle = color;
+                this.ctx.fillStyle = color;
+                try { this._drawEntity(be, tf, radiusScale, rot, defaultColor, depth + 1, color); } catch (err) { /* 무시 */ }
+            });
+        } finally { this._insertLt = prevLt; }
     },
 
     _drawMeasurements() {
@@ -1317,6 +1422,7 @@ const dxfViewer = {
     // e가 INSERT일 때 그 안의 레이어 "0" 자식들에게 물려줄 색으로 그대로 전달된다.
     _drawEntity(e, tf, radiusScale, rot, defaultColor, depth, ownColor) {
         const ctx = this.ctx;
+        ctx.setLineDash(this._dashFor(e, radiusScale));
         switch (e.type) {
             case 'LINE': {
                 if (!e.vertices || e.vertices.length < 2) return;
@@ -1439,19 +1545,37 @@ const dxfViewer = {
                     // 그룹코드 50(회전각, 도) — 지금까지는 아예 무시하고 항상 수평으로
                     // 그렸다. ARC/ELLIPSE와 같은 규칙으로 화면 Y축 반전 + 블록 누적
                     // 회전(rot)을 반영해서 부호를 맞춘다.
-                    const angleRad = ((e.rotation || 0) * Math.PI) / 180;
+                    // MTEXT는 회전각(50) 대신 방향 벡터(11/21)로 기울기를 주는 경우가 있다
+                    const angleRad = e.rotation != null ? (e.rotation * Math.PI) / 180
+                        : (e.directionVector ? Math.atan2(e.directionVector.y, e.directionVector.x) : 0);
                     ctx.save();
                     ctx.translate(x, y);
                     ctx.rotate(-(angleRad + rot));
                     const isNarrowStyle = NARROW_DXF_STYLE_NAMES.has(e.textStyle);
                     if (isNarrowStyle) ctx.scale(NARROW_DXF_SCALE_X, 1); // romans.shx 근사 — 가로만 압축
+                    if (e.type === 'TEXT' && e.xScale && e.xScale > 0 && e.xScale !== 1) ctx.scale(e.xScale, 1); // 글자 폭 비율(그룹코드 41)
                     ctx.font = `${size}px ${DXF_FONT_FAMILY_BY_STYLE[e.textStyle] || 'sans-serif'}`;
                     // halign 1=가운데, 2=우측(그 외 0/좌측이 기본) — canvas의
                     // textAlign이 그대로 대응돼서 계산 없이 바로 쓸 수 있다.
-                    ctx.textAlign = e.halign === 2 ? 'right' : e.halign ? 'center' : 'left';
-                    ctx.textBaseline = e.valign === 3 ? 'top' : e.valign === 2 ? 'middle' : e.valign === 1 ? 'bottom' : 'alphabetic';
-                    decodeDxfText(formatSlopeAnnotationText(e.text, e.layer)).split('\n').forEach((line, i) => {
-                        ctx.fillText(line, 0, i * size * 1.2);
+                    let hAlign; let vAlign;
+                    if (e.type === 'MTEXT') {
+                        // MTEXT 맞춤 기준점(71): 1~3 위, 4~6 가운데, 7~9 아래 / 각 줄에서 왼쪽·가운데·오른쪽
+                        const ap = e.attachmentPoint || 1;
+                        hAlign = ['left', 'center', 'right'][(ap - 1) % 3] || 'left';
+                        vAlign = ['top', 'middle', 'bottom'][Math.floor((ap - 1) / 3)] || 'top';
+                    } else {
+                        // TEXT halign 4(가운데)는 가로·세로 모두 가운데 정렬이다
+                        hAlign = e.halign === 2 ? 'right' : e.halign ? 'center' : 'left';
+                        vAlign = e.valign === 3 ? 'top' : e.valign === 2 ? 'middle' : e.valign === 1 ? 'bottom' : (e.halign === 4 ? 'middle' : 'alphabetic');
+                    }
+                    ctx.textAlign = hAlign;
+                    ctx.textBaseline = vAlign;
+                    const textLines = decodeDxfText(formatSlopeAnnotationText(e.text, e.layer)).split('\n');
+                    const lineH = size * 1.2;
+                    // 여러 줄은 기준점이 아래면 위로, 가운데면 양쪽으로 쌓는다
+                    const firstY = vAlign === 'bottom' ? -(textLines.length - 1) * lineH : vAlign === 'middle' ? -((textLines.length - 1) * lineH) / 2 : 0;
+                    textLines.forEach((line, i) => {
+                        ctx.fillText(line, 0, firstY + i * lineH);
                     });
                     ctx.restore();
                 }
@@ -1462,11 +1586,11 @@ const dxfViewer = {
                 break;
             }
             case 'HATCH': {
-                // 실제 해치 무늬(사선 등)는 재현 안 하고, 경계를 반투명하게 채워서
-                // "칠해진 영역이 있었다"는 것만 보여준다.
+                // 이 프로젝트 도면의 해치는 전부 SOLID(단색 채우기)라 오토캐드처럼 불투명하게 칠한다.
+                // (예전엔 반투명 35%로 칠해서 표지판의 빨간 링이 검붉게 보였다.) 사선 같은 무늬 해치는 재현하지 않는다.
                 if (!e.boundaryPaths || !e.boundaryPaths.length) return;
                 ctx.save();
-                ctx.globalAlpha = 0.35;
+                ctx.globalAlpha = 1;
                 // 경계가 2개 이상이면(예: 속도표지판의 링 모양 — 바깥원+안쪽원
                 // 두 루프로 된 "도넛" 하나) 각 경계를 따로따로 beginPath+fill 하면
                 // 안쪽 루프까지 그냥 다 칠해져서 도넛 가운데 뚫려야 할 구멍이
@@ -1829,7 +1953,11 @@ function extractUnsupportedEntities(text) {
     return extractSupplementalEntitiesFromLines(section.split(/\r\n|\r|\n/), TOP_LEVEL_SUPPLEMENTAL_BUILDERS);
 }
 
-const BLOCK_SUPPLEMENTAL_BUILDERS = { HATCH: buildHatchEntity, LEADER: buildLeaderEntity, WIPEOUT: buildWipeoutEntity };
+// ATTRIB(블록 속성 값)도 포함한다. 블록 정의 안에서 다른 블록을 INSERT한 경우(예: 제한중량 표지 CMRS216을 감싼 익명 블록 A$C...),
+// 그 속성 값(43, 2 같은 숫자)은 INSERT 바로 뒤의 ATTRIB 엔티티로 들어 있는데 dxf-parser가 읽지 않아 숫자가 통째로 빠졌다
+// (구발선 1구간 평면도 1번 섹터에서 확인). ATTRIB 좌표는 그 INSERT가 들어 있는 블록 기준(로컬) 좌표라서, 블록 이름별로 모아 두면
+// 바깥 INSERT의 위치/회전/축척이 _drawInsert에서 그대로 적용된다.
+const BLOCK_SUPPLEMENTAL_BUILDERS = { HATCH: buildHatchEntity, LEADER: buildLeaderEntity, WIPEOUT: buildWipeoutEntity, ATTRIB: buildAttribEntity };
 
 // 표지판/아이콘 블록(예: 자전거 표지판의 원, 화살표 도형)에 채워진 도형이
 // 실은 그 블록 정의 안에 든 HATCH인 경우가 실제 파일에서 확인됐다
@@ -1868,6 +1996,27 @@ function extractBlockSupplementalEntities(text) {
     return result;
 }
 
+// 불지(bulge) 변을 호로 펼친 중간 점들(양 끝점 제외). bulge = tan(포함각/4), 양수면 반시계.
+function tessellateBulge(p1, p2, bulge) {
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const chord = Math.hypot(dx, dy);
+    if (!chord || !bulge) return [];
+    const theta = 4 * Math.atan(bulge);
+    const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
+    const h = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
+    const sign = (bulge > 0 ? 1 : -1) * (Math.abs(theta) > Math.PI ? -1 : 1); // 작은 호면 중심이 진행 방향 왼쪽(반시계)/오른쪽(시계)
+    const cx = (p1.x + p2.x) / 2 + (-dy / chord) * h * sign;
+    const cy = (p1.y + p2.y) / 2 + (dx / chord) * h * sign;
+    const a1 = Math.atan2(p1.y - cy, p1.x - cx);
+    const steps = Math.max(2, Math.ceil(Math.abs(theta) / (Math.PI / 18)));
+    const out = [];
+    for (let k = 1; k < steps; k++) {
+        const a = a1 + theta * (k / steps);
+        out.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+    }
+    return out;
+}
+
 function buildHatchEntity(tags) {
     let layer = '0', colorIndex, color;
     const paths = [];
@@ -1883,17 +2032,26 @@ function buildHatchEntity(tags) {
             const isPolyline = !!(flag & 2);
             const pts = [];
             if (isPolyline) {
-                if (tags[idx] && tags[idx][0] === 72) idx++; // 불지(bulge) 존재 여부 — 직선 근사라 무시
-                if (tags[idx] && tags[idx][0] === 73) idx++; // 닫힘 여부
+                let closed = true;
+                if (tags[idx] && tags[idx][0] === 72) idx++; // 불지(bulge) 존재 여부 — 값 자체(42)를 읽는다
+                if (tags[idx] && tags[idx][0] === 73) { closed = parseInt(tags[idx][1], 10) !== 0; idx++; } // 닫힘 여부
                 let vcount = 0;
                 if (tags[idx] && tags[idx][0] === 93) { vcount = parseInt(tags[idx][1], 10); idx++; }
+                const verts = [];
                 for (let v = 0; v < vcount && idx < tags.length; v++) {
-                    let x = null, y = null;
+                    let x = null, y = null, bulge = 0;
                     if (tags[idx] && tags[idx][0] === 10) { x = parseFloat(tags[idx][1]); idx++; }
                     if (tags[idx] && tags[idx][0] === 20) { y = parseFloat(tags[idx][1]); idx++; }
-                    if (tags[idx] && tags[idx][0] === 42) idx++; // bulge 값 — 무시(직선 근사)
-                    if (x != null && y != null) pts.push({ x, y });
+                    if (tags[idx] && tags[idx][0] === 42) { bulge = parseFloat(tags[idx][1]) || 0; idx++; }
+                    if (x != null && y != null) verts.push({ x, y, bulge });
                 }
+                // 불지가 있는 변은 호로 펼친다(둥근 모서리, 두 점+불지로 그린 원 등이 직선으로 잘리지 않게)
+                verts.forEach((vt, i) => {
+                    pts.push({ x: vt.x, y: vt.y });
+                    if (vt.bulge && (closed || i < verts.length - 1)) {
+                        tessellateBulge(vt, verts[(i + 1) % verts.length], vt.bulge).forEach((p) => pts.push(p));
+                    }
+                });
             } else {
                 let ecount = 0;
                 if (tags[idx] && tags[idx][0] === 93) { ecount = parseInt(tags[idx][1], 10); idx++; }
@@ -1918,7 +2076,8 @@ function buildHatchEntity(tags) {
                         if (tags[idx] && tags[idx][0] === 73) { ccw = parseInt(tags[idx][1], 10); idx++; }
                         if (cx != null && r != null) {
                             let start = a1 * Math.PI / 180, end = a2 * Math.PI / 180;
-                            if (!ccw && end > start) end -= Math.PI * 2;
+                            if (ccw) { while (end < start) end += Math.PI * 2; } // 반시계: 끝각이 시작각보다 작으면 한 바퀴 넘겨서
+                            else { while (end > start) end -= Math.PI * 2; }
                             const steps = 16;
                             for (let s = 0; s <= steps; s++) {
                                 const a = start + (end - start) * (s / steps);
@@ -2163,7 +2322,10 @@ const DXF_FONT_FAMILY_BY_STYLE = {
 const NARROW_DXF_STYLE_NAMES = new Set(['NGSW', 'GHS', 'GHS1']);
 const NARROW_DXF_SCALE_X = 0.75;
 
-async function loadDxfFile(url, filename) {
+let currentDxfMeta = null; // 지금 열린 도면의 파일 정보(구간·500m 구간 번호 등) — 지도 겹치기가 어느 구간 도면인지 알 때 쓴다
+async function loadDxfFile(url, filename, meta) {
+    currentDxfMeta = meta || null;
+    if (typeof stopDxfOverlay === 'function' && typeof dxfOverlay !== 'undefined' && dxfOverlay.image) stopDxfOverlay(); // 다른 도면을 열면 지도 겹치기는 끈다
     dxfViewer.captureViewForRestore(); // 새 파일을 받아오기 전, 지금 보던 위치를 기억해둔다
     currentDxfFileUrl = url;
     currentDxfFileName = filename;
@@ -2198,6 +2360,7 @@ async function loadDxfFile(url, filename) {
                 });
             } catch (err) { /* 블록 보충 파싱 실패해도 기본 도면은 그대로 보여준다 */ }
             resizeDxfCanvas(); // 캔버스가 접힌 사이드바 안에서 초기화됐을 수 있어 크기를 다시 계산
+            try { dxfViewer.layerLineType = extractLayerLineTypes(text); } catch (err) { dxfViewer.layerLineType = {}; }
             dxfViewer.load(dxf);
             renderDxfLayerList();
         } catch (err) {
@@ -2321,6 +2484,7 @@ const DXF_LAYER_OFFICIAL_HINTS = {
 const DXF_LAYER_KOREAN_HINTS = {
     'CA-ALGN-CNTL': '선형 기준점',
     'CA-ALGN-HMS1': '선형 각도 표기 1',
+    'CA-ALGN-HMS2': '선형 각도 표기 2',
     'CA-ALGN-HMS3': '선형 각도 표기 3',
     'CA-ALGN-STSM': '측점(스테이션)',
     'CA-ALGN-SUBL': '선형 보조선',
@@ -2351,6 +2515,8 @@ const DXF_LAYER_KOREAN_HINTS = {
     'CD-SDLL-TYP0': '측구(배수로) 유형0-1',
     'CD-SDLU-TYP0': '측구(배수로) 유형0-2',
     'CF-BLDG-BUST': '건물',
+    'CF-OILS-PIPE': '송유관',
+    'CF-ROAD-BIKE': '자전거도로',
     'CF-RTWL-CONC': '콘크리트 옹벽',
     'CF-RTWL-STON': '석축형 옹벽',
     'CL-ADMN-NAME': '행정구역 명칭',
@@ -2359,6 +2525,8 @@ const DXF_LAYER_KOREAN_HINTS = {
     'CL-LOTL': '지번선',
     'CL-LOTT': '지번 텍스트',
     'CM-LEAD': '인출선',
+    'CM-LEAL': '인출선(선)',
+    'CM-LEAT': '인출선(문자)',
     'CM-MISC': '기타',
     'CM-RDGS': '도로 기하',
     'CM-RDMK': '노면 표시',
@@ -2367,6 +2535,7 @@ const DXF_LAYER_KOREAN_HINTS = {
     'CM-RDSB': '노면 표시 기호',
     'CM-RDSB-PATT-PAT1': '노면 표시 패턴 1',
     'CM-RDSB-PATT-PAT5': '노면 표시 패턴 5',
+    'CM-RDSB-GRP2': '노면 표시 기호 그룹 2',
     'CM-SFTY-GFNC': '안전시설(가드펜스)',
     'CM-SFTY-GRAL': '안전시설(가드레일)',
     'CM-SFTY-GWAL': '안전시설(가드월)',
@@ -2392,7 +2561,13 @@ const DXF_LAYER_KOREAN_HINTS = {
     'CX-BORD-LIN2': '테두리(도곽)선 2',
     'CX-BORD-TEX1': '테두리(도곽) 문자 1',
     'CX-BORD-TEX3': '테두리(도곽) 문자 3',
+    'CX-LGND-LINE': '범례 선',
+    'CX-LGND-TEXT': '범례 문자',
     'CX-MISC': '기타',
+    'CW-WATR-VALV': '상수 밸브',
+    'CWVALXX': '상수 밸브 계열',
+    'TITLE': '표제',
+    '0': '기본 레이어',
 };
 
 function renderDxfLayerList() {
@@ -2462,6 +2637,7 @@ function initRouteFileTabs() {
 // CAD 툴바 버튼(줌/배경/측정/저장/인쇄/팝업)을 공통으로 연결한다. index.html과
 // cad-popup.html 둘 다 같은 버튼 id를 쓰므로 이 함수 하나로 양쪽 다 초기화된다.
 function initCadToolbarButtons() {
+    initDxfOverlayControls();
     document.getElementById('cad-zoom-in-btn').addEventListener('click', () => dxfViewer.zoom(1.25));
     document.getElementById('cad-zoom-out-btn').addEventListener('click', () => dxfViewer.zoom(0.8));
     document.getElementById('cad-fit-btn').addEventListener('click', () => dxfViewer.fit());
@@ -2536,4 +2712,480 @@ async function downloadSectionExportWith(scopeParams) {
         // 다운로드는 브라우저가 이어서 진행하므로 모래시계는 바로 푼다.
         document.body.classList.remove('app-busy');
     }
+}
+
+// ---------- 도면을 지도 위에 겹쳐 보기 ----------
+// DXF 도면은 보통 측량 좌표(구 TM 등 평면직각좌표, 단위 m)로 그려져 있다. 도면 전체를 투명 배경 이미지로 한 번 그려서
+// 그 좌표계(EPSG)를 지정한 이미지 레이어로 지도에 얹으면, OpenLayers가 지도 좌표계로 재투영해 준다(직선 몇 개를 변환하는 것과 달리
+// 글자·해치·블록까지 도면 뷰어와 똑같이 보인다). 좌표계는 도면 위치가 지금 보는 구간(없으면 지도 중심)과 가장 가까워지는 것을 자동으로 고른다.
+const OVERLAY_CRS_LIST = [
+    { id: 'EPSG:5186', label: 'Korea 2000 중부원점 (5186)', def: '+proj=tmerc +lat_0=38 +lon_0=127 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +units=m +no_defs' },
+    { id: 'EPSG:5185', label: 'Korea 2000 서부원점 (5185)', def: '+proj=tmerc +lat_0=38 +lon_0=125 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +units=m +no_defs' },
+    { id: 'EPSG:5187', label: 'Korea 2000 동부원점 (5187)', def: '+proj=tmerc +lat_0=38 +lon_0=129 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +units=m +no_defs' },
+    { id: 'EPSG:5188', label: 'Korea 2000 동해원점 (5188)', def: '+proj=tmerc +lat_0=38 +lon_0=131 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +units=m +no_defs' },
+    { id: 'EPSG:5174', label: '구 TM 중부원점 Bessel (5174)', def: '+proj=tmerc +lat_0=38 +lon_0=127.0028902777778 +k=1 +x_0=200000 +y_0=500000 +ellps=bessel +units=m +no_defs +towgs84=-115.80,474.99,674.11,1.16,-2.31,-1.63,6.43' },
+    { id: 'EPSG:5173', label: '구 TM 서부원점 Bessel (5173)', def: '+proj=tmerc +lat_0=38 +lon_0=125.0028902777778 +k=1 +x_0=200000 +y_0=500000 +ellps=bessel +units=m +no_defs +towgs84=-115.80,474.99,674.11,1.16,-2.31,-1.63,6.43' },
+    { id: 'EPSG:5176', label: '구 TM 동부원점 Bessel (5176)', def: '+proj=tmerc +lat_0=38 +lon_0=129.0028902777778 +k=1 +x_0=200000 +y_0=500000 +ellps=bessel +units=m +no_defs +towgs84=-115.80,474.99,674.11,1.16,-2.31,-1.63,6.43' },
+    { id: 'EPSG:5177', label: '구 TM 동해원점 Bessel (5177)', def: '+proj=tmerc +lat_0=38 +lon_0=131.0028902777778 +k=1 +x_0=200000 +y_0=500000 +ellps=bessel +units=m +no_defs +towgs84=-115.80,474.99,674.11,1.16,-2.31,-1.63,6.43' },
+    { id: 'BESSEL_TM600', label: '구 TM 중부원점 Bessel (북쪽 600000)', def: '+proj=tmerc +lat_0=38 +lon_0=127.0028902777778 +k=1 +x_0=200000 +y_0=600000 +ellps=bessel +units=m +no_defs +towgs84=-115.80,474.99,674.11,1.16,-2.31,-1.63,6.43' },
+    { id: 'EPSG:5181', label: 'Korea 2000 중부원점 (구, 5181)', def: '+proj=tmerc +lat_0=38 +lon_0=127 +k=1 +x_0=200000 +y_0=500000 +ellps=GRS80 +units=m +no_defs' },
+    { id: 'EPSG:5179', label: 'UTM-K (5179)', def: '+proj=tmerc +lat_0=38 +lon_0=127.5 +k=0.9996 +x_0=1000000 +y_0=2000000 +ellps=GRS80 +units=m +no_defs' },
+];
+const OVERLAY_MAX_PX = 4096;
+
+// ---------- 시트(도곽) 좌표 도면 맞춤 ----------
+// 500m 구간 도면(평면도 등)은 측량 좌표가 아니라 "시트 좌표"로 그려져 있다: 구간 번호마다 가로로 500씩 옮겨 놓은 같은 크기의 도곽 안에,
+// 도로를 돌려서(회전·이동) 앉힌 것이다. 이런 도면은 어떤 좌표계(EPSG)로도 지도에 맞지 않는다. 도면 안의 도로 중심선(CA-ALGN-CNTL 등)과
+// 시스템에 등록된 같은 500m 구간의 선(road_sectors)을 겹치도록 위치·회전·배율을 구하면 지도에 정확히 얹을 수 있다.
+
+// 선(점 배열)을 호 길이 기준 같은 간격의 n개 점으로 다시 뽑는다.
+function resamplePolyline(pts, n) {
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const total = cum[cum.length - 1];
+    if (!(total > 0)) return null;
+    const out = [];
+    let j = 1;
+    for (let k = 0; k < n; k++) {
+        const d = (total * k) / (n - 1);
+        while (j < pts.length - 1 && cum[j] < d) j++;
+        const seg = cum[j] - cum[j - 1] || 1;
+        const t = Math.min(1, Math.max(0, (d - cum[j - 1]) / seg));
+        out.push([pts[j - 1][0] + (pts[j][0] - pts[j - 1][0]) * t, pts[j - 1][1] + (pts[j][1] - pts[j - 1][1]) * t]);
+    }
+    return { pts: out, length: total };
+}
+
+// a(시트) → b(세계) 닮음 변환(회전·이동·균일 배율) 최소제곱 해. b = s·R(θ)·a + t. 반환: {s, cos, sin, tx, ty, rms}
+function fitSimilarity(A, B) {
+    const n = A.length;
+    let ax = 0, ay = 0, bx = 0, by = 0;
+    for (let i = 0; i < n; i++) { ax += A[i][0]; ay += A[i][1]; bx += B[i][0]; by += B[i][1]; }
+    ax /= n; ay /= n; bx /= n; by /= n;
+    let sxx = 0, sxy = 0, saa = 0;
+    for (let i = 0; i < n; i++) {
+        const x = A[i][0] - ax, y = A[i][1] - ay, u = B[i][0] - bx, v = B[i][1] - by;
+        sxx += x * u + y * v; sxy += x * v - y * u; saa += x * x + y * y;
+    }
+    const theta = Math.atan2(sxy, sxx);
+    const c = Math.cos(theta), sn = Math.sin(theta);
+    const s = (sxx * c + sxy * sn) / (saa || 1);
+    const tx = bx - s * (c * ax - sn * ay);
+    const ty = by - s * (sn * ax + c * ay);
+    let err = 0;
+    for (let i = 0; i < n; i++) {
+        const px = s * (c * A[i][0] - sn * A[i][1]) + tx, py = s * (sn * A[i][0] + c * A[i][1]) + ty;
+        err += (px - B[i][0]) ** 2 + (py - B[i][1]) ** 2;
+    }
+    return { s, cos: c, sin: sn, tx, ty, rms: Math.sqrt(err / n) };
+}
+
+// 시트 중심선(sheetLine)을 세계 좌표(5186 미터) 구간 선(worldLine)에 맞춘다. 선의 방향이 반대일 수 있어 둘 다 해 보고 더 잘 맞는 쪽을 쓴다.
+function fitSheetToWorld(sheetLine, worldLine) {
+    const a = resamplePolyline(sheetLine, 120);
+    const b = resamplePolyline(worldLine, 120);
+    if (!a || !b) return null;
+    const f1 = fitSimilarity(a.pts, b.pts);
+    const f2 = fitSimilarity(a.pts, b.pts.slice().reverse());
+    const best = f1.rms <= f2.rms ? f1 : f2;
+    return { ...best, sheetLength: a.length, worldLength: b.length };
+}
+
+// 도면에서 도로 중심선을 찾는다: 레이어 이름에 CNTL이 들어 있고 선 길이 합이 가장 긴 레이어의 폴리선들을, 끝점이 맞닿는 대로 이어 붙인다
+// (중심선이 곡선 구간별로 토막나 있는 도면이 있다). 못 찾으면 null.
+function findSheetCenterline(entities) {
+    const byLayer = new Map();
+    for (const e of entities) {
+        if (!/CNTL/i.test(e.layer || '') || (e.type !== 'LWPOLYLINE' && e.type !== 'POLYLINE') || !e.vertices || e.vertices.length < 2) continue;
+        const pts = e.vertices.map((v) => [v.x, v.y]);
+        let len = 0;
+        for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        if (!byLayer.has(e.layer)) byLayer.set(e.layer, { total: 0, pieces: [] });
+        const g = byLayer.get(e.layer);
+        g.total += len; g.pieces.push({ pts, len });
+    }
+    let bestLayer = null;
+    for (const [layer, g] of byLayer) if (!bestLayer || g.total > byLayer.get(bestLayer).total) bestLayer = layer;
+    if (!bestLayer) return null;
+    // 같은 선이 겹쳐 두 번 그려진 도면이 있어서(끝점·점 개수가 같은 조각) 하나만 남긴다
+    const seen = new Set();
+    const pieces = byLayer.get(bestLayer).pieces.slice().sort((x, y) => y.len - x.len).filter((pc) => {
+        const f = pc.pts[0]; const l = pc.pts[pc.pts.length - 1];
+        const k1 = [f[0].toFixed(1), f[1].toFixed(1), l[0].toFixed(1), l[1].toFixed(1), pc.pts.length].join(',');
+        const k2 = [l[0].toFixed(1), l[1].toFixed(1), f[0].toFixed(1), f[1].toFixed(1), pc.pts.length].join(',');
+        if (seen.has(k1) || seen.has(k2)) return false;
+        seen.add(k1);
+        return true;
+    });
+    let chain = pieces.shift().pts.slice();
+    const TOL = 1.0; // 이어 붙일 끝점 허용 간격(도면 단위=m)
+    const near = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]) <= TOL;
+    for (let grew = true; grew && pieces.length;) {
+        grew = false;
+        for (let i = 0; i < pieces.length; i++) {
+            const p = pieces[i].pts;
+            const head = chain[0]; const tail = chain[chain.length - 1];
+            // 이미 이어 붙인 선과 양 끝이 모두 맞닿는 조각(같은 선이 한 번 더 그려진 것)은 버린다 — 붙이면 길이가 두 배가 된다
+            if ((near(head, p[0]) && near(tail, p[p.length - 1])) || (near(head, p[p.length - 1]) && near(tail, p[0]))) { pieces.splice(i, 1); grew = true; break; }
+            if (near(tail, p[0])) chain = chain.concat(p.slice(1));
+            else if (near(tail, p[p.length - 1])) chain = chain.concat(p.slice(0, -1).reverse());
+            else if (near(head, p[p.length - 1])) chain = p.slice(0, -1).concat(chain);
+            else if (near(head, p[0])) chain = p.slice(1).reverse().concat(chain);
+            else continue;
+            pieces.splice(i, 1); grew = true; break;
+        }
+    }
+    let total = 0;
+    for (let i = 1; i < chain.length; i++) total += Math.hypot(chain[i][0] - chain[i - 1][0], chain[i][1] - chain[i - 1][1]);
+    return total >= 20 ? { pts: chain, len: total, layer: bestLayer } : null;
+}
+
+const OVERLAY_MATCH_KM = 30; // 지금 보는 위치와 이 거리 안에 놓이는 좌표계만 "자동 판별 성공"으로 본다
+
+const dxfOverlay = { layer: null, crsId: null, opacity: 0.7, dx: 0, dy: 0, image: null, bbox: null, fileName: '', sheetFit: null, focusExtent: null };
+let overlayCrsRegistered = false;
+
+function ensureOverlayCrs() {
+    if (overlayCrsRegistered) return;
+    OVERLAY_CRS_LIST.forEach((c) => proj4.defs(c.id, c.def));
+    ol.proj.proj4.register(proj4);
+    overlayCrsRegistered = true;
+}
+
+// 엔티티가 차지하는 범위(도면 좌표) — 보이는 영역 밖의 것을 건너뛰기 위한 캐시. 점이 없거나 블록 배치는 여유를 두고 본다.
+const overlayBoundsCache = new WeakMap();
+function overlayEntityBounds(e) {
+    let b = overlayBoundsCache.get(e);
+    if (b !== undefined) return b;
+    const pts = dxfViewer._entityPoints(e);
+    if (!pts.length) b = null;
+    else {
+        let a = Infinity, c = Infinity, d = -Infinity, g = -Infinity;
+        for (const p of pts) { if (p[0] < a) a = p[0]; if (p[0] > d) d = p[0]; if (p[1] < c) c = p[1]; if (p[1] > g) g = p[1]; }
+        const m = (e.type === 'INSERT' || e.type === 'TEXT' || e.type === 'MTEXT') ? 100 : 0; // 블록·글자는 점 하나라 크기를 모른다
+        b = [a - m, c - m, d + m, g + m];
+    }
+    overlayBoundsCache.set(e, b);
+    return b;
+}
+
+// cv 캔버스에 도면을 그린다. s: 도면 1단위당 픽셀, center: 캔버스 중앙에 올 도면 좌표, east: 지도의 동쪽이 도면 좌표에서 향하는 단위 벡터
+// (TM과 웹 메르카토르는 북쪽 방향이 약간 달라서 그만큼 돌려 그린다), cull: 보이는 도면 범위 [minX,minY,maxX,maxY].
+dxfViewer.renderViewport = function renderViewport(cv, s, center, east, cull) {
+    const saved = { canvas: this.canvas, ctx: this.ctx, scale: this.scale, panX: this.panX, panY: this.panY, bgDark: this.bgDark };
+    try {
+        this.canvas = cv;
+        this.ctx = cv.getContext('2d');
+        this.scale = s;
+        this.panX = -s * center[0];
+        this.panY = cv.height - s * center[1];
+        this.bgDark = true; // 지도 위에서는 밝은 선이 잘 보인다
+        this.ctx.setTransform(east[0], east[1], -east[1], east[0], cv.width / 2, cv.height / 2);
+        const defaultColor = '#f2f2f2';
+        this.entities.forEach((e) => {
+            if (e.layer && this.layerVisible[e.layer] === false) return;
+            const b = overlayEntityBounds(e);
+            if (b && (b[2] < cull[0] || b[0] > cull[2] || b[3] < cull[1] || b[1] > cull[3])) return;
+            const color = this._resolveColor(e, defaultColor);
+            this.ctx.strokeStyle = color;
+            this.ctx.fillStyle = color;
+            this.ctx.lineWidth = 1.3;
+            try { this._drawEntity(e, null, 1, 0, defaultColor, 0, color); } catch (err) { /* 지원하지 않는 엔티티는 건너뜀 */ }
+        });
+        this.ctx.setLineDash([]);
+    } finally {
+        Object.assign(this, saved);
+    }
+};
+
+// 겹칠 때 기준이 되는 위치: 500m 구간 도면이면 그 구간의 선(시트 좌표 도면을 맞출 때도 쓴다), 아니면 구간 선, 그것도 없으면 지도 중심.
+// 반환: { pts: 경위도 점들, sector: 그 500m 구간 행(있을 때) }
+async function overlayReference() {
+    const meta = currentDxfMeta;
+    const partsOf = (g) => (g && (g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : null));
+    let rec = null;
+    const rdid = (meta && meta.section_rdid) || (currentRoute && currentRoute.rdid);
+    if (rdid) {
+        try { rec = (await fetch('/api/sections/' + encodeURIComponent(rdid)).then((r) => r.json())).record; } catch (e) { /* 아래에서 지도 중심으로 */ }
+    }
+    if (rec && meta && meta.seg_start_km != null) {
+        try {
+            const params = new URLSearchParams({ road_rank_name: rec.road_rank_name || '', route_no: rec.route_no || '', sect: rec.sect || '' });
+            const data = await fetch('/api/sections/sectors?' + params.toString()).then((r) => r.json());
+            const sector = (data.sectors || []).find((x) => x.sect === rec.sect && Math.abs(Number(x.sect_st) - Number(meta.seg_start_km)) < 0.01);
+            const parts = sector && partsOf(sector.geom);
+            if (parts && parts.length) return { pts: densifyLonLat(parts, 25, 3000), sector, section: rec };
+        } catch (e) { /* 구간 선으로 */ }
+    }
+    const parts = rec && partsOf(rec.geom);
+    if (parts && parts.length) return { pts: densifyLonLat(parts, 25, 3000), sector: null, section: rec };
+    return { pts: [ol.proj.toLonLat(map.getView().getCenter())], sector: null, section: null };
+}
+
+// 경위도 선(들)을 대략 stepM(m) 간격의 점으로 채운다(최대 maxPts개).
+function densifyLonLat(parts, stepM, maxPts) {
+    const out = [];
+    for (const part of parts) {
+        for (let i = 0; i < part.length; i++) {
+            out.push(part[i]);
+            if (i === part.length - 1) break;
+            const a = part[i]; const b = part[i + 1];
+            const n = Math.floor((haversineKm(a, b) * 1000) / stepM);
+            for (let k = 1; k <= n; k++) out.push([a[0] + ((b[0] - a[0]) * k) / (n + 1), a[1] + ((b[1] - a[1]) * k) / (n + 1)]);
+        }
+    }
+    if (out.length <= maxPts) return out;
+    const step = out.length / maxPts;
+    return Array.from({ length: maxPts }, (_, i) => out[Math.floor(i * step)]);
+}
+
+function haversineKm(a, b) {
+    const R = 6371;
+    const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+    const dLon = ((b[0] - a[0]) * Math.PI) / 180;
+    const s = Math.sin(dLat / 2) ** 2 + Math.cos((a[1] * Math.PI) / 180) * Math.cos((b[1] * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// 각 좌표계로 도면 중심을 경위도로 바꿔 보고, 기준 위치와 가장 가까운 것을 고른다.
+function pickOverlayCrs(bbox, refPts) {
+    const cx = (bbox.minX + bbox.maxX) / 2;
+    const cy = (bbox.minY + bbox.maxY) / 2;
+    const scored = OVERLAY_CRS_LIST.map((c) => {
+        let ll;
+        try { ll = proj4(c.id, 'EPSG:4326', [cx, cy]); } catch (e) { return { c, km: Infinity }; }
+        if (!ll || !Number.isFinite(ll[0]) || !Number.isFinite(ll[1]) || ll[0] < 120 || ll[0] > 135 || ll[1] < 32 || ll[1] > 40) return { c, km: Infinity };
+        return { c, km: Math.min(...refPts.map((p) => haversineKm(ll, p))) };
+    }).sort((a, b) => a.km - b.km);
+
+    // 기준이 구간 선(점이 여럿)이면 도면의 레이어별 점들이 그 선에 얼마나 붙는지로 다시 가린다 — 도면 중심만으로는
+    // 같은 지역을 가리키는 좌표계(GRS80/Bessel처럼 수백 m 차이)를 구별하지 못한다. 도로 중심선 레이어는 선에서 몇 m 안에 놓인다.
+    if (refPts.length > 5) {
+        const byLayer = new Map();
+        dxfViewer.entities.forEach((e) => {
+            if (e.layer === 'TITLE' || dxfViewer.layerVisible[e.layer] === false) return;
+            const p = dxfViewer._entityPoints(e)[0];
+            if (!p) return;
+            if (!byLayer.has(e.layer)) byLayer.set(e.layer, []);
+            const arr = byLayer.get(e.layer);
+            if (arr.length < 400) arr.push(p);
+        });
+        const layers = [...byLayer.values()].filter((a) => a.length >= 10).map((a) => a.filter((_, i) => i % Math.ceil(a.length / 40) === 0));
+        const lat0 = refPts[0][1]; const lon0 = refPts[0][0];
+        const kx = 111320 * Math.cos((lat0 * Math.PI) / 180); const ky = 110574;
+        const refXY = refPts.map((p) => [(p[0] - lon0) * kx, (p[1] - lat0) * ky]);
+        scored.forEach((sc) => {
+            if (!Number.isFinite(sc.km) || sc.km > OVERLAY_MATCH_KM) return;
+            let bestLayer = Infinity;
+            for (const pts of layers) {
+                const ds = [];
+                for (const p of pts) {
+                    let ll; try { ll = proj4(sc.c.id, 'EPSG:4326', p); } catch (e) { continue; }
+                    const x = (ll[0] - lon0) * kx; const y = (ll[1] - lat0) * ky;
+                    let m = Infinity;
+                    for (const r of refXY) { const d = (r[0] - x) ** 2 + (r[1] - y) ** 2; if (d < m) m = d; }
+                    ds.push(Math.sqrt(m));
+                }
+                if (ds.length < 8) continue;
+                ds.sort((a, b) => a - b);
+                bestLayer = Math.min(bestLayer, ds[Math.floor(ds.length * 0.25)]);
+            }
+            sc.lineM = bestLayer;
+        });
+        scored.sort((a, b) => ((a.lineM ?? Infinity) - (b.lineM ?? Infinity)) || (a.km - b.km));
+        // 선과의 거리가 확실히 가까운 것이 있으면(1km 이내) 그걸 우선한다
+        if (Number.isFinite(scored[0].lineM) && scored[0].lineM < 1000) return { best: { ...scored[0], km: scored[0].lineM / 1000 }, scored };
+    }
+    return { best: scored[0], scored };
+}
+
+function overlayImageExtent() {
+    const bb = dxfOverlay.bbox;
+    return [bb.minX + dxfOverlay.dx, bb.minY + dxfOverlay.dy, bb.maxX + dxfOverlay.dx, bb.maxY + dxfOverlay.dy];
+}
+
+function applyOverlayLayer() {
+    if (dxfOverlay.layer) { map.removeLayer(dxfOverlay.layer); dxfOverlay.layer = null; }
+    if (!dxfOverlay.image || !dxfOverlay.crsId) return;
+    const mapProj = map.getView().getProjection();
+    const crsId = dxfOverlay.crsId;
+    const fit = dxfOverlay.sheetFit;
+    const toDrawing = (xy) => {
+        const d = ol.proj.transform(xy, mapProj, crsId);
+        const X = d[0] - dxfOverlay.dx; const Y = d[1] - dxfOverlay.dy;
+        if (!fit) return [X, Y];
+        const ux = X - fit.tx; const uy = Y - fit.ty;
+        return [(fit.cos * ux + fit.sin * uy) / fit.s, (-fit.sin * ux + fit.cos * uy) / fit.s];
+    };
+    const source = new ol.source.ImageCanvas({
+        projection: mapProj,
+        ratio: 1,
+        canvasFunction: (extent, resolution, pixelRatio, size) => {
+            const cv = document.createElement('canvas');
+            cv.width = Math.min(3000, Math.max(1, Math.round(size[0])));
+            cv.height = Math.min(3000, Math.max(1, Math.round(size[1])));
+            const mc = [(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2];
+            const dc = toDrawing(mc);
+            const step = 500; // 지도 좌표 500m만큼 동쪽으로 간 점으로 방향과 축척을 잰다
+            const de = toDrawing([mc[0] + step, mc[1]]);
+            const vx = de[0] - dc[0]; const vy = de[1] - dc[1];
+            const len = Math.hypot(vx, vy) || 1;
+            const east = [vx / len, vy / len];
+            const pxPerMapM = cv.width / (extent[2] - extent[0]);
+            const s = (pxPerMapM * step) / len; // 도면 1단위(m)당 픽셀
+            const corners = [[extent[0], extent[1]], [extent[2], extent[1]], [extent[0], extent[3]], [extent[2], extent[3]]].map(toDrawing);
+            const cull = [Math.min(...corners.map((p) => p[0])), Math.min(...corners.map((p) => p[1])), Math.max(...corners.map((p) => p[0])), Math.max(...corners.map((p) => p[1]))];
+            dxfViewer.renderViewport(cv, s, dc, east, cull);
+            return cv;
+        },
+    });
+    dxfOverlay.layer = new ol.layer.Image({ source, opacity: dxfOverlay.opacity, zIndex: 140 });
+    map.addLayer(dxfOverlay.layer);
+}
+
+function overlayZoomToDrawing() {
+    if (!dxfOverlay.layer) return;
+    if (dxfOverlay.sheetFit && dxfOverlay.focusExtent) {
+        map.getView().fit(dxfOverlay.focusExtent, { duration: 400, padding: [60, 60, 60, 60], maxZoom: 20 });
+        return;
+    }
+    const ext = ol.proj.transformExtent(overlayImageExtent(), dxfOverlay.crsId, map.getView().getProjection());
+    map.getView().fit(ext, { duration: 400, padding: [60, 60, 60, 60], maxZoom: 20 });
+}
+
+function setOverlayStatus(html) {
+    const el = document.getElementById('cad-overlay-status');
+    if (el) el.innerHTML = html;
+}
+
+async function startDxfOverlay() {
+    if (!dxfViewer.entities.length || !dxfViewer.bbox) { alert('먼저 도면(DXF)을 열어 주세요.'); return; }
+    if (typeof map === 'undefined' || !map) return;
+    ensureOverlayCrs();
+    const panel = document.getElementById('cad-overlay-panel');
+    panel.style.display = 'flex';
+    setOverlayStatus('좌표계를 찾는 중…');
+    await new Promise((r) => setTimeout(r, 30)); // 안내 문구가 먼저 보이게
+
+    dxfOverlay.image = true; // 겹치기 사용 중 표시(그림은 지도 화면이 바뀔 때마다 보이는 부분만 그린다)
+    dxfOverlay.bbox = { ...dxfViewer.bbox };
+    dxfOverlay.fileName = (typeof currentDxfFileName !== 'undefined' && currentDxfFileName) || '';
+    dxfOverlay.dx = 0; dxfOverlay.dy = 0;
+    dxfOverlay.sheetFit = null; dxfOverlay.sheetFitSaved = null; dxfOverlay.focusExtent = null;
+    document.getElementById('cad-overlay-dx').value = 0;
+    document.getElementById('cad-overlay-dy').value = 0;
+    if (dxfOverlay.layer) { map.removeLayer(dxfOverlay.layer); dxfOverlay.layer = null; }
+
+    const ref = await overlayReference();
+    const refPts = ref.pts;
+    const { best, scored } = pickOverlayCrs(dxfOverlay.bbox, refPts);
+    const sel = document.getElementById('cad-overlay-crs');
+    const crsOptions = scored.filter((x) => Number.isFinite(x.km)).map((x) => `<option value="${x.c.id}">${x.c.label} — ${Number.isFinite(x.lineM) ? '구간 선과 ' + Math.round(x.lineM) + 'm' : '기준 위치에서 ' + (x.km < 1 ? Math.round(x.km * 1000) + 'm' : x.km.toFixed(1) + 'km')}</option>`).join('')
+        + scored.filter((x) => !Number.isFinite(x.km)).map((x) => `<option value="${x.c.id}">${x.c.label} — 우리나라 밖</option>`).join('');
+    sel.innerHTML = crsOptions;
+
+    // 1) 시트 좌표 후보: 도면 안의 도로 중심선을 기준 선(500m 구간이면 그 구간, 아니면 구간 전체)에 맞춰 본다.
+    const worldGeom = (ref.sector && ref.sector.geom) || (ref.section && ref.section.geom) || null;
+    const worldCoords = worldGeom && (worldGeom.type === 'LineString' ? worldGeom.coordinates : worldGeom.type === 'MultiLineString' ? worldGeom.coordinates.flat() : null);
+    let fit = null; let cl = null;
+    if (worldCoords && worldCoords.length > 1) {
+        cl = findSheetCenterline(dxfViewer.entities);
+        const cand = cl && fitSheetToWorld(cl.pts, worldCoords.map((c) => proj4('EPSG:4326', 'EPSG:5186', c)));
+        // 선 길이가 비슷하고(15% 이내) 배율이 1에 가깝고 중심선 오차가 작을 때만 인정
+        if (cand && cand.rms < 25 && Math.abs(cand.s - 1) < 0.05 && Math.abs(cand.sheetLength / cand.worldLength - 1) < 0.15) fit = cand;
+    }
+
+    // 2) 측량 좌표(EPSG)로 그려진 도면인가: 기준 선이 있으면 도면의 선형이 그 선에 150m 안으로 붙는 좌표계가 있어야 인정한다.
+    const lineBased = refPts.length > 5;
+    const realOk = Number.isFinite(best.km) && best.km <= OVERLAY_MATCH_KM && (!lineBased || (Number.isFinite(best.lineM) && best.lineM < 150));
+    // 좌표계가 구간 선과 6m 안으로 붙으면 좌표계를 쓴다. 그보다 어긋나는데 중심선 맞춤이 되면 맞춤이 더 정확하다
+    // (시트 좌표 도면이 우연히 실제 위치 근처에 놓여 좌표계 하나가 10~20m 이내로 "비슷하게" 맞는 경우가 있다).
+    const crsTight = realOk && (!lineBased || best.lineM < 6);
+    if (realOk && (crsTight || !fit)) {
+        dxfOverlay.crsId = best.c.id;
+        sel.value = best.c.id;
+        applyOverlayLayer();
+        overlayZoomToDrawing();
+        setOverlayStatus(`좌표계 <b>${escapeHtml(best.c.label)}</b>로 자동 판별했습니다(${Number.isFinite(best.lineM) ? '도면의 선형이 구간 선과 ' + Math.round(best.lineM) + 'm 이내로 일치' : '기준 위치와 ' + (best.km < 1 ? Math.round(best.km * 1000) + 'm' : best.km.toFixed(1) + 'km')}). 어긋나 보이면 좌표계를 바꾸거나 위치를 보정하세요.`);
+        return;
+    }
+    if (fit) {
+        const kind = ref.sector ? '500m 구간' : '구간';
+        dxfOverlay.sheetFitSaved = fit;
+        dxfOverlay.sheetFit = fit;
+        dxfOverlay.crsId = 'EPSG:5186';
+        dxfOverlay.focusExtent = ol.proj.transformExtent(ol.extent.boundingExtent(worldCoords), 'EPSG:4326', map.getView().getProjection());
+        sel.innerHTML = `<option value="SHEET">시트 좌표 자동 맞춤 — 중심선 오차 평균 ${fit.rms.toFixed(1)}m</option>` + crsOptions;
+        sel.value = 'SHEET';
+        applyOverlayLayer();
+        overlayZoomToDrawing();
+        setOverlayStatus(`이 도면은 측량 좌표(EPSG)와 어긋나는 <b>시트(도곽) 좌표</b>로 그려져 있어 좌표계로는 지도에 맞지 않습니다. 도면의 도로 중심선(${escapeHtml(cl.layer)})을 시스템에 등록된 같은 ${kind} 선에 맞춰 위치와 회전을 자동으로 맞췄습니다(중심선 오차 평균 ${fit.rms.toFixed(1)}m, 도면 배율 ${fit.s.toFixed(3)}).`);
+        return;
+    }
+    if (ref.sector) {
+        dxfOverlay.crsId = null;
+        sel.selectedIndex = -1;
+        setOverlayStatus('<b>이 도면은 시트(도곽) 좌표로 그려져 있어 좌표계로는 지도에 맞지 않습니다.</b> 도로 중심선(CA-ALGN-CNTL 등)을 찾지 못하거나 구간 선과 모양이 달라 위치를 맞출 수 없습니다.');
+        return;
+    }
+    dxfOverlay.crsId = null;
+    sel.selectedIndex = -1;
+    setOverlayStatus(lineBased
+        ? '<b>이 도면이 지도의 어느 좌표계와도 맞지 않습니다.</b> 도면의 선형이 선택한 구간 선과 가장 가까운 좌표계에서도 150m 넘게 떨어집니다. 도면이 측량 좌표가 아닌 시트·임의 좌표로 그려졌거나, 다른 구간의 도면일 수 있습니다. 좌표계를 직접 골라 확인해 보세요.'
+        : '<b>좌표계를 자동으로 찾지 못했습니다.</b> 도면 좌표가 지금 보는 위치 근처로 변환되는 좌표계가 없습니다. 도면이 측량 좌표가 아닌 임의 좌표(0,0 근처)로 그려졌거나 좌표 단위가 m가 아닐 수 있습니다. 아래에서 좌표계를 직접 골라 확인해 보세요.');
+}
+
+function stopDxfOverlay() {
+    if (dxfOverlay.layer) { map.removeLayer(dxfOverlay.layer); dxfOverlay.layer = null; }
+    dxfOverlay.image = null;
+    dxfOverlay.sheetFit = null; dxfOverlay.sheetFitSaved = null; dxfOverlay.focusExtent = null;
+    document.getElementById('cad-overlay-panel').style.display = 'none';
+}
+
+function initDxfOverlayControls() {
+    const btn = document.getElementById('cad-overlay-btn');
+    if (!btn) return; // 지도가 없는 화면(도면 팝업)
+    btn.addEventListener('click', startDxfOverlay);
+    document.getElementById('cad-overlay-close').addEventListener('click', stopDxfOverlay);
+    document.getElementById('cad-overlay-crs').addEventListener('change', (e) => {
+        if (e.target.value === 'SHEET' && dxfOverlay.sheetFitSaved) {
+            dxfOverlay.crsId = 'EPSG:5186';
+            dxfOverlay.sheetFit = dxfOverlay.sheetFitSaved;
+            applyOverlayLayer();
+            overlayZoomToDrawing();
+            setOverlayStatus('시트 좌표 자동 맞춤으로 되돌렸습니다.');
+            return;
+        }
+        dxfOverlay.sheetFit = null;
+        dxfOverlay.crsId = e.target.value;
+        applyOverlayLayer();
+        overlayZoomToDrawing();
+        const c = OVERLAY_CRS_LIST.find((x) => x.id === dxfOverlay.crsId);
+        setOverlayStatus(`좌표계를 <b>${escapeHtml(c ? c.label : '')}</b>(으)로 바꿨습니다.`);
+    });
+    document.getElementById('cad-overlay-opacity').addEventListener('input', (e) => {
+        dxfOverlay.opacity = Number(e.target.value) / 100;
+        if (dxfOverlay.layer) dxfOverlay.layer.setOpacity(dxfOverlay.opacity);
+    });
+    const nudge = () => {
+        dxfOverlay.dx = parseFloat(document.getElementById('cad-overlay-dx').value) || 0;
+        dxfOverlay.dy = parseFloat(document.getElementById('cad-overlay-dy').value) || 0;
+        applyOverlayLayer();
+    };
+    document.getElementById('cad-overlay-dx').addEventListener('change', nudge);
+    document.getElementById('cad-overlay-dy').addEventListener('change', nudge);
+    document.getElementById('cad-overlay-fit').addEventListener('click', overlayZoomToDrawing);
+    // 레이어 목록에서 켜고 끈 것을 반영해 다시 그리기
+    // 지도에 얹은 도면만 지운다(패널·좌표계 설정은 그대로 두어 "다시 그리기"로 바로 다시 얹을 수 있다)
+    document.getElementById('cad-overlay-clear').addEventListener('click', () => {
+        if (!dxfOverlay.layer) { setOverlayStatus('지도에 얹은 도면이 없습니다.'); return; }
+        map.removeLayer(dxfOverlay.layer);
+        dxfOverlay.layer = null;
+        setOverlayStatus('지도에 얹은 도면을 지웠습니다. 다시 보려면 "다시 그리기"를 누르세요.');
+    });
+    document.getElementById('cad-overlay-redraw').addEventListener('click', () => {
+        if (dxfOverlay.layer) dxfOverlay.layer.getSource().changed(); // 켜고 끈 레이어 반영
+        else if (dxfOverlay.image && dxfOverlay.crsId) { applyOverlayLayer(); setOverlayStatus('도면을 다시 얹었습니다.'); }
+        else startDxfOverlay();
+    });
 }

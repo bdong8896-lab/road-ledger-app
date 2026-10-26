@@ -56,8 +56,9 @@ async function fetchByTableMap(tableMap, section) {
         Object.entries(tableMap).map(async ([key, table]) => {
             const orderCol = ORDER_COLUMN_OVERRIDES[table] || 'sect_st NULLS LAST';
             const { rows } = await pool.query(
-                `SELECT * FROM ${table} WHERE road_rank = $1 AND road_no = $2 AND sect = $3 ORDER BY ${orderCol}`,
-                [section.road_rank_code, section.route_no, section.sect]
+                `SELECT * FROM ${table} WHERE road_rank = $1 AND road_no = $2 AND sect = $3
+                   AND (sigungu_code IS NOT DISTINCT FROM $4 OR sigungu_code IS NULL) ORDER BY ${orderCol}`,
+                [section.road_rank_code, section.route_no, section.sect, section.sigungu_code || null]
             );
             return [key, rows];
         })
@@ -69,8 +70,8 @@ async function fetchByTableMap(tableMap, section) {
 // 테이블로, 총괄1/2 시트의 numbered 항목 대부분(노선지정일~유료도로)이 여기 있다.
 async function fetchGovSection(section) {
     const { rows } = await pool.query(
-        'SELECT * FROM gov_section WHERE road_rank = $1 AND road_no = $2 AND sect = $3',
-        [section.road_rank_code, section.route_no, section.sect]
+        'SELECT * FROM gov_section WHERE road_rank = $1 AND road_no = $2 AND sect = $3 AND (sigungu_code IS NOT DISTINCT FROM $4 OR sigungu_code IS NULL)',
+        [section.road_rank_code, section.route_no, section.sect, section.sigungu_code || null]
     );
     return rows[0] || null;
 }

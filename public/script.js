@@ -2083,7 +2083,9 @@ function openFilePreview(pnu, fileId, originalName, baseUrl, facilityInfo) {
     const downloadUrl = `${base}/${fileId}`;
     const mediaHtml = buildFilePreviewMediaHtml(originalName, viewUrl, downloadUrl, 'width:100%;height:100%;', true);
 
-    const infoBarHtml = facilityInfo ? buildFacilityInfoBarHtml(facilityInfo) : '';
+    // 시설물 파일을 하나만 열어 둔 경우에는 속성정보 바에서 그 파일을 지울 수 있게 파일 정보를 넘긴다
+    const infoForBar = (facilityInfo && baseUrl === '/api/sections/facility-files') ? { ...facilityInfo, fileId, fileName: originalName } : facilityInfo;
+    const infoBarHtml = infoForBar ? buildFacilityInfoBarHtml(infoForBar) : '';
     previewDiv.innerHTML = withFacilityInfoResizer(infoBarHtml, `<div class="facility-file-media">${mediaHtml}</div>`);
     initVideo360Containers(previewDiv);
 }
@@ -2151,15 +2153,94 @@ function buildFacilityInfoBarHtml(info) {
     const nameHtml = info.name
         ? `<span class="fib-name">${escapeHtml(info.name)}</span>`
         : '';
+    // 사진·보고서 올리기 — 편집 모드(body.admin-mode)에서만 보인다. 서버도 관리자만 받는다.
+    const uploadHtml = (info.table && info.rdid)
+        ? `<label class="fib-upload" title="이 시설물에 사진·보고서 올리기 (편집 모드)"><i class="fa-solid fa-upload"></i> 파일 올리기<input type="file" class="fib-upload-input" data-table="${escapeHtml(info.table)}" data-rdid="${escapeHtml(info.rdid)}" multiple hidden accept=".jpg,.jpeg,.png,.gif,.bmp,.webp,.pdf,.hwp,.hwpx,.doc,.docx,.xls,.xlsx"></label>`
+        : '';
+    const delHtml = (info.table && info.rdid && info.fileId)
+        ? `<button type="button" class="fib-del" data-id="${info.fileId}" data-name="${escapeHtml(info.fileName || '')}" data-table="${escapeHtml(info.table)}" data-rdid="${escapeHtml(info.rdid)}" title="지금 보고 있는 파일 삭제 (편집 모드)"><i class="fa-solid fa-trash"></i> 이 파일 삭제</button>`
+        : '';
     const fields = (info.attributes || [])
         .map((a) => `<div class="fib-field"><div class="fib-k">${escapeHtml(a.label)}</div><div class="fib-v">${escapeHtml(String(a.value))}</div></div>`)
         .join('');
     return `
         <div class="facility-info-bar" style="--fib-accent:${accent};">
-            <div class="fib-header"><span class="fib-badge">${badge}</span>${nameHtml}</div>
+            <div class="fib-header"><span class="fib-badge">${badge}</span>${nameHtml}${uploadHtml}${delHtml}</div>
             <div class="fib-fields">${fields}</div>
         </div>`;
 }
+
+// ---------- 시설물 파일 올리기(속성정보 창 상단, 편집 모드) ----------
+async function uploadFacilityFiles(table, rdid, files, replace) {
+    const formData = new FormData();
+    formData.append('table', table);
+    formData.append('facility_rdid', rdid);
+    if (replace) formData.append('replace', '1');
+    files.forEach((f) => formData.append('files', f));
+    const res = await fetch('/api/sections/facility-files', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409 && data.conflicts && !replace) {
+        if (!confirm(`같은 이름의 파일이 이미 있습니다:\n${data.conflicts.slice(0, 5).join('\n')}\n\n덮어쓰시겠습니까?(이전 파일은 지워집니다)`)) return false;
+        return uploadFacilityFiles(table, rdid, files, true);
+    }
+    if (!res.ok) throw new Error(data.error || '업로드 실패');
+    return true;
+}
+
+// 올린 뒤 그 시설물의 속성정보·파일 보기를 다시 연다(위치 정보가 없는 시설물도 연다)
+async function refreshFacilityView(table, rdid) {
+    const params = new URLSearchParams({ table, facility_rdid: rdid });
+    const record = (await fetch('/api/sections/facility-detail?' + params.toString()).then((r) => r.json())).record;
+    if (!record) return;
+    const feature = record.geom
+        ? new ol.format.GeoJSON().readFeature({ type: 'Feature', geometry: record.geom, properties: {} }, { featureProjection: map.getView().getProjection() })
+        : new ol.Feature();
+    feature.setProperties({ facilityTable: table, facilityRdid: rdid, label: record.label, name: record.name });
+    await openFacilityMarkerFiles(feature);
+}
+
+// 시설물 파일 삭제 — 서버에서 지우고(30일은 서버 보관 폴더에 남음) 그 시설물의 파일 보기를 다시 연다
+async function deleteFacilityFile(id, name, table, rdid) {
+    if (!document.body.classList.contains('admin-mode')) { alert('편집 모드에서만 파일을 지울 수 있습니다.'); return false; }
+    if (!confirm(`'${name}' 파일을 삭제하시겠습니까?\n서버에서 지워지며, 30일 동안은 서버 보관 폴더에 남아 관리자가 복구할 수 있습니다.`)) return false;
+    try {
+        const res = await fetch('/api/sections/facility-files/' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '삭제 실패');
+    } catch (err) {
+        alert(err.message || '삭제 실패');
+        return false;
+    }
+    if (table && rdid) await refreshFacilityView(table, rdid);
+    return true;
+}
+
+document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('.fm-file-del, .fib-del') : null;
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    deleteFacilityFile(btn.dataset.id, btn.dataset.name, btn.dataset.table, btn.dataset.rdid);
+});
+
+document.addEventListener('change', async (e) => {
+    const input = e.target && e.target.classList && e.target.classList.contains('fib-upload-input') ? e.target : null;
+    if (!input) return;
+    const files = [...input.files];
+    input.value = '';
+    if (!files.length) return;
+    if (!document.body.classList.contains('admin-mode')) { alert('편집 모드에서만 파일을 올릴 수 있습니다.'); return; }
+    const label = input.closest('.fib-upload');
+    if (label) label.classList.add('busy');
+    try {
+        const ok = await uploadFacilityFiles(input.dataset.table, input.dataset.rdid, files, false);
+        if (ok) await refreshFacilityView(input.dataset.table, input.dataset.rdid);
+    } catch (err) {
+        alert(err.message || '업로드 실패');
+    } finally {
+        if (label && label.isConnected) label.classList.remove('busy');
+    }
+});
 
 // 지도의 부속시설 마커 클릭 — 그 시설물에 첨부된 사진/보고서(gov_facility_files)가
 // 있으면 분할화면에 보여준다. 1건이면 바로 열고, 여러 건이면(예: 표지 하나에
@@ -2179,7 +2260,7 @@ async function openFacilityMarkerFiles(feature) {
         ]);
         files = filesData.files || [];
         if (detailData.record) {
-            facilityInfo = { label: detailData.record.label, name: detailData.record.name, attributes: detailData.record.attributes };
+            facilityInfo = { label: detailData.record.label, name: detailData.record.name, attributes: detailData.record.attributes, table: detailData.record.table, rdid: detailData.record.rdid };
         }
     } catch (e) { return; }
     // 첨부파일이 없어도 속성정보(facilityInfo)만 있으면 그거라도 보여준다 —
@@ -2190,7 +2271,7 @@ async function openFacilityMarkerFiles(feature) {
     // 지도에서 마커를 직접 클릭한 경우도 파일 목록에서 클릭한 것과 동일하게
     // 3초 깜빡임으로 어떤 시설물을 선택했는지 확인시켜준다(이동은 필요 없음 —
     // 이미 그 위치를 보고 있는 상태라 highlightFacilityFeature만 호출).
-    highlightFacilityFeature(new ol.Feature({ geometry: feature.getGeometry().clone() }));
+    if (feature.getGeometry()) highlightFacilityFeature(new ol.Feature({ geometry: feature.getGeometry().clone() }));
 
     if (files.length === 1) {
         openFilePreview(null, files[0].id, files[0].original_name, '/api/sections/facility-files', facilityInfo);
@@ -2220,7 +2301,7 @@ async function openFacilityMarkerFiles(feature) {
             const media = buildFilePreviewMediaHtml(f.original_name, viewUrl, downloadUrl, 'width:100%;max-height:560px;');
             return `
                 <div class="fm-gallery-item">
-                    <div class="fm-gallery-item-label"><span>${escapeHtml(f.file_kind)}</span><span>${escapeHtml(f.original_name)}</span></div>
+                    <div class="fm-gallery-item-label"><span>${escapeHtml(f.file_kind)}</span><span>${escapeHtml(f.original_name)}</span><button type="button" class="fm-file-del" data-id="${f.id}" data-name="${escapeHtml(f.original_name)}" data-table="${escapeHtml(table)}" data-rdid="${escapeHtml(facilityRdid)}" title="이 파일 삭제 (편집 모드)"><i class="fa-solid fa-trash"></i></button></div>
                     ${media}
                 </div>`;
         }).join('');
@@ -2680,6 +2761,7 @@ function initSplitView() {
         if (evt && splitter.hasPointerCapture(evt.pointerId)) splitter.releasePointerCapture(evt.pointerId);
         map.updateSize();
         satMap.updateSize();
+        updateMapFooterPosition();
     };
     window.addEventListener('pointermove', (evt) => {
         if (!isDraggingSplit) return;
@@ -2733,6 +2815,7 @@ function toggleSplitView() {
     setTimeout(() => {
         map.updateSize();
         if (satMap) satMap.updateSize();
+        updateMapFooterPosition();
     }, 220);
 }
 
@@ -2923,7 +3006,7 @@ async function openRoadviewFacilityInfo(feature) {
         ]);
         files = filesData.files || [];
         if (detailData.record) {
-            facilityInfo = { label: detailData.record.label, name: detailData.record.name, attributes: detailData.record.attributes };
+            facilityInfo = { label: detailData.record.label, name: detailData.record.name, attributes: detailData.record.attributes, table: detailData.record.table, rdid: detailData.record.rdid };
         }
     } catch (e) { return; }
     if (!files.length && !facilityInfo) return;
@@ -2942,7 +3025,7 @@ async function openRoadviewFacilityInfo(feature) {
             const media = buildFilePreviewMediaHtml(f.original_name, viewUrl, downloadUrl, 'width:100%;max-height:420px;');
             return `
                 <div class="fm-gallery-item">
-                    <div class="fm-gallery-item-label"><span>${escapeHtml(f.file_kind)}</span><span>${escapeHtml(f.original_name)}</span></div>
+                    <div class="fm-gallery-item-label"><span>${escapeHtml(f.file_kind)}</span><span>${escapeHtml(f.original_name)}</span><button type="button" class="fm-file-del" data-id="${f.id}" data-name="${escapeHtml(f.original_name)}" data-table="${escapeHtml(table)}" data-rdid="${escapeHtml(facilityRdid)}" title="이 파일 삭제 (편집 모드)"><i class="fa-solid fa-trash"></i></button></div>
                     ${media}
                 </div>`;
         }).join('');
@@ -3308,8 +3391,33 @@ async function loadMapFooter() {
     try {
         const { copyright } = await fetch('/api/auth/site-info').then((r) => r.json());
         document.getElementById('map-footer').textContent = copyright || '';
+        updateMapFooterPosition();
     } catch (e) { /* 문구가 없어도 동작에는 영향 없음 */ }
 }
+
+// 저작권 문구는 평소 오른쪽 아래 구석에 두고, 왼쪽 아래의 축척·측정 도구와 겹칠 때만 한 줄 위로 올린다.
+// 단, 분할 화면을 기본 비율(40%)로 연 상태에서는 겹쳐도 그대로 두고, 분할 비율을 늘려 지도가 더 좁아졌을 때만 올린다
+// (예전엔 지도 폭이 640px 이하면 무조건 올려서 분할 화면을 기본 비율로 열기만 해도 문구가 올라갔다).
+// 폭이 바뀔 때마다 직접 잰다 — 분할 열기·분할선 끌기·창 크기·측정 도구 접기·문구 길이(시군구 영문명) 모두 반영된다.
+function updateMapFooterPosition() {
+    const container = document.getElementById('map-container');
+    const footer = document.getElementById('map-footer');
+    const bar = document.getElementById('map-bottom-bar');
+    if (!container || !footer || !bar || !footer.textContent) return;
+    const c = container.getBoundingClientRect();
+    const barRight = Math.max(...[...bar.children].map((el) => el.getBoundingClientRect().right), bar.getBoundingClientRect().left);
+    const footerLeftIfLow = c.right - 12 - footer.offsetWidth; // 구석(오른쪽 12px)에 둘 때 문구의 왼쪽 끝
+    const overlap = footerLeftIfLow < barRight + 8;
+    const rightPane = document.getElementById('right-pane');
+    const splitOpen = !!rightPane && rightPane.offsetWidth > 0 && rightPane.parentElement && rightPane.parentElement.clientWidth > 0;
+    const widened = splitOpen && rightPane.offsetWidth / rightPane.parentElement.clientWidth > 0.41; // 기본 40%보다 넓힘
+    container.classList.toggle('footer-raised', overlap && (!splitOpen || widened));
+}
+if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => updateMapFooterPosition());
+    ['map-container', 'map-bottom-bar', 'map-footer'].forEach((id) => { const el = document.getElementById(id); if (el) ro.observe(el); });
+}
+window.addEventListener('resize', updateMapFooterPosition);
 
 // ---------- 계정관리(관리자 전용) ----------
 // 새 계정 폼에서 관리자가 시군구명을 검색해 실제로 고른 항목 — 코드를
@@ -5081,6 +5189,8 @@ async function loadLedgerTree() {
         const routes = dataByGrade.get(grade) || [];
         const totalSections = routes.reduce((sum, r) => sum + r.sections.length, 0);
         const gradeNode = buildTreeGroup(grade, totalSections);
+        // 도로 종류 제목을 누르면(펴기/접기와 함께) 그 종류의 노선 전부를 지도에 표시한다
+        if (totalSections > 0) gradeNode.node.querySelector('.tree-node-label').addEventListener('click', () => showGradeRoutesOnMap(grade));
         if (routes.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'tree-node-empty';
@@ -5222,9 +5332,7 @@ function buildTreeLeaf(label, sectionInfo) {
         labelEl.appendChild(delBtn);
 
         // 주요시설물/부대시설을 따로 켜고 끌 수 있게 아이콘 2개로 분리했다.
-        // 구간을 선택하면(라벨 클릭) 주요시설물은 자동으로 켜지고(교량/터널 등
-        // 자주 찾는 것부터 바로 보여주기 위함, selectSectionForLeftSidebar 참고)
-        // 부대시설은 계속 꺼진 채로 남는다 — 필요할 때만 이 아이콘으로 켠다.
+        // 구간을 선택해도 둘 다 자동으로 켜지지 않는다 — 필요할 때만 이 아이콘으로 켠다.
         const toggleGroup = document.createElement('span');
         toggleGroup.className = 'tree-facility-toggle-group';
         FACILITY_TOGGLE_GROUP_DEFS.forEach(({ name, className, icon }) => {
@@ -5458,9 +5566,50 @@ function initRouteFacilitySection() {
     });
 }
 
+// 지도를 범위에 맞춘다 — 구간/노선/전체보기/도로 종류 선택이 모두 이 함수를 쓴다.
+//  · 맞추기 직전에 지도 크기를 다시 잰다(사이드바를 열고 닫은 직후의 옛 크기로 계산해 엉뚱한 곳·엉뚱한 줌으로 가는 것을 막는다).
+//  · 지도가 숨겨져 크기가 0이면 fit 계산이 깨지므로 중심만 옮긴다.
+//  · 지도가 좁아도 여백이 화면을 넘지 않게 줄인다.
+//  · 애니메이션이 다른 렌더링에 끊겨 중간에 멈추면(사용자가 직접 움직인 게 아닐 때만) 같은 범위로 즉시 다시 맞춘다.
+let mapFitToken = 0;
+function fitMapToExtent(extent, maxZoom) {
+    if (!extent || extent.some((v) => !isFinite(v))) return;
+    const view = map.getView();
+    const token = ++mapFitToken;
+    map.updateSize();
+    view.cancelAnimations();
+    const size = map.getSize();
+    if (!size || size[0] < 50 || size[1] < 50) {
+        view.setCenter(ol.extent.getCenter(extent));
+        view.setZoom(Math.min(maxZoom, 13));
+        return;
+    }
+    const pad = Math.max(10, Math.min(60, Math.floor(Math.min(size[0], size[1]) / 4)));
+    const opts = { padding: [pad, pad, pad, pad], maxZoom };
+    view.fit(extent, Object.assign({
+        duration: 500,
+        callback: (done) => {
+            if (done || token !== mapFitToken || view.getInteracting()) return;
+            view.fit(extent, opts);
+        },
+    }, opts));
+    // 사이드바가 열리거나 닫히는 중(0.2초 전환)에 맞춘 경우 — 전환이 끝나 지도 크기가 달라졌으면 한 번 더 맞춘다
+    setTimeout(() => {
+        if (token !== mapFitToken || view.getInteracting()) return;
+        map.updateSize();
+        const now = map.getSize();
+        if (now && (now[0] !== size[0] || now[1] !== size[1])) {
+            view.cancelAnimations();
+            view.fit(extent, { padding: [pad, pad, pad, pad], maxZoom });
+        }
+    }, 320);
+}
+
 async function highlightSectionGeom(rdid) {
+    const seq = ++routeFocusSeq;
     routeHighlightLayer.getSource().clear();
     const { record } = await fetch(`/api/sections/${rdid}`).then((r) => r.json());
+    if (seq !== routeFocusSeq) return; // 그 사이 다른 구간·노선·전체보기를 눌렀다 — 늦게 도착한 응답이 지도를 되돌리지 않게 한다
     if (!record?.geom) { stopRouteHighlightBlink(); return; }
     const geojsonFormat = new ol.format.GeoJSON();
     const feature = geojsonFormat.readFeature(
@@ -5469,7 +5618,7 @@ async function highlightSectionGeom(rdid) {
     );
     routeHighlightLayer.getSource().addFeature(feature);
     const extent = feature.getGeometry().getExtent();
-    map.getView().fit(extent, { duration: 500, padding: [60, 60, 60, 60], maxZoom: 18 });
+    fitMapToExtent(extent, 18);
     startRouteHighlightBlink();
 }
 
@@ -5486,9 +5635,11 @@ async function highlightSectionGeom(rdid) {
 async function selectRouteGroup(grade, route) {
     const rdids = (route.sections || []).map((s) => s.rdid).filter(Boolean);
     if (!rdids.length) return;
+    const seq = ++routeFocusSeq;
     const results = await Promise.all(
         rdids.map((rdid) => fetch(`/api/sections/${rdid}`).then((r) => r.json()))
     );
+    if (seq !== routeFocusSeq) return;
     const records = results.map((r) => r.record).filter(Boolean);
 
     routeHighlightLayer.getSource().clear();
@@ -5505,7 +5656,7 @@ async function selectRouteGroup(grade, route) {
         combinedExtent = combinedExtent ? ol.extent.extend(combinedExtent, extent) : extent;
     });
     if (combinedExtent) {
-        map.getView().fit(combinedExtent, { duration: 500, padding: [60, 60, 60, 60], maxZoom: 18 });
+        fitMapToExtent(combinedExtent, 18);
         startRouteHighlightBlink();
     } else {
         stopRouteHighlightBlink();
@@ -5555,10 +5706,31 @@ function loadRouteGroupInfoPanel(grade, route, records) {
 // 전용 API(/api/sections/all-geoms)로 한 번에 받아온다. 강조 표시는 안 함
 // (routeHighlightLayer는 노란 강조선 하나를 위한 스타일이라 여러 구간을
 // 한꺼번에 켜면 지도가 지저분해짐) — 범위만 맞춘다.
+let routeFocusSeq = 0; // 지도에 노선을 맞추는 요청 번호(마지막 요청만 반영)
 async function fitAllRegisteredRoutes() {
+    const seq = ++routeFocusSeq;
     const { items } = await fetch('/api/sections/all-geoms').then((r) => r.json());
+    if (seq !== routeFocusSeq) return;
+    drawRoutesOnMap(items, '등록된 노선이 없습니다.');
+}
+
+// 트리의 도로 종류(군도 등) 제목을 눌렀을 때 — 그 종류의 등록된 노선을 지도에 전부 표시한다.
+async function showGradeRoutesOnMap(grade) {
+    try {
+        const seq = ++routeFocusSeq;
+        const res = await fetch('/api/sections/all-geoms?grade=' + encodeURIComponent(grade));
+        if (!res.ok) return;
+        const { items } = await res.json();
+        if (seq !== routeFocusSeq) return;
+        if (!items || !items.length) return; // 노선 없는 종류는 조용히 넘어간다(0건 표시로 충분)
+        document.querySelectorAll('.tree-leaf.selected').forEach((el) => el.classList.remove('selected'));
+        drawRoutesOnMap(items);
+    } catch (e) { /* 지도 표시만 못 할 뿐 — 트리 펴기/접기는 그대로 동작 */ }
+}
+
+function drawRoutesOnMap(items, emptyMessage) {
     if (!items || !items.length) {
-        alert('등록된 노선이 없습니다.');
+        if (emptyMessage) alert(emptyMessage);
         return;
     }
     // 노선 하나 선택할 때 쓰는 것과 같은 강조 레이어(routeHighlightLayer)를
@@ -5579,7 +5751,7 @@ async function fitAllRegisteredRoutes() {
         combinedExtent = combinedExtent ? ol.extent.extend(combinedExtent, extent) : extent;
     });
     if (!combinedExtent) return;
-    map.getView().fit(combinedExtent, { duration: 500, padding: [60, 60, 60, 60], maxZoom: 16 });
+    fitMapToExtent(combinedExtent, 16);
 }
 
 // 노선을 선택했을 때 지도 위 강조선(routeHighlightLayer)이 5초간 깜빡여서
@@ -6295,15 +6467,7 @@ function selectSectionForLeftSidebar(section) {
     refreshRouteFilePanel();
     loadRouteFacilityCounts(section);
     loadRouteSectors(section);
-    // 구간을 선택하면 주요시설물은 기본으로 켠다(부대시설은 꺼진 채 유지) —
-    // 교량/터널 등 자주 찾는 것부터 별도 조작 없이 바로 보여주기 위함.
-    // 트리에 이 구간의 리프가 실제로 그려져 있으면(데이터보기 탭이 열려있는
-    // 경우) 아이콘 상태도 같이 맞춘다 — 없어도(도로 탭 구간 선택 등) 지도
-    // 표시 자체는 그대로 켜진다.
-    const mainToggleBtn = section.rdid
-        ? document.querySelector(`.tree-leaf[data-rdid="${section.rdid}"] .tree-facility-toggle.group-main`)
-        : null;
-    setSectionFacilityGroupActive(section, '주요시설물', true, mainToggleBtn);
+    // 시설물(주요시설물·부대시설)은 구간을 선택해도 자동으로 켜지 않는다 — 필요할 때 트리의 아이콘으로 켠다.
     if (section.rdid) {
         highlightSectionGeom(section.rdid);
         loadSectionPanel(section.rdid);

@@ -9,13 +9,11 @@ const path = require('path');
 const { openZip } = require('./zipOpen');
 const pool = require('../db');
 const config = require('../config');
+const { routeFilesDir } = require('./uploadPaths');
+const pending = require('./pendingUploads');
+const batchLib = require('./importBatch');
 const { convertDwgToDxf } = require('./dwgConvert');
 const { parseStationFilename, ROUTE_SECT_FILE_RE, SECTION_WHOLE_FILE_RE } = require('./routeFileNaming');
-
-function routeDirName(roadGrade, routeNo, routeName) {
-    const safe = (s) => String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim();
-    return [safe(roadGrade), safe(routeNo), safe(routeName)].filter(Boolean).join('__') || 'unspecified';
-}
 
 function walkFiles(dir) {
     const out = [];
@@ -42,8 +40,34 @@ function matchSectBySuffix(baseName, knownSects) {
 // 자동 인식 업로드가 같이 쓴다. dir: 저장 폴더(노선별).
 // recorder: 일괄등록 이력(importBatch.makeRecorder)이 넘어오면, 교체되는 옛 파일은 지우지 않고 휴지통에 보관하고 추가된 행을 기록한다.
 async function placeDrawing({ filePath, base, section, category, segInfo, userId, userSigungu, dir, recorder }) {
-    const roadGrade = section.road_rank_name, routeNo = section.route_no, routeName = section.route_name;
+    return placeFile({
+        filePath, base, category, segInfo, userId, dir, recorder,
+        route: { roadGrade: section.road_rank_name, routeNo: section.route_no, routeName: section.route_name, sectionRdid: section.rdid },
+        sigungu: userSigungu || section.sigungu_code || null,
+    });
+}
+
+// 같은 구간+같은 파일명의 기존 도면 행(구간이 없는 파일은 같은 노선+같은 시군구 안에서). 카테고리는 따지지 않는다.
+async function findExisting(route, name, sigungu) {
+    if (route.sectionRdid) {
+        const { rows } = await pool.query(
+            'SELECT id, uploaded_at FROM route_files WHERE section_rdid = $1 AND original_name = $2 ORDER BY id', [route.sectionRdid, name]
+        );
+        return rows;
+    }
+    const { rows } = await pool.query(
+        `SELECT id, uploaded_at FROM route_files
+          WHERE section_rdid IS NULL AND road_grade = $1 AND route_no = $2 AND route_name = $3 AND original_name = $4
+            AND sigungu_code IS NOT DISTINCT FROM $5 ORDER BY id`,
+        [route.roadGrade, route.routeNo || '', route.routeName || '', name, sigungu || null]
+    );
+    return rows;
+}
+
+// route: { roadGrade, routeNo, routeName, sectionRdid('' 또는 null이면 구간 없음) }
+async function placeFile({ filePath, base, route, category, segInfo, userId, sigungu, dir, recorder }) {
     const storedPath = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}_${base.replace(/[/\\]/g, '_')}`); // 파일명에 경로 구분자가 있어도 폴더 밖으로 나가지 않게
+    fs.mkdirSync(dir, { recursive: true });
     fs.copyFileSync(filePath, storedPath);
 
     let convertedPath = null;
@@ -52,20 +76,14 @@ async function placeDrawing({ filePath, base, section, category, segInfo, userId
         if (await convertDwgToDxf(storedPath, candidate)) convertedPath = candidate;
     }
 
-    // 같은 zip을 재업로드해도(재시도 등) 쌓이지 않도록, 같은 구간+같은
-    // 파일명의 기존 행을 지우고 새로 넣는다(bulkImport.js의 도면 자동첨부와
-    // 동일한 관례). DB 행만 지우고 디스크의 실제 파일을 안 지우면 재업로드할
-    // 때마다 옛 파일이 orphan으로 계속 쌓인다(실사용 중 확인됨 — 같은
-    // 파일명이 디스크에 3벌씩 남아있었음) — 그래서 지우기 전에 옛 경로를
-    // 먼저 조회해서 같이 정리한다.
-    const { rows: oldRows } = await pool.query(
-        'SELECT * FROM route_files WHERE section_rdid = $1 AND original_name = $2',
-        [section.rdid, base]
-    );
-    await pool.query(
-        'DELETE FROM route_files WHERE section_rdid = $1 AND original_name = $2',
-        [section.rdid, base]
-    );
+    // 같은 구간+같은 파일명의 기존 행은 지우고 새로 넣는다. DB 행만 지우고 디스크의 실제 파일을 안 지우면 재업로드할
+    // 때마다 옛 파일이 orphan으로 계속 쌓인다(실사용 중 확인됨 — 같은 파일명이 디스크에 3벌씩 남아있었음) — 그래서 지우기
+    // 전에 옛 경로를 먼저 조회해서 같이 정리한다. recorder가 있으면 지우지 않고 보관함(되돌릴 수 있게)으로 옮긴다.
+    const existing = await findExisting(route, base, sigungu);
+    const oldRows = existing.length
+        ? (await pool.query('SELECT * FROM route_files WHERE id = ANY($1)', [existing.map((r) => r.id)])).rows
+        : [];
+    if (oldRows.length) await pool.query('DELETE FROM route_files WHERE id = ANY($1)', [oldRows.map((r) => r.id)]);
     for (const old of oldRows) {
         if (recorder) { await recorder.replaced('route_files', old); continue; }
         if (old.stored_path) fs.rm(old.stored_path, { force: true }, () => {});
@@ -76,7 +94,7 @@ async function placeDrawing({ filePath, base, section, category, segInfo, userId
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          RETURNING id, file_category, original_name, stored_path, converted_path, (converted_path IS NOT NULL) AS has_preview`,
         [
-            roadGrade, routeNo, routeName, section.rdid, category, base, storedPath, convertedPath, userId, userSigungu || section.sigungu_code || null,
+            route.roadGrade, route.routeNo, route.routeName, route.sectionRdid || null, category, base, storedPath, convertedPath, userId, sigungu || null,
             segInfo ? segInfo.segNo : null, segInfo ? segInfo.segStartKm : null, segInfo ? segInfo.segEndKm : null, segInfo ? segInfo.segVariant : null,
         ]
     );
@@ -110,8 +128,6 @@ async function bulkUploadRouteDrawings({ zipPath, roadGrade, routeNo, routeName,
     }
 
     const allFiles = walkFiles(tmpDir).filter((f) => /\.(dwg|dxf)$/i.test(f));
-    const dir = path.join(config.uploadDir, 'routes', routeDirName(roadGrade, routeNo, routeName));
-    fs.mkdirSync(dir, { recursive: true });
 
     const matched = [];
     const unmatched = [];
@@ -143,6 +159,8 @@ async function bulkUploadRouteDrawings({ zipPath, roadGrade, routeNo, routeName,
         }
 
         const section = sectionBySect.get(sect);
+        const dir = routeFilesDir(userSigungu || section.sigungu_code, roadGrade, routeNo, routeName);
+        fs.mkdirSync(dir, { recursive: true });
         await placeDrawing({ filePath, base, section, category, segInfo, userId, userSigungu, dir });
         matched.push({ name: base, sect, category });
     }
@@ -209,7 +227,7 @@ function resolveDrawingTarget(base, sections, hint) {
 }
 
 // files: [{ path, name }] — .dwg/.dxf 또는 .zip(안의 dwg/dxf를 꺼냄). hint: { roadGrade, routeNo } 또는 null.
-async function autoUploadRouteDrawings({ files, hint, userId, userSigungu, recorder }) {
+async function autoUploadRouteDrawings({ files, hint, userId, userSigungu, recorder, holdDuplicates }) {
     const { rows: sections } = await pool.query(
         `SELECT rdid, sect, length_m, road_rank_name, route_no, route_name, sigungu_code FROM road_sections
           WHERE ($1::text IS NULL OR sigungu_code IS NULL OR sigungu_code = $1)`,
@@ -240,19 +258,64 @@ async function autoUploadRouteDrawings({ files, hint, userId, userSigungu, recor
         }
 
         const matched = [];
+        const held = [];       // holdDuplicates: 이미 같은 이름이 있어 따로 빼 둔 파일
+        const duplicates = [];
         for (const item of items) {
             const t = resolveDrawingTarget(item.name, sections, hint);
             if (!t.section) { unmatched.push({ name: item.name, reason: t.reason }); continue; }
             const sec = t.section;
-            const dir = path.join(config.uploadDir, 'routes', routeDirName(sec.road_rank_name, sec.route_no, sec.route_name));
+            const dir = routeFilesDir(userSigungu || sec.sigungu_code, sec.road_rank_name, sec.route_no, sec.route_name);
             fs.mkdirSync(dir, { recursive: true });
+            if (holdDuplicates) {
+                const route = { roadGrade: sec.road_rank_name, routeNo: sec.route_no, routeName: sec.route_name, sectionRdid: sec.rdid };
+                const sigungu = userSigungu || sec.sigungu_code || null;
+                const existing = await findExisting(route, item.name, sigungu);
+                if (existing.length) {
+                    held.push({ srcPath: item.path, name: item.name, route, category: t.category, segInfo: t.segInfo, sigungu, existing: { id: existing[0].id, uploadedAt: existing[0].uploaded_at } });
+                    duplicates.push({ name: item.name, roadGrade: sec.road_rank_name, routeNo: sec.route_no, routeName: sec.route_name, sect: sec.sect, existingUploadedAt: existing[0].uploaded_at });
+                    continue;
+                }
+            }
             const file = await placeDrawing({ filePath: item.path, base: item.name, section: sec, category: t.category, segInfo: t.segInfo, userId, userSigungu, dir, recorder });
             matched.push({ file, name: item.name, roadGrade: sec.road_rank_name, routeNo: sec.route_no, routeName: sec.route_name, sect: sec.sect, category: t.category });
         }
-        return { matched, unmatched };
+        const pendingToken = held.length ? pending.create({ userId, sigungu: userSigungu, items: held }) : null;
+        return { matched, unmatched, duplicates, pendingToken };
     } finally {
         tmpDirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
     }
 }
 
-module.exports = { bulkUploadRouteDrawings, autoUploadRouteDrawings };
+// 따로 빼 둔 같은 이름의 파일을 처리한다. action: 'replace'(기존 파일은 보관함으로 옮기고 새 파일로 교체 — 일괄등록 이력에 한 건으로 남아 되돌릴 수 있음)
+// 또는 'discard'(교체하지 않고 새 파일을 버림). 올린 본인이 만든 토큰만 처리한다.
+async function resolvePending({ tokens, action, user }) {
+    const list = [...new Set(tokens)].map((t) => pending.load(t)).filter((m) => m && m.userId === user.id);
+    const count = list.reduce((n, m) => n + m.items.length, 0);
+    if (action !== 'replace') {
+        list.forEach((m) => pending.remove(m.token));
+        return { discarded: count };
+    }
+    if (!list.length) return { replaced: 0 };
+    const batchId = await batchLib.createBatch({ user, sigunguCode: user.sigunguCode || null, sourceLabel: '도면 교체(같은 이름 다시 올림)' });
+    const recorder = batchLib.makeRecorder(batchId);
+    const names = [];
+    try {
+        for (const m of list) {
+            for (const it of m.items) {
+                const dir = routeFilesDir(it.sigungu, it.route.roadGrade, it.route.routeNo, it.route.routeName);
+                await placeFile({ filePath: it.path, base: it.name, route: it.route, category: it.category, segInfo: it.segInfo, userId: user.id, sigungu: it.sigungu, dir, recorder });
+                names.push(it.name);
+            }
+        }
+    } catch (e) {
+        // 일부만 바뀐 채 멈춘 경우에도 바뀐 것은 되돌릴 수 있게 남긴다
+        await batchLib.finishBatch(batchId, { status: names.length ? 'applied' : 'failed', summary: `도면 ${names.length}개 교체 후 오류로 중단` });
+        throw e;
+    }
+    const summary = `도면 교체 ${names.length}개: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` 외 ${names.length - 5}개` : ''}`;
+    await batchLib.finishBatch(batchId, { status: 'applied', summary, detail: { replaced: names } });
+    list.forEach((m) => pending.remove(m.token));
+    return { replaced: names.length, batchId };
+}
+
+module.exports = { bulkUploadRouteDrawings, autoUploadRouteDrawings, resolvePending, findExisting };

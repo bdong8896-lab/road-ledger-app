@@ -89,6 +89,16 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 /* ===== 지도 + 분할화면 ===== */
 #left-pane { flex: 1; display: flex; height: 100%; min-width: 0; }
 #map-container { position: relative; flex: 1; height: 100%; min-width: 0; }
+#cad-overlay-panel { position: absolute; left: 12px; bottom: 56px; width: 310px; max-width: calc(100% - 24px); z-index: 20; background: var(--panel-dark, #1c2330); border: 1px solid var(--border-med); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.8rem; color: var(--text-primary); box-shadow: 0 4px 16px rgba(0,0,0,.35); display: flex; flex-direction: column; gap: 8px; }
+#cad-overlay-panel .cov-head { display: flex; align-items: center; justify-content: space-between; }
+#cad-overlay-panel .cov-head button { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
+#cad-overlay-panel label { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+#cad-overlay-panel select { flex: 1; min-width: 0; background: var(--panel-mid); color: var(--text-primary); border: 1px solid var(--border-med); border-radius: var(--radius-sm); padding: 3px 4px; font-size: 0.76rem; }
+#cad-overlay-panel input[type=range] { flex: 1; }
+#cad-overlay-panel input[type=number] { width: 62px; background: var(--panel-mid); color: var(--text-primary); border: 1px solid var(--border-med); border-radius: var(--radius-sm); padding: 2px 4px; }
+#cad-overlay-panel .cov-row { display: flex; gap: 8px; flex-wrap: wrap; }
+#cad-overlay-panel .cov-row button { background: var(--panel-mid); border: 1px solid var(--border-med); color: var(--text-primary); border-radius: var(--radius-sm); padding: 4px 10px; cursor: pointer; font-size: 0.76rem; }
+#cad-overlay-status { color: var(--text-secondary); line-height: 1.45; font-size: 0.76rem; }
 #map { width: 100%; height: 100%; }
 
 #splitter {
@@ -161,7 +171,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
    같은 5:5 기본값). */
 #roadview-facility-panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #roadview-facility-panel-body .facility-info-bar { flex: 1 1 50%; min-height: 0; overflow-y: auto; background: #21252e; padding: 12px 16px 14px; }
-#roadview-facility-panel-body .fib-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+#roadview-facility-panel-body .fib-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 12px; }
 #roadview-facility-panel-body .fib-badge {
     flex-shrink: 0; background: var(--fib-accent, #556); color: #11141a; font-weight: 800;
     font-size: 0.74rem; letter-spacing: 0.02em; padding: 4px 11px; border-radius: 999px;
@@ -200,7 +210,7 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 }
 #file-preview-div .facility-info-resizer:hover,
 #file-preview-div .facility-info-resizer.active { background: var(--accent-dark); color: #fff; }
-#file-preview-div .fib-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+#file-preview-div .fib-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-right: 76px; margin-bottom: 12px; }
 #file-preview-div .fib-badge {
     flex-shrink: 0; background: var(--fib-accent, #556); color: #11141a; font-weight: 800;
     font-size: 0.74rem; letter-spacing: 0.02em; padding: 4px 11px; border-radius: 999px;
@@ -381,7 +391,8 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', 'Malg
 .route-drawing-type-btn.active { color: #fff; background: var(--accent-dark); border-color: var(--accent-dark); }
 
 #route-file-list { padding: 8px 12px; overflow-y: auto; flex: 1; min-height: 50px; }
-#route-file-upload-row { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border-dim); flex-shrink: 0; }
+#route-file-upload-row { display: none; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border-dim); flex-shrink: 0; }
+body.admin-mode #route-file-upload-row { display: flex; } /* 도면 올리기는 편집 모드에서만 */
 #route-file-upload-row input[type=file] { flex: 1; font-size: 0.75rem; color: var(--text-secondary); min-width: 0; }
 #route-upload-btn { width: auto; padding: 6px 14px; margin-top: 0; }
 
@@ -1529,12 +1540,8 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
     background: var(--float-bg); color: var(--text-secondary); padding: 3px 12px; border-radius: var(--radius-sm);
     white-space: nowrap; font-size: 0.7rem;
 }
-/* 지도 영역 자체의 폭 기준(도면 뷰어·사이드바를 열면 화면은 넓어도 지도는 좁아진다) —
-   좁으면 왼쪽 아래 축척·측정 도구 줄과 한 줄에 다 안 들어가므로 한 줄 위로 올린다 */
-#map-container { container-type: inline-size; container-name: mapview; }
-@container mapview (max-width: 640px) {
-    #map-footer { bottom: 50px; }
-}
+/* 왼쪽 아래 축척·측정 도구와 실제로 겹칠 때만 한 줄 위로 올린다(script.js updateMapFooterPosition이 .footer-raised를 붙인다) */
+#map-container.footer-raised #map-footer { bottom: 50px; }
 @media (max-width: 760px) {
     #console-body { flex-direction: column; }
     #console-nav { width: auto; flex-direction: row; overflow-x: auto; padding: 8px; border-right: none; border-bottom: 1px solid var(--border-dim); }
@@ -1868,3 +1875,17 @@ body.cad-popup-page #dxf-layer-list { overflow-y: visible; }
 #issue-editroute-bar span { font-size: 0.82rem; color: var(--text-secondary); white-space: nowrap; }
 #issue-editroute-bar .btn-squared { width: auto; padding: 7px 14px; font-size: 0.85rem; }
 #issue-editroute-bar .btn-outline { padding: 7px 14px; font-size: 0.85rem; }
+
+/* 시설물 속성정보 창 상단의 파일 올리기 — 편집 모드에서만 */
+.fib-upload { display: none; margin-left: 6px; align-items: center; gap: 6px; padding: 3px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-med); background: var(--panel-mid); color: var(--text-primary); font-size: 0.76rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+body.admin-mode .fib-upload { display: inline-flex; }
+.fib-upload:hover { border-color: var(--accent); color: var(--accent-hover); }
+.fib-upload.busy { opacity: .55; pointer-events: none; }
+.fib-upload.busy::after { content: '올리는 중…'; }
+
+/* 시설물 파일 삭제 — 편집 모드에서만 */
+.fm-file-del, .fib-del { display: none; align-items: center; gap: 5px; background: transparent; border: 1px solid var(--border-med); color: var(--danger-text, #d9534f); border-radius: var(--radius-sm); padding: 2px 8px; font-size: 0.74rem; cursor: pointer; white-space: nowrap; }
+.fm-file-del { margin-left: auto; padding: 2px 7px; }
+body.admin-mode .fm-file-del, body.admin-mode .fib-del { display: inline-flex; }
+.fm-file-del:hover, .fib-del:hover { border-color: var(--danger); background: var(--danger-bg); }
+.rff-row .rff-del { margin-left: auto; }

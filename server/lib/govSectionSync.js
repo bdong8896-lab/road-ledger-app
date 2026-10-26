@@ -85,8 +85,9 @@ async function syncGovSectionFromRoadSection(client, record) {
     // 있으면(예: 이후 실제 일괄등록 납품이 들어와 진짜 공식 데이터가 쌓인 경우)
     // 이 placeholder로 덮어쓰거나 중복 레코드를 만들지 않고 그냥 둔다.
     const { rows: dup } = await client.query(
-        `SELECT rdid FROM gov_section WHERE road_rank = $1 AND road_no = $2 AND sect = $3 AND rdid != $4`,
-        [record.road_rank_code, record.route_no, record.sect, record.rdid]
+        `SELECT rdid FROM gov_section WHERE road_rank = $1 AND road_no = $2 AND sect = $3 AND rdid != $4
+           AND (sigungu_code IS NOT DISTINCT FROM $5 OR sigungu_code IS NULL)`,
+        [record.road_rank_code, record.route_no, record.sect, record.rdid, record.sigungu_code || null]
     );
     if (dup.length) return;
 

@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const { roadIssueDir } = require('../lib/uploadPaths');
 const multer = require('multer');
 const pool = require('../db');
 const config = require('../config');
@@ -178,7 +179,7 @@ router.post('/:id/files', upload.single('file'), async (req, res) => {
     const userId = req.session.user.id;
     const originalName = fixMultipartFilename(req.file.originalname);
 
-    const dir = path.join(config.uploadDir, 'road-issues', String(id));
+    const dir = roadIssueDir(issue.rows[0].sigungu_code, id);
     fs.mkdirSync(dir, { recursive: true });
     const storedPath = path.join(dir, `${Date.now()}_${originalName.replace(/[/\\]/g, '_')}`);
     fs.writeFileSync(storedPath, req.file.buffer);

@@ -1542,3 +1542,20 @@ ALTER TABLE gov_xpoint ADD COLUMN IF NOT EXISTS geom JSONB;
 ALTER TABLE gov_xpoint ADD COLUMN IF NOT EXISTS sigungu_code VARCHAR(5);
 ALTER TABLE gov_xrail ADD COLUMN IF NOT EXISTS geom JSONB;
 ALTER TABLE gov_xrail ADD COLUMN IF NOT EXISTS sigungu_code VARCHAR(5);
+
+-- ============================================================
+-- 업무키(도로종류, 노선번호, 구간) 조회용 인덱스 — 구간 선택·마우스오버 집계·삭제·내려받기·통계가 전부 이 키로 시설물 테이블을 훑는다.
+-- 인덱스가 없으면 테이블마다 전체를 읽어, 노선이 수백 개로 늘면 화면 반응이 눈에 띄게 느려진다. (IF NOT EXISTS라 다시 실행해도 안전)
+-- ============================================================
+DO $$
+DECLARE t text;
+BEGIN
+    FOR t IN SELECT table_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name LIKE 'gov\_%' AND column_name = 'sect' LOOP
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = t AND column_name = 'road_rank') THEN
+            EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I (road_rank, road_no, sect)', 'idx_' || t || '_key', t);
+        ELSE
+            EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I (road_no, sect)', 'idx_' || t || '_key', t);
+        END IF;
+    END LOOP;
+END $$;

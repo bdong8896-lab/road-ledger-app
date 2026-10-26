@@ -4,6 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const multer = require('multer');
+const config = require('../config');
 const pool = require('../db');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
 const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
@@ -16,6 +18,7 @@ const { logAction } = require('../lib/auditLog');
 const { ROAD_RANK_CODES, ROAD_RANK_NAME_BY_CODE } = require('../lib/roadRank');
 const { deleteSection } = require('../lib/sectionDelete');
 const { searchFacilities } = require('../lib/facilitySearch');
+const { facilityFilesDir, deletedFacilityDir } = require('../lib/uploadPaths');
 const { getThumbPath, IMAGE_RE } = require('../lib/thumbnail');
 const { decodeCode } = require('../lib/govCodebook');
 
@@ -26,16 +29,28 @@ const router = express.Router();
 // 도로종류 이름 → 저장 코드. 같은 이름이라도 코드가 다를 수 있다(납품 코드가 1599인 노선을 "면도"로 보이게 해 둔 경우,
 // 화면 이름은 면도지만 코드는 1599). 그래서 등록된 구간(road_sections)에서 이름+노선번호로 실제 코드를 먼저 찾고,
 // 없으면 기본 코드표(ROAD_RANK_CODES)를 쓴다.
-async function rankCodeFor(roadRankName, routeNo) {
+async function rankCodeFor(roadRankName, routeNo, user) {
     const name = String(roadRankName || '').trim();
     const no = String(routeNo || '').trim();
     if (name && no) {
+        // 도로종류+노선번호는 시군구마다 겹칠 수 있다 — 관할이 있는 계정은 자기 관할의 구간에서 먼저 찾는다.
+        const params = [name, no];
+        let scope = '';
+        if (user && user.sigunguCode) { params.push(user.sigunguCode); scope = ' AND (sigungu_code = $3 OR sigungu_code IS NULL)'; }
         const { rows } = await pool.query(
-            'SELECT road_rank_code FROM road_sections WHERE road_rank_name = $1 AND route_no = $2 LIMIT 1', [name, no]
+            `SELECT road_rank_code FROM road_sections WHERE road_rank_name = $1 AND route_no = $2${scope} LIMIT 1`, params
         );
         if (rows[0]) return rows[0].road_rank_code;
     }
     return ROAD_RANK_CODES[name];
+}
+
+// (도로종류, 노선번호, 구간) 업무키는 시군구마다 같은 값이 있을 수 있다(예: 장성 군도 8호선 1구간과 화성 군도 8호선 1구간).
+// 관할이 있는 계정은 자기 관할의 시설물만 보도록 where에 시군구 조건을 붙인다(없으면 전체 권한이라 그대로).
+function withJurisdiction(user, where, params) {
+    if (!user || !user.sigunguCode) return where;
+    params.push(user.sigunguCode);
+    return `${where} AND (sigungu_code = $${params.length} OR sigungu_code IS NULL)`;
 }
 
 // gov_* 부속시설 테이블의 mco(관리기관 코드)를 풀어 보여주기 위한 표
@@ -179,13 +194,14 @@ function outsideJurisdiction(userSigungu, rowSigungu) {
 // rdid로 잘못 매칭되지 않는다.
 router.get('/facility-counts', async (req, res) => {
     const roadRankName = (req.query.road_rank_name || '').trim();
-    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no);
+    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no, req.session.user);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ counts: {} });
 
-    const where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
+    let where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
+    where = withJurisdiction(req.session.user, where, params);
 
     const entries = await Promise.all(
         Object.entries(FACILITY_TABLE_MAP).map(async ([label, table]) => {
@@ -206,13 +222,14 @@ router.get('/facility-counts', async (req, res) => {
 // 돌려주고, 그 경우 프론트는 예전처럼 구간 전체 합계 표시로 자연히 되돌아간다.
 router.get('/sectors', async (req, res) => {
     const roadRankName = (req.query.road_rank_name || '').trim();
-    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no);
+    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no, req.session.user);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ sectors: [] });
 
-    const where = sect ? 'road_rank_code = $1 AND road_no = $2 AND sect = $3' : 'road_rank_code = $1 AND road_no = $2';
+    let where = sect ? 'road_rank_code = $1 AND road_no = $2 AND sect = $3' : 'road_rank_code = $1 AND road_no = $2';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
+    where = withJurisdiction(req.session.user, where, params);
     const { rows } = await pool.query(
         `SELECT sect, sect_st, sect_ed, geom FROM road_sectors WHERE ${where} ORDER BY sect, sect_st`,
         params
@@ -229,13 +246,14 @@ router.get('/sectors', async (req, res) => {
 // 테이블(예: 도로구역)은 조용히 건너뛴다.
 router.get('/facility-counts-by-sector', async (req, res) => {
     const roadRankName = (req.query.road_rank_name || '').trim();
-    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no);
+    const roadRankCode = await rankCodeFor(roadRankName, req.query.route_no, req.session.user);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ buckets: {} });
 
-    const where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
+    let where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
+    where = withJurisdiction(req.session.user, where, params);
 
     const buckets = {};
     await Promise.all(
@@ -263,15 +281,16 @@ router.get('/facility-counts-by-sector', async (req, res) => {
 // 시설물을 표시하기 위함. facility-counts와 같은 업무키로 조회한다.
 // '/:rdid'보다 먼저 등록해야 한다.
 router.get('/facility-geoms', async (req, res) => {
-    const roadRankCode = await rankCodeFor(req.query.road_rank_name, req.query.route_no);
+    const roadRankCode = await rankCodeFor(req.query.road_rank_name, req.query.route_no, req.session.user);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!roadRankCode || !routeNo) return res.json({ items: [] });
 
-    const where = sect
+    let where = sect
         ? 'road_rank = $1 AND road_no = $2 AND sect = $3 AND geom IS NOT NULL'
         : 'road_rank = $1 AND road_no = $2 AND geom IS NOT NULL';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
+    where = withJurisdiction(req.session.user, where, params);
 
     const perTable = await Promise.all(
         Object.entries(FACILITY_TABLE_MAP).map(async ([label, table]) => {
@@ -316,14 +335,15 @@ router.get('/facility-files', async (req, res) => {
 
     const label = (req.query.label || '').trim();
     const table = FACILITY_TABLE_MAP[label];
-    const roadRankCode = await rankCodeFor(req.query.road_rank_name, req.query.route_no);
+    const roadRankCode = await rankCodeFor(req.query.road_rank_name, req.query.route_no, req.session.user);
     const routeNo = (req.query.route_no || '').trim();
     const sect = (req.query.sect || '').trim();
     if (!table || !roadRankCode || !routeNo) return res.json({ files: [] });
 
     // sect가 없으면(노선 자체를 선택한 경우) 그 노선의 구간 전부에서 찾는다.
-    const where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
+    let where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
+    where = withJurisdiction(req.session.user, where, params);
     let rdids;
     try {
         const { rows } = await pool.query(`SELECT rdid FROM ${table} WHERE ${where}`, params);
@@ -445,6 +465,164 @@ async function generateRdid(roadRankCode, mcoCode, routeNo, sect) {
     return `R01${roadRankCode}${mco}${rno}${sc}${year}${serial}`;
 }
 
+// ---- 시설물 파일(사진/보고서) 직접 올리기 — 편집 모드(관리자)에서만 ----
+// 일괄등록이 붙이는 것과 같은 gov_facility_files에 같은 방식(uploads/gov-facility-files/<시군구>/<테이블>/)으로 저장해
+// 지도의 시설물 마커·속성정보 창에서 똑같이 보인다. 같은 시설물에 같은 이름이 이미 있으면 덮어쓸지 화면이 먼저 묻는다(replace=1).
+const FACILITY_UPLOAD_KIND = {
+    '.jpg': '사진', '.jpeg': '사진', '.png': '사진', '.gif': '사진', '.bmp': '사진', '.webp': '사진',
+    '.pdf': '보고서', '.hwp': '보고서', '.hwpx': '보고서', '.doc': '보고서', '.docx': '보고서', '.xls': '보고서', '.xlsx': '보고서',
+};
+const facilityUploadTmp = path.join(config.uploadDir, 'facility-files-tmp');
+fs.mkdirSync(facilityUploadTmp, { recursive: true });
+const facilityUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => { fs.mkdirSync(facilityUploadTmp, { recursive: true }); cb(null, facilityUploadTmp); }, // 폴더가 지워져도 다시 만든다
+        filename: (req, file, cb) => cb(null, `${Date.now()}_${Math.random().toString(36).slice(2)}`),
+    }),
+    limits: { fileSize: 200 * 1024 * 1024, files: 20 },
+});
+function uploadFacilityFilesMiddleware(req, res, next) {
+    facilityUpload.array('files', 20)(req, res, (err) => {
+        if (!err) return next();
+        const msg = err.code === 'LIMIT_FILE_SIZE' ? '파일 하나는 200MB까지 올릴 수 있습니다.'
+            : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? '한 번에 20개까지 올릴 수 있습니다.' : '업로드 중 오류가 발생했습니다.';
+        res.status(400).json({ error: msg });
+    });
+}
+async function moveFile(from, to) {
+    try { await fs.promises.rename(from, to); } catch (e) { await fs.promises.copyFile(from, to); await fs.promises.rm(from, { force: true }); }
+}
+
+router.post('/facility-files', requireAdmin, uploadFacilityFilesMiddleware, async (req, res) => {
+    const files = req.files || [];
+    const cleanupTemp = () => files.forEach((f) => fs.unlink(f.path, () => {}));
+    const table = String(req.body.table || '').trim();
+    const rdid = String(req.body.facility_rdid || '').trim();
+    const replace = req.body.replace === '1';
+    const layerDef = TABLE_TO_LAYERDEF[table];
+    if (!layerDef || !rdid || !files.length) { cleanupTemp(); return res.status(400).json({ error: '시설물과 올릴 파일을 확인하세요.' }); }
+
+    const { rows: [facility] } = await pool.query(
+        `SELECT ${layerDef.pkColumn} AS pk, sigungu_code FROM ${table} WHERE ${layerDef.pkColumn} = $1`, [rdid]
+    );
+    if (!facility) { cleanupTemp(); return res.status(404).json({ error: '시설물을 찾을 수 없습니다.' }); }
+    if (outsideJurisdiction(req.session.user.sigunguCode, facility.sigungu_code)) {
+        cleanupTemp();
+        return res.status(403).json({ error: '관할 시군구 밖의 시설물입니다.' });
+    }
+
+    const items = [];
+    const rejected = [];
+    for (const f of files) {
+        const name = path.basename(Buffer.from(f.originalname, 'latin1').toString('utf8')).slice(0, 200);
+        const kind = FACILITY_UPLOAD_KIND[path.extname(name).toLowerCase()];
+        if (!name || !kind) rejected.push(name || '(이름 없음)');
+        else items.push({ name, kind, tmp: f.path });
+    }
+    if (rejected.length) {
+        cleanupTemp();
+        return res.status(400).json({ error: `올릴 수 없는 형식입니다: ${rejected.slice(0, 5).join(', ')}\n(사진: jpg·png·gif·bmp·webp / 보고서: pdf·hwp·hwpx·doc(x)·xls(x))` });
+    }
+    if (new Set(items.map((i) => i.name)).size !== items.length) {
+        cleanupTemp();
+        return res.status(400).json({ error: '같은 이름의 파일이 두 개 이상 선택됐습니다. 이름을 다르게 해서 올려 주세요.' });
+    }
+
+    const { rows: old } = await pool.query(
+        'SELECT * FROM gov_facility_files WHERE facility_table = $1 AND facility_rdid = $2 AND original_name = ANY($3)', [table, rdid, items.map((i) => i.name)]
+    );
+    if (old.length && !replace) {
+        cleanupTemp();
+        return res.status(409).json({ error: '같은 이름의 파일이 이미 있습니다.', conflicts: old.map((o) => o.original_name) });
+    }
+
+    const dir = facilityFilesDir(facility.sigungu_code, table);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const saved = [];
+    const created = [];
+    try {
+        for (const it of items) {
+            const stored = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${it.name.replace(/[/\\]/g, '_')}`);
+            await moveFile(it.tmp, stored);
+            created.push(stored);
+            const { rows: [row] } = await pool.query(
+                `INSERT INTO gov_facility_files (facility_table, facility_rdid, file_kind, original_name, stored_path, sigungu_code, uploaded_by)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7)
+                 ON CONFLICT (facility_table, facility_rdid, original_name)
+                 DO UPDATE SET file_kind = EXCLUDED.file_kind, stored_path = EXCLUDED.stored_path, sigungu_code = EXCLUDED.sigungu_code,
+                     uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()
+                 RETURNING id, original_name, file_kind`,
+                [table, rdid, it.kind, it.name, stored, facility.sigungu_code || null, req.session.user.id]
+            );
+            saved.push(row);
+        }
+    } catch (e) {
+        console.error('[sections/facility-files upload]', e);
+        created.forEach((p) => fs.unlink(p, () => {}));
+        cleanupTemp();
+        return res.status(500).json({ error: '파일을 저장하지 못했습니다.' });
+    }
+    old.forEach((o) => { if (o.stored_path) fs.unlink(o.stored_path, () => {}); }); // 덮어쓴 옛 파일 정리
+    await logAction(null, {
+        action: 'create', targetTable: 'gov_facility_files', targetId: rdid,
+        summary: `시설물 파일 올리기: ${TABLE_TO_FACILITY_LABEL[table] || layerDef.koreanName} ${rdid} — ${saved.map((s) => s.original_name).join(', ').slice(0, 120)}${old.length ? ` (덮어쓰기 ${old.length}개)` : ''}`,
+        sigunguCode: facility.sigungu_code, user: req.session.user,
+    });
+    res.status(201).json({ files: saved, replaced: old.length });
+});
+
+// 시설물 파일 삭제 — DB 기록을 지우고, 파일은 바로 없애지 않고 서버의 보관 폴더로 옮겨 30일 뒤에 지운다(실수로 지웠을 때 관리자가 서버에서 되살릴 수 있게).
+const DELETED_FACILITY_DIR = path.join(config.uploadDir, '_deleted-facility-files');
+const DELETED_FACILITY_KEEP_DAYS = 30;
+async function purgeDeletedFacilityFiles() {
+    try {
+        if (!fs.existsSync(DELETED_FACILITY_DIR)) return;
+        const cutoff = Date.now() - DELETED_FACILITY_KEEP_DAYS * 24 * 3600 * 1000;
+        const sweep = async (dirPath, depth) => {
+            for (const name of await fs.promises.readdir(dirPath)) {
+                const p = path.join(dirPath, name);
+                const stat = await fs.promises.stat(p).catch(() => null);
+                if (!stat) continue;
+                if (stat.isDirectory()) { if (depth < 2) await sweep(p, depth + 1); }
+                else if (stat.mtimeMs < cutoff) await fs.promises.rm(p, { force: true }).catch(() => {});
+            }
+        };
+        await sweep(DELETED_FACILITY_DIR, 0);
+    } catch (e) { console.error('[facility-files/purge-deleted]', e.message); }
+}
+purgeDeletedFacilityFiles();
+setInterval(purgeDeletedFacilityFiles, 6 * 60 * 60 * 1000).unref();
+
+router.delete('/facility-files/:id', requireAdmin, async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: '잘못된 파일 번호입니다.' });
+    const { rows: [file] } = await pool.query('SELECT * FROM gov_facility_files WHERE id = $1', [id]);
+    if (!file) return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
+    if (outsideJurisdiction(req.session.user.sigunguCode, file.sigungu_code)) {
+        return res.status(403).json({ error: '관할 시군구 밖의 파일입니다.' });
+    }
+    await pool.query('DELETE FROM gov_facility_files WHERE id = $1', [id]);
+    let keptAt = null;
+    if (file.stored_path && fs.existsSync(file.stored_path)) {
+        try {
+            const keepDir = deletedFacilityDir(file.sigungu_code);
+            await fs.promises.mkdir(keepDir, { recursive: true });
+            keptAt = path.join(keepDir, `${Date.now()}_${id}_${path.basename(file.original_name).replace(/[/\\]/g, '_')}`);
+            await moveFile(file.stored_path, keptAt);
+            await fs.promises.utimes(keptAt, new Date(), new Date()); // 보관 기간은 지운 날부터 센다
+        } catch (e) {
+            console.error('[facility-files/delete move]', e.message);
+            fs.unlink(file.stored_path, () => {});
+        }
+    }
+    await logAction(null, {
+        action: 'delete', targetTable: 'gov_facility_files', targetId: file.facility_rdid,
+        summary: `시설물 파일 삭제: ${TABLE_TO_FACILITY_LABEL[file.facility_table] || file.facility_table} ${file.facility_rdid} — ${file.original_name}`,
+        detail: { id, file_kind: file.file_kind, keptAt }, sigunguCode: file.sigungu_code, user: req.session.user,
+    });
+    res.json({ ok: true });
+});
+
 // 시설물 검색(검색보기 탭 '시설물' 카테고리) — 시설물 ID(일부), "종류 번호", 이름. 구현은 lib/facilitySearch.js.
 // '/:rdid'보다 먼저 등록해야 한다.
 router.get('/facility-search', async (req, res) => {
@@ -511,11 +689,13 @@ router.get('/tree', async (req, res) => {
 
 // 등록된 전체 구간의 지오메트리 — 좌측 툴바 "전체보기" 버튼이 지도를 등록된
 // 노선 전체 범위로 한 번에 맞추는 데 쓴다. '/:rdid'보다 먼저 등록해야 한다.
+// ?grade=군도 처럼 도로 종류(road_rank_name)를 주면 그 종류의 구간만 돌려준다(트리의 도로 종류 제목을 눌렀을 때).
 router.get('/all-geoms', async (req, res) => {
     const userSigungu = req.session.user.sigunguCode;
-    const { rows } = await pool.query(
-        'SELECT rdid, geom, sigungu_code FROM road_sections WHERE geom IS NOT NULL'
-    );
+    const grade = typeof req.query.grade === 'string' ? req.query.grade.trim() : '';
+    const { rows } = grade
+        ? await pool.query('SELECT rdid, geom, sigungu_code FROM road_sections WHERE geom IS NOT NULL AND road_rank_name = $1', [grade])
+        : await pool.query('SELECT rdid, geom, sigungu_code FROM road_sections WHERE geom IS NOT NULL');
     const visible = rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code));
     res.json({ items: visible.map((r) => ({ rdid: r.rdid, geom: r.geom })) });
 });
