@@ -288,5 +288,5 @@ async function listBatches(user, limit = 40) {
 
 module.exports = {
     createBatch, finishBatch, snapshotRows, snapshotSector, recordFileReplaced, recordFileAdded, moveFilesToTrash,
-    makeRecorder, undoBatch, purgeOldBatches, listBatches, TRASH_ROOT,
+    makeRecorder, undoBatch, purgeOldBatches, listBatches, TRASH_ROOT, upsertJsonRow, PK_BY_TABLE,
 };

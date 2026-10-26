@@ -21,6 +21,7 @@ const adminSectionsRoutes = require('./routes/adminSections');
 const adminDashboardRoutes = require('./routes/adminDashboard');
 const adminQualityRoutes = require('./routes/adminQuality');
 const adminImportsRoutes = require('./routes/adminImports');
+const adminReportsRoutes = require('./routes/adminReports');
 const thumbnails = require('./lib/thumbnail');
 const sectionsRoutes = require('./routes/sections');
 const roadIssuesRoutes = require('./routes/roadIssues');
@@ -55,6 +56,7 @@ if (config.cookieSecure) {
 }
 
 app.use(express.json());
+app.use('/api', require('./lib/csrfOrigin').csrfOriginCheck);
 app.use(
     session({
         store: new pgSession({ pool, tableName: 'session' }),
@@ -103,6 +105,7 @@ app.use('/api/admin/sections', adminSectionsRoutes);
 adminDashboardRoutes.setRunningJobProvider(bulkImportRoutes.getRunningJob);
 app.use('/api/admin/dashboard', adminDashboardRoutes);
 app.use('/api/admin/quality', adminQualityRoutes);
+app.use('/api/admin/reports', adminReportsRoutes);
 adminImportsRoutes.setRunningJobProvider(bulkImportRoutes.getRunningJob);
 app.use('/api/admin/imports', adminImportsRoutes);
 // 지워진 파일의 썸네일 정리: 시작할 때 한 번, 그 뒤 하루에 한 번

@@ -47,7 +47,8 @@ robocopy "%~dp0server\uploads" "%DAY_DIR%\uploads" /MIR /XD bulk-import bulk-imp
 if %errorlevel% GEQ 8 goto :error
 
 echo [3/3] Cleaning up old backups...
-forfiles /p "%BACKUP_ROOT%" /d -%KEEP_DAYS% /c "cmd /c if @isdir==TRUE rmdir /s /q @path" 2>nul
+REM only timestamp folders (yyyymmdd_hhmmss) are pruned - never audit-archive (kept audit logs) or anything else under BACKUP_ROOT
+powershell -NoProfile -Command "Get-ChildItem -LiteralPath '%BACKUP_ROOT%' -Directory | Where-Object { $_.Name -match '^\d{8}_\d{6}$' -and $_.LastWriteTime -lt (Get-Date).AddDays(-%KEEP_DAYS%) } | Remove-Item -Recurse -Force" 2>nul
 
 echo.
 echo Backup complete: %DAY_DIR%

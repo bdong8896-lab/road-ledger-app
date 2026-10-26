@@ -15,6 +15,7 @@ const { buildOfficialLedgerZip, buildSectionWorkbook } = require('../lib/officia
 const { logAction } = require('../lib/auditLog');
 const { ROAD_RANK_CODES, ROAD_RANK_NAME_BY_CODE } = require('../lib/roadRank');
 const { deleteSection } = require('../lib/sectionDelete');
+const { searchFacilities } = require('../lib/facilitySearch');
 const { getThumbPath, IMAGE_RE } = require('../lib/thumbnail');
 const { decodeCode } = require('../lib/govCodebook');
 
@@ -443,6 +444,14 @@ async function generateRdid(roadRankCode, mcoCode, routeNo, sect) {
     const serial = String(rows[0].last_no).padStart(4, '0');
     return `R01${roadRankCode}${mco}${rno}${sc}${year}${serial}`;
 }
+
+// 시설물 검색(검색보기 탭 '시설물' 카테고리) — 시설물 ID(일부), "종류 번호", 이름. 구현은 lib/facilitySearch.js.
+// '/:rdid'보다 먼저 등록해야 한다.
+router.get('/facility-search', async (req, res) => {
+    const q = (req.query.q || '').trim();
+    if (!q) return res.json({ items: [], total: 0, truncated: false });
+    res.json(await searchFacilities(q.slice(0, 100), req.session.user));
+});
 
 // 노선 검색(검색보기 탭 '노선' 카테고리) — 예전엔 VWorld 전국 도로망도(LT_L_MOCTLINK)를
 // 정확일치로만 검색했는데, 실제로 등록/일괄등록된 우리 시스템의 노선명을 부분검색하는

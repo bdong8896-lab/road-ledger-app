@@ -2331,6 +2331,40 @@ async function fetchMyRouteItems(query, page, size) {
     };
 }
 
+// 시설물 검색 결과 한 줄. 클릭하면 그 시설물 위치로 지도를 옮기고 속성정보/첨부파일을 보여준다.
+function renderFacilityRow(item, query) {
+    const div = document.createElement('div');
+    div.className = 'search-result-item';
+    const title = item.name ? `${item.name}` : `${item.kind} ${parseInt(item.serial, 10)}번`;
+    const route = [item.roadName, item.roadNo ? routeNoLabel(item.roadNo) : '', item.sect ? `${item.sect}구간` : ''].filter(Boolean).join(' · ');
+    div.innerHTML = `
+        <div><span class="sr-grade">[${escapeHtml(item.kind)}]</span>${highlightMatch(title, query)}</div>
+        <div class="sr-sub"><span>${escapeHtml(route)}</span><span class="sr-id">${highlightMatch(item.rdid, query)}</span></div>${item.hasGeom ? '' : '<div class="sr-sub"><span>위치 정보가 없어 지도로 이동할 수 없습니다.</span></div>'}`;
+    div.addEventListener('click', () => goToFacility(item));
+    return div;
+}
+
+async function goToFacility(item) {
+    let record = null;
+    try {
+        const params = new URLSearchParams({ table: item.table, facility_rdid: item.rdid });
+        record = (await fetch('/api/sections/facility-detail?' + params.toString()).then((r) => r.json())).record;
+    } catch (e) { /* 아래에서 안내 */ }
+    if (!record) { alert('시설물 정보를 불러오지 못했습니다.'); return; }
+    if (!record.geom) { alert('이 시설물은 위치 정보가 없어 지도로 이동할 수 없습니다.'); return; }
+    jumpToFacilityLocation(record.geom);
+    const feature = new ol.format.GeoJSON().readFeature(
+        { type: 'Feature', geometry: record.geom, properties: {} }, { featureProjection: map.getView().getProjection() }
+    );
+    feature.setProperties({ facilityTable: item.table, facilityRdid: item.rdid, label: record.label, name: record.name });
+    openFacilityMarkerFiles(feature);
+}
+
+async function fetchFacilityItems(query) {
+    const data = await fetch('/api/sections/facility-search?q=' + encodeURIComponent(query)).then((r) => r.json());
+    return { total: data.total || 0, items: data.items || [], truncated: !!data.truncated };
+}
+
 function buildSection(label, total, rowEls, catKey) {
     const section = document.createElement('div');
     section.className = 'sr-section';
@@ -2367,18 +2401,21 @@ async function runUnifiedSearch(page) {
     pagerEl.innerHTML = '';
 
     if (currentSearchCategory === '전체') {
-        const [place, road, parcel, myroutes] = await Promise.all([
+        const [place, road, parcel, myroutes, facility] = await Promise.all([
             fetchPlaceItems(query, 3).catch(() => ({ total: 0, items: [] })),
             fetchAddressItems(query, 'road', 3).catch(() => ({ total: 0, items: [] })),
             fetchAddressItems(query, 'parcel', 3).catch(() => ({ total: 0, items: [] })),
             fetchMyRouteItems(query, 1, 3).catch(() => ({ total: 0, items: [] })),
+            fetchFacilityItems(query).catch(() => ({ total: 0, items: [] })),
         ]);
         wrapEl.innerHTML = '';
-        if (place.total + road.total + parcel.total + myroutes.total === 0) {
+        if (place.total + road.total + parcel.total + myroutes.total + facility.total === 0) {
             wrapEl.innerHTML = `<div style="color:var(--text-muted);padding:8px;">'${escapeHtml(query)}' 검색결과가 없습니다.</div>`;
             return;
         }
         wrapEl.appendChild(buildSection('노선', myroutes.total, myroutes.items.map((it) => renderMyRouteRow(it, query)), '노선'));
+        // 시설물은 ID·종류 번호·이름으로 찾을 때만 나오므로, 결과가 있을 때만 섹션을 보여준다(없는 게 정상인 경우가 많다).
+        if (facility.total > 0) wrapEl.appendChild(buildSection('시설물', facility.total, facility.items.slice(0, 3).map((it) => renderFacilityRow(it, query)), '시설물'));
         wrapEl.appendChild(buildSection('도로명', road.total, road.items.map((it) => renderAddressRow(it, '도로명', query)), '도로명'));
         wrapEl.appendChild(buildSection('지번', parcel.total, parcel.items.map((it) => renderAddressRow(it, '지번', query)), '지번'));
         wrapEl.appendChild(buildSection('명칭', place.total, place.items.map((it) => renderPlaceRow(it, query)), '명칭'));
@@ -2395,6 +2432,19 @@ async function runUnifiedSearch(page) {
         const { total, items } = await fetchAddressItems(query, category, 30);
         if (total === 0) { wrapEl.innerHTML = `<div style="color:var(--text-muted);padding:8px;">'${escapeHtml(query)}' 검색결과가 없습니다.</div>`; return; }
         items.map((it) => renderAddressRow(it, currentSearchCategory, query)).forEach((el) => wrapEl.appendChild(el));
+    } else if (currentSearchCategory === '시설물') {
+        const { total, items, truncated } = await fetchFacilityItems(query);
+        if (!items.length) {
+            wrapEl.innerHTML = `<div style="color:var(--text-muted);padding:8px;">'${escapeHtml(query)}' 시설물 검색결과가 없습니다.<br>시설물 ID(일부 가능), '표지 12'처럼 종류와 번호, 또는 교량명으로 검색하세요.</div>`;
+            return;
+        }
+        items.map((it) => renderFacilityRow(it, query)).forEach((el) => wrapEl.appendChild(el));
+        if (truncated || total > items.length) {
+            const more = document.createElement('div');
+            more.style.cssText = 'color:var(--text-muted);padding:8px;font-size:0.78rem;';
+            more.textContent = `결과가 많아 일부만 표시했습니다. 시설물 ID나 번호를 더 정확히 입력하세요.`;
+            wrapEl.appendChild(more);
+        }
     } else if (currentSearchCategory === '노선') {
         const { total, totalPages, items } = await fetchMyRouteItems(query, page, 20);
         if (items.length === 0) {
@@ -3130,6 +3180,7 @@ function initAdminMode() {
     document.getElementById('audit-log-from').addEventListener('change', () => loadAuditLog(1));
     document.getElementById('audit-log-to').addEventListener('change', () => loadAuditLog(1));
     document.getElementById('audit-log-export-btn').addEventListener('click', downloadAuditLog);
+    document.getElementById('audit-retention-toggle').addEventListener('click', toggleAuditRetention);
     initAccountsTab();
 }
 
@@ -3150,7 +3201,10 @@ function initAdminConsole() {
         b.addEventListener('click', () => showConsoleSection(b.dataset.section));
     });
     document.getElementById('console-user').textContent = currentUser.displayName || currentUser.username;
-    document.getElementById('datamgmt-refresh-btn').addEventListener('click', loadDataMgmtList);
+    document.getElementById('rp-stats-btn').addEventListener('click', downloadStatsExcel);
+    document.getElementById('rp-checks-btn').addEventListener('click', runDataChecks);
+    document.getElementById('datamgmt-refresh-btn').addEventListener('click', () => { loadDataMgmtList(); loadTrashList(); });
+    document.querySelectorAll('.dm-mode-btn').forEach((b) => b.addEventListener('click', () => setDataMgmtMode(b.dataset.dm)));
     document.getElementById('dashboard-refresh-btn').addEventListener('click', loadDashboard);
     document.getElementById('quality-refresh-btn').addEventListener('click', loadQualitySummary);
     document.getElementById('importhistory-refresh-btn').addEventListener('click', loadImportHistory);
@@ -3185,7 +3239,8 @@ function showConsoleSection(sectionId) {
     // 일괄등록은 진행 중인 검수 상태를 유지해야 해서 다시 불러오지 않는다.
     if (sectionId === 'accountsview-tab') loadAccountsList();
     else if (sectionId === 'auditlogview-tab') loadAuditLog(1);
-    else if (sectionId === 'datamgmtview-tab') loadDataMgmtList();
+    else if (sectionId === 'reportsview-tab') loadChecksStatus();
+    else if (sectionId === 'datamgmtview-tab') { loadDataMgmtList(); loadTrashList(); }
     else if (sectionId === 'dashboardview-tab') loadDashboard();
     else if (sectionId === 'qualityview-tab') loadQualitySummary();
     else if (sectionId === 'importhistoryview-tab') loadImportHistory();
@@ -3329,7 +3384,7 @@ function buildAccountRow(acc) {
     const resetBtn = row.querySelector('.acc-reset-btn');
     if (resetBtn) {
         resetBtn.addEventListener('click', async () => {
-            const tmp = prompt(`"${acc.username}"의 임시 비밀번호를 입력하세요(8자 이상).\n그 계정은 이 비밀번호로 로그인한 뒤 새 비밀번호로 바꿔야 하고, 지금 로그인돼 있는 세션은 모두 끊깁니다.`);
+            const tmp = prompt(`"${acc.username}"의 임시 비밀번호를 입력하세요(영문·숫자·특수문자 3종류 이상 8자 이상).\n그 계정은 이 비밀번호로 로그인한 뒤 새 비밀번호로 바꿔야 하고, 지금 로그인돼 있는 세션은 모두 끊깁니다.`);
             if (tmp === null) return;
             const res = await adminFetch(`/api/auth/accounts/${acc.id}/reset-password`, {
                 method: 'POST',
@@ -3408,11 +3463,11 @@ async function createAccount() {
 }
 
 const AUDIT_ACTION_LABELS = {
-    create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록',
+    create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록', bulk_undo: '일괄등록 취소', restore: '복원',
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
-    log_export: '이력 다운로드', admin_reauth: '관리자 재인증', export: '자료 내려받기',
+    log_export: '이력 다운로드', log_purge: '이력 정리', admin_reauth: '관리자 재인증', export: '자료 내려받기',
 };
 
 // 화면 목록과 다운로드가 같은 조건(작업 종류 + 기간)을 쓴다.
@@ -3456,6 +3511,62 @@ async function downloadAuditLog() {
         btn.disabled = false;
         btn.innerHTML = originalHtml;
     }
+}
+
+// ---------- 이력 보관·정리 ----------
+async function toggleAuditRetention() {
+    const panel = document.getElementById('audit-retention-panel');
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    await renderAuditRetention();
+}
+
+async function renderAuditRetention() {
+    const panel = document.getElementById('audit-retention-panel');
+    panel.textContent = '불러오는 중...';
+    let d;
+    try {
+        const res = await adminFetch('/api/audit-log/retention');
+        d = await res.json();
+        if (!res.ok) throw new Error(d.error || '불러오기 실패');
+    } catch (e) { panel.textContent = e.message || '불러오기 실패'; return; }
+
+    const files = (d.files || []).map((f) => `<div class="ar-file"><button type="button" data-name="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button><span>${fmtBytes(f.bytes)} · ${fmtDateTimeKo(f.savedAt)}</span></div>`).join('');
+    panel.innerHTML = `
+        <div>접속·변경 이력은 <b>최소 ${d.minKeepDays}일(1년)</b> 보관해야 합니다. 1년이 지난 이력은 파일(CSV)로 안전하게 저장한 뒤 DB에서 정리해 목록을 가볍게 할 수 있습니다. 저장이 끝난 것을 확인한 뒤에만 지우며, 1년이 안 된 이력은 지울 수 없습니다.</div>
+        <div class="ar-stats"><span>전체 ${d.total.toLocaleString()}건</span><span>가장 오래된 이력 ${escapeHtml(d.oldest || '-')}</span><span>정리 가능(${escapeHtml(d.latestCutoff)} 이전) ${d.eligible.toLocaleString()}건</span></div>
+        ${d.canPurge ? `<div class="ar-run"><label>이 날짜 이전 이력을 <input type="date" id="ar-before" value="${escapeHtml(d.latestCutoff)}" max="${escapeHtml(d.latestCutoff)}"></label><button type="button" id="ar-run-btn"${d.eligible ? '' : ' disabled'}>파일로 보관하고 정리</button></div>` : '<div class="ar-dir">관할이 제한된 관리자는 이력을 정리할 수 없습니다(전체 권한 관리자만 가능).</div>'}
+        ${d.canPurge ? `<div class="ar-dir">보관 폴더(서버): ${escapeHtml(d.archiveDir || '')}</div>` : ''}
+        ${files ? `<div class="ar-files"><b>보관된 파일</b>${files}</div>` : ''}`;
+
+    panel.querySelectorAll('.ar-file button').forEach((b) => b.addEventListener('click', () => downloadAuditArchive(b.dataset.name)));
+    const run = document.getElementById('ar-run-btn');
+    if (run) run.addEventListener('click', async () => {
+        const before = document.getElementById('ar-before').value;
+        if (!before) { alert('날짜를 선택하세요.'); return; }
+        if (!confirm(`${before} 이전의 변경·접속 이력을 파일로 저장한 뒤 DB에서 삭제합니다.\n저장된 파일은 서버 보관 폴더에 남습니다. 계속하시겠습니까?`)) return;
+        run.disabled = true;
+        run.textContent = '저장 중...';
+        try {
+            const res = await adminFetch('/api/audit-log/archive', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ before }) });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '정리 실패');
+            alert(`${data.saved.toLocaleString()}건을 ${data.fileName} 파일로 저장하고 DB에서 정리했습니다.`);
+        } catch (e) { alert(e.message || '정리 실패'); }
+        await renderAuditRetention();
+        loadAuditLog(1);
+    });
+}
+
+async function downloadAuditArchive(name) {
+    try {
+        const res = await adminFetch('/api/audit-log/archive-files/' + encodeURIComponent(name));
+        if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || '다운로드 실패'); return; }
+        const url = URL.createObjectURL(await res.blob());
+        const a = document.createElement('a');
+        a.href = url; a.download = name; a.click();
+        URL.revokeObjectURL(url);
+    } catch (e) { alert('다운로드 중 오류가 발생했습니다.'); }
 }
 
 async function loadAuditLog(page) {
@@ -3839,7 +3950,7 @@ async function deleteSelectedRoutes() {
     const names = picked.slice(0, 8).map((r) => `  · ${r.roadGrade} ${[r.routeNo, r.routeName].filter(Boolean).join(' ')} (구간 ${r.sections.length}개)`);
     if (picked.length > 8) names.push(`  … 외 ${picked.length - 8}개 노선`);
     const typed = prompt(
-        `다음 노선을 삭제합니다. 복구할 수 없습니다.\n\n${names.join('\n')}\n\n구간 ${sections.length}개, 시설물 ${facility.toLocaleString()}건, 도면 ${drawings.toLocaleString()}건이 함께 지워집니다.\n\n계속하려면 "삭제"를 입력하세요.`
+        `다음 노선을 삭제합니다.\n\n${names.join('\n')}\n\n구간 ${sections.length}개, 시설물 ${facility.toLocaleString()}건, 도면 ${drawings.toLocaleString()}건이 함께 삭제 휴지통으로 옮겨지며, ${trashDays}일 안에는 '삭제 휴지통' 탭에서 복원할 수 있습니다.\n\n계속하려면 "삭제"를 입력하세요.`
     );
     if (typed === null) return;
     if (typed.trim() !== '삭제') { alert('"삭제"를 정확히 입력해야 삭제됩니다. 삭제를 취소했습니다.'); return; }
@@ -3876,16 +3987,186 @@ async function deleteSelectedRoutes() {
     });
     dataMgmtSelected.clear();
     loadLedgerTree();
+    loadTrashList();
     await loadDataMgmtList();
     if (data.failed && data.failed.length) {
         alert(`구간 ${data.deleted}개를 삭제했고 ${data.failed.length}개는 삭제하지 못했습니다:\n${data.failed.slice(0, 5).map((f) => `  · ${f.rdid}: ${f.error}`).join('\n')}`);
     } else {
-        alert(`구간 ${data.deleted}개를 삭제했습니다.`);
+        alert(`구간 ${data.deleted}개를 삭제했습니다. ${trashDays}일 안에는 '삭제 휴지통'에서 복원할 수 있습니다.`);
     }
 }
 
+// ---------- 통계·점검 ----------
+async function downloadStatsExcel() {
+    const btn = document.getElementById('rp-stats-btn');
+    const html = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-hourglass-half"></i> 만드는 중';
+    try {
+        const res = await adminFetch('/api/admin/reports/stats.xlsx');
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || '엑셀을 만들지 못했습니다.'); }
+        const url = URL.createObjectURL(await res.blob());
+        const a = document.createElement('a');
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
+        a.href = url; a.download = m ? decodeURIComponent(m[1]) : '도로대장_현황통계.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (e) { alert(e.message || '엑셀을 만들지 못했습니다.'); }
+    finally { btn.disabled = false; btn.innerHTML = html; }
+}
+
+let checksTimer = null;
+function renderChecksStatus(s) {
+    const btn = document.getElementById('rp-checks-btn');
+    const prog = document.getElementById('rp-progress');
+    if (s.status === 'running') {
+        btn.disabled = true;
+        prog.textContent = `점검 중… ${s.stage || ''}`;
+        return;
+    }
+    btn.disabled = false;
+    prog.textContent = '';
+    if (s.status === 'error') { document.getElementById('rp-results').innerHTML = `<div class="rp-hint">${escapeHtml(s.error || '점검 중 오류가 발생했습니다.')}</div>`; return; }
+    if (s.status === 'done' && s.result) renderChecksResult(s.result);
+}
+
+async function pollChecks() {
+    clearTimeout(checksTimer);
+    try {
+        const s = await (await adminFetch('/api/admin/reports/checks/status')).json();
+        renderChecksStatus(s);
+        if (s.status === 'running') checksTimer = setTimeout(pollChecks, 1200);
+    } catch (e) { /* 다음 새로고침 때 다시 */ }
+}
+
+function loadChecksStatus() { pollChecks(); }
+
+async function runDataChecks() {
+    const thresholdM = parseInt(document.getElementById('rp-threshold').value, 10) || 200;
+    document.getElementById('rp-results').innerHTML = '';
+    try {
+        const res = await adminFetch('/api/admin/reports/checks/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ thresholdM }) });
+        const d = await res.json();
+        if (!res.ok && res.status !== 409) throw new Error(d.error || '점검을 시작하지 못했습니다.');
+    } catch (e) { alert(e.message || '점검을 시작하지 못했습니다.'); return; }
+    pollChecks();
+}
+
+function rpGroup(title, total, hint, itemsHtml, capped) {
+    const badge = total ? `<span class="rp-badge bad">${total.toLocaleString()}건</span>` : '<span class="rp-badge ok">이상 없음</span>';
+    return `<div class="rp-group"><div class="rp-group-head">${escapeHtml(title)} ${badge}</div>
+        <div class="rp-hint">${escapeHtml(hint)}${capped ? ' (앞쪽 일부만 표시)' : ''}</div>
+        ${total ? `<div class="rp-list">${itemsHtml}</div>` : ''}</div>`;
+}
+
+function renderChecksResult(r) {
+    const el = document.getElementById('rp-results');
+    const dup = r.duplicateRoutes;
+    const dupHtml = dup.items.map((g) => `<div class="rp-item"><b>${escapeHtml(g.reason)}</b>${g.sections.map((s) => `<div class="rp-sub">${escapeHtml(s.rank || '')} ${escapeHtml(s.routeNo || '')} ${escapeHtml(s.routeName || '')} · ${escapeHtml(s.sect || '')}구간${s.lengthM != null ? ' · ' + Math.round(s.lengthM).toLocaleString() + 'm' : ''} · ${escapeHtml(s.rdid)}</div>`).join('')}</div>`).join('');
+    const off = r.offRoute;
+    const offHtml = off.items.map((i) => `<div class="rp-item"><b>${escapeHtml(i.kind)}</b> ${escapeHtml(i.routeLabel)} — 노선에서 약 ${i.distanceM.toLocaleString()}m 떨어짐<button type="button" data-t="${escapeHtml(i.table)}" data-id="${escapeHtml(i.rdid)}" data-k="${escapeHtml(i.kind)}">지도에서 보기</button><div class="rp-sub">${escapeHtml(i.rdid)}</div></div>`).join('');
+    const x = r.ids.crossTable;
+    const xHtml = x.items.map((i) => `<div class="rp-item">${escapeHtml(i.rdid)}<div class="rp-sub">같은 ID가 ${i.kinds.map(escapeHtml).join(', ')} 에 있음</div></div>`).join('');
+    const mm = r.ids.mismatch;
+    const mmHtml = mm.items.map((i) => `<div class="rp-item"><b>${escapeHtml(i.kind)}</b> ${escapeHtml(i.rdid)}<div class="rp-sub">ID 안의 도로종류/노선/구간: ${escapeHtml(i.idKey)} ≠ 데이터 값: ${escapeHtml(i.rowKey)}</div></div>`).join('');
+    const offHint = `기준 ${off.thresholdM}m · 점검한 시설물 ${off.checked.toLocaleString()}건${off.noGeomSections ? ` · 지도 선이 없어 점검하지 못한 구간 ${off.noGeomSections}개` : ''}${off.unmatched ? ` · 구간과 연결되지 않은 시설물 ${off.unmatched.toLocaleString()}건 제외` : ''}`;
+    el.innerHTML = [
+        rpGroup('중복 노선', dup.total, '같은 노선번호·이름·구간이 겹쳐 등록된 곳', dupHtml, dup.total > dup.items.length),
+        rpGroup('노선에서 벗어난 시설물', off.total, offHint, offHtml, off.total > off.items.length),
+        rpGroup('시설물 ID 중복', x.total, '같은 ID가 둘 이상의 시설물 종류에 있는 경우', xHtml, x.capped),
+        rpGroup('시설물 ID 불일치', mm.total, 'ID에 들어 있는 도로종류·노선번호·구간이 데이터 값과 다른 경우', mmHtml, mm.total > mm.items.length),
+        `<div class="rp-hint">점검 시각 ${fmtDateTimeKo(r.generatedAt)} · ${(r.elapsedMs / 1000).toFixed(1)}초</div>`,
+    ].join('');
+    el.querySelectorAll('.rp-item button').forEach((b) => b.addEventListener('click', () => {
+        closeAdminConsole();
+        goToFacility({ table: b.dataset.t, rdid: b.dataset.id, kind: b.dataset.k });
+    }));
+}
+
+// ---------- 삭제 휴지통 ----------
+let trashDays = 30;
+
+function setDataMgmtMode(mode) {
+    document.querySelectorAll('.dm-mode-btn').forEach((b) => b.classList.toggle('active', b.dataset.dm === mode));
+    document.getElementById('datamgmt-routes-pane').style.display = mode === 'routes' ? '' : 'none';
+    document.getElementById('datamgmt-trash-pane').style.display = mode === 'trash' ? '' : 'none';
+    if (mode === 'trash') loadTrashList();
+}
+
+function fmtTrashRemain(expiresIso) {
+    const days = Math.ceil((new Date(expiresIso).getTime() - Date.now()) / 86400000);
+    return days <= 1 ? '<span class="tr-warn">오늘 또는 내일 완전 삭제</span>' : `${days}일 뒤 완전 삭제`;
+}
+
+async function loadTrashList() {
+    const listEl = document.getElementById('datamgmt-trash-list');
+    const countEl = document.getElementById('datamgmt-trash-count');
+    let data;
+    try {
+        const res = await adminFetch('/api/admin/sections/trash');
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || '불러오기 실패');
+    } catch (e) {
+        listEl.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">${escapeHtml(e.message || '불러오기 실패')}</div>`;
+        return;
+    }
+    trashDays = data.days || 30;
+    document.querySelectorAll('.datamgmt-days').forEach((el) => { el.textContent = trashDays; });
+    const items = data.items || [];
+    countEl.textContent = items.length ? `(${items.length})` : '';
+    if (!data.ready) { listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">서버에 db/schema.sql(삭제 휴지통 테이블)이 아직 적용되지 않았습니다.</div>'; return; }
+    if (!items.length) { listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:8px;">휴지통이 비어 있습니다.</div>'; return; }
+    listEl.innerHTML = '';
+    items.forEach((it) => {
+        const row = document.createElement('div');
+        row.className = 'tr-row';
+        const counts = it.counts || {};
+        const facility = Object.entries(counts).filter(([k]) => k.startsWith('gov_')).reduce((n, [, v]) => n + v, 0);
+        const name = [it.road_rank_name, it.route_no, it.route_name].filter(Boolean).join(' ') + (it.sect ? ` · ${it.sect}구간` : '');
+        row.innerHTML = `
+            <div class="tr-main">
+                <div class="tr-name">${escapeHtml(name)}</div>
+                <div class="tr-meta">${fmtDateTimeKo(it.deleted_at)} 삭제 · ${escapeHtml(it.username || '알 수 없음')} · 시설물 ${facility.toLocaleString()}건 · 도면 ${(counts.route_files || 0).toLocaleString()}건 · 파일 ${fmtBytes(Number(it.file_bytes) || 0)} · ${fmtTrashRemain(it.expires_at)}${it.rdid_in_use ? ' · <span class="tr-warn">같은 구간번호가 다시 등록돼 있어 복원 불가</span>' : ''}</div>
+            </div>
+            <button type="button" class="tr-restore"${it.rdid_in_use ? ' disabled' : ''}>복원</button>
+            <button type="button" class="tr-purge" title="지금 바로 완전히 지웁니다(되돌릴 수 없음)">비우기</button>`;
+        row.querySelector('.tr-restore').addEventListener('click', () => restoreTrashItem(it, name));
+        row.querySelector('.tr-purge').addEventListener('click', () => purgeTrashItem(it, name));
+        listEl.appendChild(row);
+    });
+}
+
+async function restoreTrashItem(it, name) {
+    if (!confirm(`'${name}'을(를) 삭제 전 상태로 복원하시겠습니까?`)) return;
+    try {
+        const res = await adminFetch(`/api/admin/sections/trash/${it.id}/restore`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '복원 실패');
+        alert(`복원했습니다 (${data.restoredRows.toLocaleString()}건).${data.missingFiles ? `\n파일 ${data.missingFiles}개는 보관 폴더에서 찾지 못해 복원되지 않았습니다.` : ''}`);
+    } catch (e) {
+        alert(e.message || '복원 실패');
+    }
+    loadLedgerTree();
+    loadTrashList();
+    loadDataMgmtList();
+}
+
+async function purgeTrashItem(it, name) {
+    if (!confirm(`'${name}'을(를) 휴지통에서 지금 완전히 지웁니다.\n이후에는 복원할 수 없습니다. 계속하시겠습니까?`)) return;
+    try {
+        const res = await adminFetch(`/api/admin/sections/trash/${it.id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '삭제 실패');
+    } catch (e) {
+        alert(e.message || '삭제 실패');
+    }
+    loadTrashList();
+}
+
+
 async function deleteSectionFromTree(rdid, label) {
-    if (!confirm(`'${label}' 구간을 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.`)) return;
+    if (!confirm(`'${label}' 구간을 삭제하시겠습니까?\n삭제한 구간은 ${trashDays}일 동안 휴지통에 보관되며, 관리 콘솔 > 등록 데이터 관리 > 삭제 휴지통에서 복원할 수 있습니다.`)) return;
     const res = await fetch(`/api/sections/${rdid}`, { method: 'DELETE' });
     if (res.ok) {
         if (currentSectionRdid === rdid) {

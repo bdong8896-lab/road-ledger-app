@@ -37,6 +37,9 @@ module.exports = {
     // 쿠키에 Secure 속성을 붙이고 HSTS 헤더를 보낸다. HTTP로 서비스 중인데 켜면 쿠키가
     // 안 먹어 로그인이 안 되므로 HTTPS 적용을 마친 뒤에만 켤 것(deploy/서버배포_가이드.txt 14번).
     cookieSecure: process.env.COOKIE_SECURE === 'true',
+    // 데이터를 바꾸는 요청의 출처 검사(CSRF)에서 허용할 접속 주소(쉼표 구분). 예: ALLOWED_ORIGINS=https://roadledger.example.go.kr
+    // 비워 두면 요청의 Host와 같은 출처만 통과(IIS가 Host를 localhost로 바꿔 전달하면 검사를 건너뜀 — lib/csrfOrigin.js).
+    allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map((v) => v.trim()).filter(Boolean),
     // 로그인 세션 유지시간(시간 단위). 세션은 메모리가 아니라 DB(connect-pg-simple,
     // session 테이블)에 저장되므로 서버를 재시작해도 이 시간이 지나기 전까지는
     // 로그인이 풀리지 않는다. 기본 8시간 — 개발 PC에서 매번 다시 로그인하기
@@ -54,6 +57,8 @@ module.exports = {
     // 백업이 쌓이는 폴더 — 관리 콘솔 현황판이 "마지막 백업이 언제인지"를 보여주는 데 쓴다(읽기만 한다).
     // 운영: deploy/backup-prod.ps1의 -BackupRoot와 같은 값(예: E:\Backup\road-ledger). 개발 PC 기본값은 프로젝트의 backups 폴더.
     backupRoot: process.env.BACKUP_ROOT || path.join(__dirname, '..', 'backups'),
+    // 1년이 지나 DB에서 정리한 변경·접속 이력을 CSV로 보관하는 폴더(관리 콘솔 > 변경·접속 이력 > 보관·정리). 기본은 백업 폴더 아래 audit-archive.
+    auditArchiveDir: process.env.AUDIT_ARCHIVE_DIR || path.join(process.env.BACKUP_ROOT || path.join(__dirname, '..', 'backups'), 'audit-archive'),
     vworld: {
         apiKey: process.env.VWORLD_API_KEY || '',
         referer: process.env.VWORLD_REFERER || 'http://localhost/',

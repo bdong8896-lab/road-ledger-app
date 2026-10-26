@@ -5,17 +5,20 @@
 const express = require('express');
 const pool = require('../db');
 const { requireAdminReauth } = require('../middleware/requireAuth');
+const fs = require('fs');
+const path = require('path');
+const config = require('../config');
 const { logAction, clientIp } = require('../lib/auditLog');
 
 const router = express.Router();
 router.use(requireAdminReauth); // 관리 콘솔 재인증(15분) 필요
 
 const ACTION_LABELS = {
-    create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록',
+    create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록', bulk_undo: '일괄등록 취소', restore: '복원',
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
-    log_export: '이력 다운로드', admin_reauth: '관리자 재인증', export: '자료 내려받기',
+    log_export: '이력 다운로드', log_purge: '이력 정리', admin_reauth: '관리자 재인증', export: '자료 내려받기',
 };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -122,6 +125,120 @@ router.get('/export', async (req, res) => {
         console.error('[audit-log/export]', e);
         res.status(500).json({ error: '이력 다운로드 중 오류가 발생했습니다.' });
     }
+});
+
+// ---- 보관 정책: 1년이 지난 이력을 파일로 보관하고 DB에서 정리 ----
+// 지침상 접속·변경 이력은 최소 1년 보관해야 하므로, DB에서 지울 수 있는 것은 "1년이 지난 것"뿐이다(서버가 강제).
+// 지우기 전에 CSV 파일로 전부 저장하고 파일이 제대로 써진 것을 확인한 뒤에만 DB에서 지운다.
+// 이력은 모든 시군구의 기록이 한 테이블에 있으므로, 관할이 제한된 관리자는 정리할 수 없다(조회·다운로드만).
+const MIN_KEEP_DAYS = 365;
+const ARCHIVE_NAME_RE = /^audit-log_\d{8}-\d{8}_\d{14}\.csv$/;
+
+function archiveDir() { return config.auditArchiveDir; }
+
+async function listArchiveFiles() {
+    try {
+        const names = (await fs.promises.readdir(archiveDir())).filter((n) => ARCHIVE_NAME_RE.test(n));
+        const out = [];
+        for (const name of names) {
+            const st = await fs.promises.stat(path.join(archiveDir(), name));
+            out.push({ name, bytes: st.size, savedAt: st.mtime });
+        }
+        return out.sort((a, b) => b.name.localeCompare(a.name));
+    } catch (e) { return []; }
+}
+
+router.get('/retention', async (req, res) => {
+    const { rows: [r] } = await pool.query(
+        `SELECT COUNT(*)::int AS total,
+                to_char(MIN(created_at) AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD') AS oldest,
+                COUNT(*) FILTER (WHERE created_at < (((now() AT TIME ZONE 'Asia/Seoul')::date - $1::int)::timestamp AT TIME ZONE 'Asia/Seoul'))::int AS eligible,
+                to_char((now() AT TIME ZONE 'Asia/Seoul')::date - $1::int, 'YYYY-MM-DD') AS latest_cutoff
+         FROM audit_log`, [MIN_KEEP_DAYS]
+    );
+    res.json({
+        total: r.total, oldest: r.oldest, eligible: r.eligible, latestCutoff: r.latest_cutoff,
+        minKeepDays: MIN_KEEP_DAYS, canPurge: !req.session.user.sigunguCode,
+        archiveDir: req.session.user.sigunguCode ? null : archiveDir(), files: req.session.user.sigunguCode ? [] : await listArchiveFiles(),
+    });
+});
+
+// before(YYYY-MM-DD) 이전(그날 제외)의 이력을 파일로 저장하고 DB에서 지운다.
+router.post('/archive', async (req, res) => {
+    if (req.session.user.sigunguCode) return res.status(403).json({ error: '관할이 제한된 관리자는 이력을 정리할 수 없습니다. 전체 권한 관리자에게 요청하세요.' });
+    const before = String(req.body.before || '').trim();
+    if (!DATE_RE.test(before)) return res.status(400).json({ error: '날짜를 YYYY-MM-DD 형식으로 입력하세요.' });
+    const { rows: [lim] } = await pool.query(
+        `SELECT ($1::date <= (now() AT TIME ZONE 'Asia/Seoul')::date - $2::int) AS ok, to_char((now() AT TIME ZONE 'Asia/Seoul')::date - $2::int, 'YYYY-MM-DD') AS latest`,
+        [before, MIN_KEEP_DAYS]
+    );
+    if (!lim.ok) return res.status(400).json({ error: `이력은 최소 1년(${MIN_KEEP_DAYS}일) 보관해야 합니다. ${lim.latest} 이전 날짜만 정리할 수 있습니다.` });
+
+    const cutoffSql = `created_at < (($1::date)::timestamp AT TIME ZONE 'Asia/Seoul')`;
+    const { rows: [probe] } = await pool.query(
+        `SELECT COUNT(*)::int AS n, MAX(id) AS max_id,
+                to_char(MIN(created_at) AT TIME ZONE 'Asia/Seoul', 'YYYYMMDD') AS d1, to_char(MAX(created_at) AT TIME ZONE 'Asia/Seoul', 'YYYYMMDD') AS d2
+         FROM audit_log WHERE ${cutoffSql}`, [before]
+    );
+    if (!probe.n) return res.status(400).json({ error: `${before} 이전의 이력이 없습니다.` });
+
+    const stamp = new Date(Date.now() + 9 * 3600 * 1000).toISOString().replace(/\D/g, '').slice(0, 14);
+    const fileName = `audit-log_${probe.d1}-${probe.d2}_${stamp}.csv`;
+    const filePath = path.join(archiveDir(), fileName);
+    let written = 0;
+    try {
+        await fs.promises.mkdir(archiveDir(), { recursive: true });
+        const out = fs.createWriteStream(filePath, { flags: 'wx' });
+        const done = new Promise((resolve, reject) => { out.on('error', reject); out.on('close', resolve); });
+        const write = (chunk) => (out.write(chunk) ? Promise.resolve() : new Promise((r) => out.once('drain', r)));
+        await write('﻿' + ['ID', '일시(KST)', '구분', '아이디', 'IP', '관할코드', '내용', '대상', '대상ID', '상세(JSON)'].map(csvCell).join(',') + '\r\n');
+        let lastId = 0;
+        for (;;) {
+            const { rows } = await pool.query(
+                `SELECT id, to_char(created_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI:SS') AS at, action, username, ip, sigungu_code, summary, target_table, target_id, detail
+                 FROM audit_log WHERE ${cutoffSql} AND id > $2 AND id <= $3 ORDER BY id LIMIT 5000`, [before, lastId, probe.max_id]
+            );
+            if (!rows.length) break;
+            let chunk = '';
+            for (const r of rows) {
+                chunk += [r.id, r.at, ACTION_LABELS[r.action] || r.action, r.username, r.ip, r.sigungu_code, r.summary, r.target_table, r.target_id,
+                    r.detail ? JSON.stringify(r.detail) : ''].map(csvCell).join(',') + '\r\n';
+            }
+            await write(chunk);
+            written += rows.length;
+            lastId = rows[rows.length - 1].id;
+        }
+        out.end();
+        await done;
+        // 파일이 비어 있지 않고 저장한 건수가 지울 건수와 같은 것을 확인한 뒤에만 DB에서 지운다.
+        const st = await fs.promises.stat(filePath);
+        if (!st.size || written !== probe.n) throw new Error(`저장 검증 실패(예상 ${probe.n}건, 저장 ${written}건)`);
+    } catch (e) {
+        console.error('[audit-log/archive]', e);
+        fs.rm(filePath, { force: true }, () => {});
+        return res.status(500).json({ error: '이력을 파일로 저장하지 못해 아무것도 지우지 않았습니다: ' + e.message });
+    }
+
+    const del = await pool.query(`DELETE FROM audit_log WHERE ${cutoffSql} AND id <= $2`, [before, probe.max_id]);
+    await logAction(null, {
+        action: 'log_purge', targetTable: 'audit_log',
+        summary: `이력 정리: ${before} 이전 ${del.rowCount.toLocaleString()}건을 파일(${fileName})로 보관하고 DB에서 삭제`,
+        user: req.session.user, sigunguCode: req.session.user.sigunguCode, ip: clientIp(req),
+    });
+    res.json({ ok: true, deleted: del.rowCount, saved: written, fileName });
+});
+
+router.get('/archive-files/:name', async (req, res) => {
+    if (req.session.user.sigunguCode) return res.status(403).json({ error: '관할이 제한된 관리자는 받을 수 없습니다.' });
+    const name = req.params.name;
+    if (!ARCHIVE_NAME_RE.test(name)) return res.status(400).json({ error: '잘못된 파일 이름입니다.' });
+    const p = path.join(archiveDir(), name);
+    if (!fs.existsSync(p)) return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
+    await logAction(null, {
+        action: 'log_export', targetTable: 'audit_log', summary: `보관된 이력 파일 다운로드: ${name}`,
+        user: req.session.user, sigunguCode: req.session.user.sigunguCode, ip: clientIp(req),
+    });
+    res.download(p, name);
 });
 
 module.exports = router;

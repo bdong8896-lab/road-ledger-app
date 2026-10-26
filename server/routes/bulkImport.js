@@ -234,7 +234,15 @@ function jobView(j) {
 
 router.post('/:uploadId/confirm', async (req, res) => {
     const { uploadId } = req.params;
-    const targetSigunguCode = (req.body.sigunguCode || '').trim() || null;
+    let targetSigunguCode = (req.body.sigunguCode || '').trim() || null;
+    // 관할이 제한된 관리자는 자기 시군구로만 등록할 수 있다(요청 값을 믿지 않는다).
+    const userSigungu = req.session.user.sigunguCode;
+    if (userSigungu) {
+        if (targetSigunguCode && targetSigunguCode !== userSigungu) {
+            return res.status(403).json({ error: '관할 시군구 밖으로는 등록할 수 없습니다.' });
+        }
+        targetSigunguCode = userSigungu;
+    }
 
     let extractDir;
     try {

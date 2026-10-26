@@ -7,15 +7,15 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <script>/* 저장된 화면 테마를 첫 그리기 전에 적용(밝은 테마 사용자가 로딩 중 어두운 화면을 잠깐 보지 않게) */try{if(localStorage.getItem('rl-theme')==='light')document.documentElement.setAttribute('data-theme','light')}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
-<script src="https://cdn.jsdelivr.net/npm/ol@7.5.1/dist/ol.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" integrity="sha384-blOohCVdhjmtROpu8+CfTnUWham9nkX7P7OZQMst+RUnhtoY/9qemFAkIKOYxDI3" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/ol@7.5.1/dist/ol.js" integrity="sha384-fgnsY/cRU3yn34YpGkLBh/4lzNBJVh159U+7K2IypwCNY+hmOBsypjKU7ZPs9aI6" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js" integrity="sha384-U14wzrePlI+UpXk1Jpe45fK/C0yeI7rtwKzi9eM3Lj7LYjXlHNy0YacuWZIk7Hic" crossorigin="anonymous"></script>
 <script src="./kakao_sdk.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
-<script src="https://unpkg.com/dxf-parser@1.1.2/dist/dxf-parser.js"></script>
-<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js" integrity="sha384-cciJ0zi8d1uMKC2zJd7jvPY4HQt7W4ByUI/FlMkltvBi31aW61rcpVBhpmW8/NwX" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/dxf-parser@1.1.2/dist/dxf-parser.js" integrity="sha384-bFhNbiyxHEo2RbidLz4oUgawuuHSALUTKp85+l9Vg+WFNX2gMnROUY6I/e8MWhuD" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js" integrity="sha384-82q0nm29xZzIo5BMtDYnh2/NxeO6FoaK1S/0nF84w3cEsqbBfun3JdMyDVYWfVY5" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" integrity="sha384-CI3ELBVUz9XQO+97x6nwMDPosPR5XvsxW2ua7N1Xeygeh1IxtgqtCkGfQY9WWdHu" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -37,7 +37,7 @@
             <div id="signup-notice">신청 후 관리자가 승인하면 로그인할 수 있습니다.</div>
             <div id="signup-error"></div>
             <input type="text" id="signup-username" placeholder="아이디 (영문/숫자 4~30자)" autocomplete="off" maxlength="30">
-            <input type="password" id="signup-password" placeholder="비밀번호 (8자 이상)" autocomplete="new-password" maxlength="100">
+            <input type="password" id="signup-password" placeholder="비밀번호 (영문·숫자·특수문자 3종 8자 이상)" autocomplete="new-password" maxlength="100">
             <input type="password" id="signup-password2" placeholder="비밀번호 확인" autocomplete="new-password" maxlength="100">
             <input type="text" id="signup-name" placeholder="이름 (소속/성명)" autocomplete="off" maxlength="50">
             <div id="signup-sigungu-wrap">
@@ -70,7 +70,7 @@
         <div id="pw-notice"></div>
         <div id="pw-error"></div>
         <input type="password" id="pw-current" placeholder="현재 비밀번호" autocomplete="current-password" maxlength="100">
-        <input type="password" id="pw-new" placeholder="새 비밀번호 (8자 이상)" autocomplete="new-password" maxlength="100">
+        <input type="password" id="pw-new" placeholder="새 비밀번호 (영문·숫자·특수문자 3종 8자 이상)" autocomplete="new-password" maxlength="100">
         <input type="password" id="pw-new2" placeholder="새 비밀번호 확인" autocomplete="new-password" maxlength="100">
         <button id="pw-submit">변경</button>
         <button type="button" id="pw-cancel" class="pw-link-btn">취소</button>
@@ -378,12 +378,13 @@
 
         <div id="searchview-tab" class="sidebar-tab-content" style="display:none;">
             <div id="search-section">
-                <input type="text" id="searchInput" placeholder="노선명 또는 주소 입력" onkeydown="if(event.key==='Enter')runUnifiedSearch(1)">
+                <input type="text" id="searchInput" placeholder="노선명·주소·시설물 ID 입력" onkeydown="if(event.key==='Enter')runUnifiedSearch(1)">
                 <button class="btn-squared" onclick="runUnifiedSearch(1)"><span class="btn-text">검색</span></button>
             </div>
             <div id="search-category-tabs">
                 <button class="sc-tab-button active" data-cat="전체">전체</button>
                 <button class="sc-tab-button" data-cat="노선">노선</button>
+                <button class="sc-tab-button" data-cat="시설물">시설물</button>
                 <button class="sc-tab-button" data-cat="도로명">도로명</button>
                 <button class="sc-tab-button" data-cat="지번">지번</button>
                 <button class="sc-tab-button" data-cat="명칭">명칭</button>
@@ -391,8 +392,8 @@
             <div id="search-results-wrapper">
                 <div class="search-empty-hint">
                     <i class="fa-solid fa-magnifying-glass-location"></i>
-                    <div>노선명 또는 주소로 검색하세요.</div>
-                    <div class="search-empty-examples">예: 8호선 · ○○로 12 · ○○읍 ○○리 123-4</div>
+                    <div>노선명, 주소, 시설물로 검색하세요.</div>
+                    <div class="search-empty-examples">예: 8호선 · ○○로 12 · ○○읍 ○○리 123-4<br>시설물: R23150758950000800120260003(ID) · 표지 12 · 가로등 3 · ○○교</div>
                 </div>
             </div>
             <div id="search-results-pager"></div>
@@ -481,6 +482,7 @@
             <button type="button" class="console-nav-btn" data-section="bulkview-tab"><i class="fa-solid fa-file-import"></i><span>일괄등록</span></button>
             <button type="button" class="console-nav-btn" data-section="importhistoryview-tab"><i class="fa-solid fa-rotate-left"></i><span>일괄등록 이력</span></button>
             <button type="button" class="console-nav-btn" data-section="qualityview-tab"><i class="fa-solid fa-clipboard-check"></i><span>데이터 품질(KRRIS)</span></button>
+            <button type="button" class="console-nav-btn" data-section="reportsview-tab"><i class="fa-solid fa-file-excel"></i><span>통계·점검</span></button>
             <button type="button" class="console-nav-btn" data-section="datamgmtview-tab"><i class="fa-solid fa-database"></i><span>등록 데이터 관리</span></button>
         </nav>
         <main id="console-main">
@@ -596,6 +598,8 @@
                         <option value="update">수정</option>
                         <option value="delete">삭제</option>
                         <option value="bulk_import">일괄등록</option>
+                        <option value="bulk_undo">일괄등록 취소</option>
+                        <option value="restore">복원</option>
                         <optgroup label="접속·계정">
                             <option value="login">로그인</option>
                             <option value="login_fail">로그인 실패</option>
@@ -607,6 +611,7 @@
                             <option value="password_change">비밀번호 변경</option>
                             <option value="password_reset">비밀번호 재설정</option>
                             <option value="log_export">이력 다운로드</option>
+                            <option value="log_purge">이력 정리</option>
                             <option value="admin_reauth">관리자 재인증</option>
                             <option value="export">자료 내려받기</option>
                         </optgroup>
@@ -617,6 +622,10 @@
                         <input type="date" id="audit-log-to" title="종료일(그날 포함)">
                         <button id="audit-log-export-btn" title="지금 조건(작업 종류·기간)의 이력을 CSV 텍스트 파일로 저장"><i class="fa-solid fa-file-arrow-down"></i> 다운로드</button>
                     </div>
+                </div>
+                <div id="audit-retention">
+                    <button type="button" id="audit-retention-toggle"><i class="fa-solid fa-box-archive"></i> 이력 보관·정리</button>
+                    <div id="audit-retention-panel" style="display:none;"></div>
                 </div>
                 <div id="audit-log-list"></div>
                 <div id="audit-log-pagination"></div>
@@ -649,16 +658,44 @@
                 <div id="quality-detail" hidden></div>
             </section>
 
+            <section id="reportsview-tab" class="console-section" style="display:none;">
+                <div id="reports-header" class="list-header"><span>통계·점검</span></div>
+                <div class="rp-card">
+                    <div class="rp-title"><i class="fa-solid fa-file-excel"></i> 현황 통계 엑셀</div>
+                    <div class="rp-desc">시설물 종류별·노선별·시군구별 개수/연장/폭원 합계와 노선별 제출 체크리스트(시설물·도면·사진·필수항목 빈 값)를 한 파일로 내려받습니다. 로그인한 계정의 관할 범위만 집계합니다.</div>
+                    <button type="button" id="rp-stats-btn" class="rp-btn"><i class="fa-solid fa-file-arrow-down"></i> 엑셀 내려받기</button>
+                </div>
+                <div class="rp-card">
+                    <div class="rp-title"><i class="fa-solid fa-magnifying-glass-chart"></i> 데이터 점검</div>
+                    <div class="rp-desc">같은 노선이 이름만 다르게 중복 등록된 경우, 위치가 자기 노선에서 크게 벗어난 시설물, 시설물 ID 중복·불일치를 찾아 목록으로 보여 줍니다. 아무것도 고치지 않는 읽기 전용 점검입니다.</div>
+                    <div class="rp-run">
+                        <label>위치 기준 거리 <input type="number" id="rp-threshold" value="200" min="20" max="5000" step="10"> m</label>
+                        <button type="button" id="rp-checks-btn" class="rp-btn"><i class="fa-solid fa-play"></i> 점검 실행</button>
+                        <span id="rp-progress"></span>
+                    </div>
+                    <div id="rp-results"></div>
+                </div>
+            </section>
+
             <section id="datamgmtview-tab" class="console-section" style="display:none;">
                 <div id="datamgmt-header" class="list-header">
-                    <span>등록된 노선</span>
+                    <span id="datamgmt-modes">
+                        <button type="button" class="dm-mode-btn active" data-dm="routes">등록된 노선</button>
+                        <button type="button" class="dm-mode-btn" data-dm="trash">삭제 휴지통 <span id="datamgmt-trash-count"></span></button>
+                    </span>
                     <button id="datamgmt-refresh-btn" title="새로고침"><i class="fa-solid fa-rotate"></i></button>
                 </div>
-                <div id="datamgmt-notice"><i class="fa-solid fa-triangle-exclamation"></i> 노선을 삭제하면 그 노선의 모든 구간과 시설물, 첨부 파일, 도면, 500m 조각이 함께 지워지며 복구할 수 없습니다. 지우기 전에 내려받기로 백업해 두세요.</div>
-                <div id="datamgmt-list"></div>
-                <div id="datamgmt-footer">
-                    <span id="datamgmt-selected-info">선택된 노선 없음</span>
-                    <button type="button" id="datamgmt-delete-btn" disabled><i class="fa-solid fa-trash"></i> 선택 노선 삭제</button>
+                <div id="datamgmt-routes-pane">
+                    <div id="datamgmt-notice"><i class="fa-solid fa-circle-info"></i> 노선을 삭제하면 그 노선의 모든 구간과 시설물, 첨부 파일, 도면, 500m 조각이 <b>삭제 휴지통</b>으로 옮겨져 <span class="datamgmt-days">30</span>일 동안 보관됩니다. 그 안에는 '삭제 휴지통' 탭에서 복원할 수 있고, 기간이 지나면 완전히 지워집니다.</div>
+                    <div id="datamgmt-list"></div>
+                    <div id="datamgmt-footer">
+                        <span id="datamgmt-selected-info">선택된 노선 없음</span>
+                        <button type="button" id="datamgmt-delete-btn" disabled><i class="fa-solid fa-trash"></i> 선택 노선 삭제</button>
+                    </div>
+                </div>
+                <div id="datamgmt-trash-pane" style="display:none;">
+                    <div id="datamgmt-trash-notice"><i class="fa-solid fa-circle-info"></i> 삭제한 구간은 <span class="datamgmt-days">30</span>일 동안 여기에 보관됩니다. 복원하면 시설물·도면·첨부 파일까지 삭제 전 상태로 돌아옵니다. '비우기'는 보관 기간 전에 지금 바로 완전히 지우는 것이며 되돌릴 수 없습니다.</div>
+                    <div id="datamgmt-trash-list"></div>
                 </div>
             </section>
 
@@ -670,7 +707,7 @@
                 <div id="account-new-form" style="display:none;">
                     <div class="field-grid">
                         <label>아이디<input type="text" id="acc-username" autocomplete="off"></label>
-                        <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password" placeholder="8자 이상"></label>
+                        <label>비밀번호<input type="password" id="acc-password" autocomplete="new-password" placeholder="3종 조합 8자 이상"></label>
                         <label>표시 이름<input type="text" id="acc-display-name"></label>
                         <label>권한
                             <select id="acc-role">

@@ -144,4 +144,5 @@ router.post('/fix', async (req, res) => {
     res.json({ updated });
 });
 
+router.getMeta = getMeta; // 통계 엑셀(lib/statsReport.js)이 같은 "빈 값 점검 대상 컬럼"을 쓴다
 module.exports = router;

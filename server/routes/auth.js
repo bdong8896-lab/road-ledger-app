@@ -174,11 +174,25 @@ async function destroyUserSessions(userId, exceptSid) {
     }
 }
 
+// 관리자가 다른 계정을 다룰 수 있는지 — 전체 권한 관리자는 모두, 관할이 제한된 관리자는 같은 시군구 계정만
+// (관할이 없는 "전체 권한" 계정은 제한된 관리자가 건드릴 수 없다).
+function canManageAccount(actor, target) {
+    return !actor.sigunguCode || actor.sigunguCode === target.sigungu_code;
+}
+
 function validateNewPassword(password, username) {
     if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH || password.length > 100) {
         return `비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상으로 입력하세요.`;
     }
-    if (password === username) return '비밀번호는 아이디와 달라야 합니다.';
+    // 공공기관 비밀번호 작성 기준(행정안전부 권고)에 맞춰 문자 조합을 요구한다 — 영문 대문자·소문자·숫자·특수문자 중
+    // 3종류 이상이면 8자부터, 2종류면 10자부터 인정.
+    const kinds = [/[A-Z]/, /[a-z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(password)).length;
+    if (kinds < 2 || (kinds === 2 && password.length < 10)) {
+        return PASSWORD_RULE_TEXT;
+    }
+    if (password.toLowerCase() === String(username || '').toLowerCase()) return '비밀번호는 아이디와 달라야 합니다.';
+    if (username && String(username).length >= 4 && password.toLowerCase().includes(String(username).toLowerCase())) return '비밀번호에 아이디를 포함할 수 없습니다.';
+    if (/(.)\1{3,}/.test(password)) return '같은 문자를 4번 이상 연속해서 쓸 수 없습니다.';
     return null;
 }
 
@@ -306,6 +320,7 @@ router.post('/accounts/:id/reset-password', requireAdminReauth, async (req, res)
     try {
         const { rows } = await pool.query('SELECT username, sigungu_code FROM accounts WHERE id = $1', [id]);
         if (!rows.length) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+        if (!canManageAccount(req.session.user, rows[0])) return res.status(403).json({ error: '관할 시군구 밖의 계정입니다.' });
         const pwError = validateNewPassword(newPassword, rows[0].username);
         if (pwError) return res.status(400).json({ error: pwError });
         await pool.query(
@@ -329,9 +344,11 @@ router.post('/accounts/:id/reset-password', requireAdminReauth, async (req, res)
 // 관리자 전용: 계정 목록("계정관리" 탭 — 직접 만든 계정과 회원가입 신청 계정을
 // 한 목록에서 같이 관리, 승인대기가 맨 위). password_hash는 응답에 절대 포함하지 않는다.
 router.get('/accounts', requireAdminReauth, async (req, res) => {
+    const userSigungu = req.session.user.sigunguCode;
     const { rows } = await pool.query(
         `SELECT id, username, display_name, role, status, sigungu_code, sigungu_name, created_at
-         FROM accounts ORDER BY (status = 'pending') DESC, created_at`
+         FROM accounts ${userSigungu ? 'WHERE sigungu_code = $1' : ''} ORDER BY (status = 'pending') DESC, created_at`,
+        userSigungu ? [userSigungu] : []
     );
     res.json({ accounts: rows });
 });
@@ -340,9 +357,10 @@ router.get('/accounts', requireAdminReauth, async (req, res) => {
 router.post('/accounts/:id/approve', requireAdminReauth, async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: '잘못된 계정 ID입니다.' });
+    const actorSigungu = req.session.user.sigunguCode;
     const { rows } = await pool.query(
-        `UPDATE accounts SET status = 'active' WHERE id = $1 AND status = 'pending'
-         RETURNING id, username, sigungu_code`, [id]
+        `UPDATE accounts SET status = 'active' WHERE id = $1 AND status = 'pending' AND ($2::text IS NULL OR sigungu_code = $2)
+         RETURNING id, username, sigungu_code`, [id, actorSigungu || null]
     );
     if (!rows.length) return res.status(404).json({ error: '승인 대기 중인 계정을 찾을 수 없습니다.' });
     await logAction(null, {
@@ -360,6 +378,7 @@ router.post('/accounts/:id/approve', requireAdminReauth, async (req, res) => {
 // 관할 시군구 필수 여부(신청은 필수, 관리자는 비우면 전체 관할)뿐이다.
 const USERNAME_RE = /^[A-Za-z0-9_.-]{4,30}$/;
 const MIN_PASSWORD_LENGTH = 8;
+const PASSWORD_RULE_TEXT = '비밀번호는 영문 대문자·소문자·숫자·특수문자 중 3종류 이상을 섞어 8자 이상(2종류면 10자 이상)으로 입력하세요.';
 const MAX_PENDING_SIGNUPS = 100; // 승인 대기가 너무 쌓이면 더 안 받음(공개 엔드포인트 스팸 방지)
 
 // 성공: { account }, 실패: { code(HTTP 상태), error }. 검증·시군구 확인·INSERT·
@@ -455,7 +474,17 @@ router.get('/sigungu-search', (req, res) => {
 
 // 관리자 전용: 계정 생성 — 바로 사용 가능(active). 관할을 비우면 전체 관할.
 router.post('/accounts', requireAdminReauth, async (req, res) => {
-    const { username, password, displayName, role, sigunguCode } = req.body || {};
+    const { username, password, displayName, role } = req.body || {};
+    // 관할이 제한된 관리자는 자기 시군구의 계정만 만들 수 있다 — 관할을 비우거나(전체 권한) 다른 시군구로 지정해
+    // 자기보다 넓은 권한의 계정(권한 상승)을 만드는 길을 막는다.
+    const actorSigungu = req.session.user.sigunguCode;
+    let sigunguCode = (req.body || {}).sigunguCode;
+    if (actorSigungu) {
+        if (sigunguCode && String(sigunguCode) !== actorSigungu) {
+            return res.status(403).json({ error: '관할 시군구 밖의 계정은 만들 수 없습니다.' });
+        }
+        sigunguCode = actorSigungu;
+    }
     const result = await insertAccount({
         username, password, displayName, sigunguCode,
         role: role === 'admin' ? 'admin' : 'user', status: 'active',
@@ -480,6 +509,9 @@ router.delete('/accounts/:id', requireAdminReauth, async (req, res) => {
         return res.status(400).json({ error: '로그인 중인 본인 계정은 삭제할 수 없습니다.' });
     }
     try {
+        const { rows: target } = await pool.query('SELECT sigungu_code FROM accounts WHERE id = $1', [id]);
+        if (!target.length) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+        if (!canManageAccount(req.session.user, target[0])) return res.status(403).json({ error: '관할 시군구 밖의 계정입니다.' });
         const { rows } = await pool.query(
             'DELETE FROM accounts WHERE id = $1 RETURNING username, status, sigungu_code', [id]
         );

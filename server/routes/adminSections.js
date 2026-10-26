@@ -7,9 +7,14 @@ const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
 const { deleteSection, outsideJurisdiction } = require('../lib/sectionDelete');
 const { RANK_NAMES_FOR_1599 } = require('../lib/roadRank');
 const { logAction } = require('../lib/auditLog');
+const sectionTrash = require('../lib/sectionTrash');
 
 const router = express.Router();
 router.use(requireAdminReauth); // 관리자 전용 + 관리 콘솔 재인증(15분)
+
+// 보관 기간이 지난 휴지통 항목 정리: 시작할 때 한 번, 그 뒤 6시간마다
+sectionTrash.purgeExpired();
+setInterval(sectionTrash.purgeExpired, 6 * 60 * 60 * 1000).unref();
 
 // 구간별 부속시설 건수 — "road_rank|road_no|sect" -> 건수. 테이블마다 한 번씩 묶어서 센다.
 async function facilityCountsBySection() {
@@ -131,6 +136,28 @@ router.post('/delete', async (req, res) => {
         else failed.push({ rdid, error: r.error });
     }
     res.json({ deleted, failed });
+});
+
+// ---- 삭제 휴지통 ----
+router.get('/trash', async (req, res) => {
+    if (!(await sectionTrash.isReady())) return res.json({ items: [], days: sectionTrash.TRASH_DAYS, ready: false });
+    res.json({ items: await sectionTrash.listTrash(req.session.user), days: sectionTrash.TRASH_DAYS, ready: true });
+});
+
+router.post('/trash/:id/restore', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: '잘못된 번호입니다.' });
+    const r = await sectionTrash.restore(id, req.session.user);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json({ ok: true, restoredRows: r.restoredRows, missingFiles: r.missingFiles });
+});
+
+router.delete('/trash/:id', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: '잘못된 번호입니다.' });
+    const r = await sectionTrash.purgeOne(id, req.session.user);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json({ ok: true });
 });
 
 module.exports = router;

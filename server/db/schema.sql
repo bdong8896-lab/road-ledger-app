@@ -324,3 +324,46 @@ CREATE TABLE IF NOT EXISTS bulk_import_file_changes (
     trash_converted  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bulk_import_file_changes_batch ON bulk_import_file_changes(batch_id);
+
+-- ============================================================
+-- 노선(구간) 삭제 휴지통 — 구간을 지울 때 딸린 DB 행 전체를 JSON으로 보관하고 파일은 uploads/_section-trash/<id>로 옮겨 두었다가,
+-- 보관 기간(기본 30일) 안에는 "복원"할 수 있게 한다. 기간이 지나면 자동으로 완전 삭제한다(lib/sectionTrash.js).
+--   section_trash       : 지운 구간 한 개 = 한 줄
+--   section_trash_rows  : 그 구간과 함께 지워진 DB 행(구간 자신, 시설물, 도면/첨부 파일 행, 500m 조각)의 원본
+--   section_trash_files : 휴지통 폴더로 옮겨 둔 파일의 원래 경로 -> 보관 경로
+-- ============================================================
+CREATE TABLE IF NOT EXISTS section_trash (
+    id             SERIAL PRIMARY KEY,
+    deleted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at     TIMESTAMPTZ NOT NULL,
+    deleted_by_id  INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    username       VARCHAR(50),
+    sigungu_code   VARCHAR(5),
+    rdid           VARCHAR(27) NOT NULL,
+    road_rank_code VARCHAR(4),
+    road_rank_name VARCHAR(30),
+    route_no       VARCHAR(30),
+    route_name     VARCHAR(100),
+    sect           VARCHAR(3),
+    counts         JSONB,
+    file_bytes     BIGINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_section_trash_expires ON section_trash(expires_at);
+CREATE INDEX IF NOT EXISTS idx_section_trash_rdid ON section_trash(rdid);
+
+CREATE TABLE IF NOT EXISTS section_trash_rows (
+    id          BIGSERIAL PRIMARY KEY,
+    trash_id    INTEGER NOT NULL REFERENCES section_trash(id) ON DELETE CASCADE,
+    table_name  VARCHAR(60) NOT NULL,
+    pk          TEXT NOT NULL,
+    row_json    JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_section_trash_rows_trash ON section_trash_rows(trash_id);
+
+CREATE TABLE IF NOT EXISTS section_trash_files (
+    id             BIGSERIAL PRIMARY KEY,
+    trash_id       INTEGER NOT NULL REFERENCES section_trash(id) ON DELETE CASCADE,
+    original_path  TEXT NOT NULL,
+    trash_path     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_section_trash_files_trash ON section_trash_files(trash_id);
