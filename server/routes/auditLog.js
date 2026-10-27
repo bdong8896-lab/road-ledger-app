@@ -8,13 +8,14 @@ const { requireAdminReauth } = require('../middleware/requireAuth');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
-const { logAction, clientIp } = require('../lib/auditLog');
+const { logAction, clientIp, displayIp } = require('../lib/auditLog');
 
 const router = express.Router();
 router.use(requireAdminReauth); // 관리 콘솔 재인증(15분) 필요
 
 const ACTION_LABELS = {
     create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록', bulk_undo: '일괄등록 취소', restore: '복원',
+    maint_create: '점검·보수 등록', maint_update: '점검·보수 수정', maint_delete: '점검·보수 삭제',
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
@@ -74,7 +75,7 @@ router.get('/', async (req, res) => {
          LIMIT $${params.length - 1} OFFSET $${params.length}`,
         params
     );
-    res.json({ total, totalPages: Math.max(1, Math.ceil(total / size)), items: rows });
+    res.json({ total, totalPages: Math.max(1, Math.ceil(total / size)), items: rows.map((r) => ({ ...r, ip: displayIp(r.ip) })) });
 });
 
 // CSV 셀 — 따옴표/쉼표/줄바꿈을 감싸고, 엑셀에서 수식으로 실행될 수 있는 시작 문자(= + - @)는
@@ -105,7 +106,7 @@ router.get('/export', async (req, res) => {
         const lines = [['일시(KST)', '구분', '아이디', 'IP', '관할코드', '내용', '대상', '대상ID'].map(csvCell).join(',')];
         for (const r of rows) {
             lines.push([
-                r.at, ACTION_LABELS[r.action] || r.action, r.username, r.ip, r.sigungu_code,
+                r.at, ACTION_LABELS[r.action] || r.action, r.username, displayIp(r.ip), r.sigungu_code,
                 r.summary, r.target_table, r.target_id,
             ].map(csvCell).join(','));
         }
@@ -201,7 +202,7 @@ router.post('/archive', async (req, res) => {
             if (!rows.length) break;
             let chunk = '';
             for (const r of rows) {
-                chunk += [r.id, r.at, ACTION_LABELS[r.action] || r.action, r.username, r.ip, r.sigungu_code, r.summary, r.target_table, r.target_id,
+                chunk += [r.id, r.at, ACTION_LABELS[r.action] || r.action, r.username, displayIp(r.ip), r.sigungu_code, r.summary, r.target_table, r.target_id,
                     r.detail ? JSON.stringify(r.detail) : ''].map(csvCell).join(',') + '\r\n';
             }
             await write(chunk);

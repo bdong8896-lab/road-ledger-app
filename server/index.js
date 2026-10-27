@@ -27,6 +27,7 @@ const sectionsRoutes = require('./routes/sections');
 const roadIssuesRoutes = require('./routes/roadIssues');
 const bulkImportRoutes = require('./routes/bulkImport');
 const auditLogRoutes = require('./routes/auditLog');
+const facilityHistoryRoutes = require('./routes/facilityHistory');
 
 const app = express();
 
@@ -114,6 +115,7 @@ setInterval(thumbnails.purgeOrphanThumbs, 24 * 60 * 60 * 1000).unref();
 app.use('/api/road-issues', roadIssuesRoutes);
 app.use('/api/bulk-import', bulkImportRoutes);
 app.use('/api/audit-log', auditLogRoutes);
+app.use('/api/facility-history', facilityHistoryRoutes);
 
 const staticDir = path.join(__dirname, '..', config.serveDir);
 app.use(express.static(staticDir));

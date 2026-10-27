@@ -109,6 +109,7 @@ async function inspect(inputPath, onStep = () => {}) {
             extraFields: l.fieldMatch.extraInDbf, missingFields: l.fieldMatch.missingInDbf, missingRequired: l.fieldMatch.missingRequired,
             skippedWrongSchema: l.skippedWrongSchema || 0,
             nnCount: l.nnDefects.length,
+            codeCount: l.codeTotal,
             warnings: l.warnings,
         }));
 
@@ -125,6 +126,7 @@ async function inspect(inputPath, onStep = () => {}) {
         if (parsed.krris.crs.length) warns.push(`좌표계가 EPSG:5179가 아닌 레이어 ${parsed.krris.crs.length}개 (KRRIS 제출 기준 미충족)`);
         const emptyDefects = defects.filter((d) => d.check.startsWith('M-1') && d.detail === '빈 값').length;
         if (emptyDefects) warns.push(`필수 항목 빈 값 ${emptyDefects}건 (KRRIS에서 결함으로 지적됨)`);
+        if (parsed.krris.codesTotal) warns.push(`코드표에 없는 코드 값 ${parsed.krris.codesTotal}건 (V-1 — 등록은 되지만 원본 확인 필요)`);
         if (layers.some((l) => l.extraFields.length)) warns.push('DBF에 저장 스키마에 없는 필드가 있는 레이어가 있습니다(무시하고 저장됨)');
         if (attUnmatched.length) warns.push(`시설물과 연결되지 않는 사진/보고서 ${attUnmatched.length}건`);
         const unrecog = looseDrawings.filter((d) => d.status === 'unrecognized').length;
@@ -147,9 +149,10 @@ async function inspect(inputPath, onStep = () => {}) {
             totalNew: layers.reduce((s, l) => s + l.newCount, 0),
             totalDelete: layers.reduce((s, l) => s + l.deleteCount, 0),
             layers,
-            krris: { requiredEpsg: parsed.krris.requiredEpsg, crs: parsed.krris.crs, nn: parsed.krris.nn, nnTotal: parsed.krris.nnTotal },
+            krris: { requiredEpsg: parsed.krris.requiredEpsg, crs: parsed.krris.crs, nn: parsed.krris.nn, nnTotal: parsed.krris.nnTotal, codes: parsed.krris.codes, codesTotal: parsed.krris.codesTotal },
             defectTotal: defects.length,
-            defects: defects.slice(0, LIST_LIMIT),
+            // 화면 목록은 검사 항목(C-1/M-1/V-1)별로 앞 LIST_LIMIT건씩 — 한 항목이 많아도 다른 항목이 가려지지 않게 한다
+            defects: ['C-1', 'M-1', 'V-1'].flatMap((c) => defects.filter((d) => d.check.startsWith(c)).slice(0, LIST_LIMIT)),
             sectors: { count: sectors.records.length, warnings: sectors.warnings },
             attachments: { total: attFiles.length, matched: attMatched, unmatchedTotal: attUnmatched.length, unmatched: attUnmatched.slice(0, LIST_LIMIT) },
             drawings: { etc: etcDrawings.length, etcNames: etcDrawings.slice(0, LIST_LIMIT), loose: looseDrawings.slice(0, LIST_LIMIT), looseTotal: looseDrawings.length },

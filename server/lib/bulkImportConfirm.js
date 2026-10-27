@@ -384,7 +384,7 @@ async function runBulkConfirm(job, ctx) {
         await logAction(null, {
             action: 'bulk_import', targetTable: 'road_sections', targetId: null, summary,
             detail: { ...totals, sectorsInserted, sectorsSkipped, routes: routeResults },
-            sigunguCode: targetSigunguCode, user,
+            sigunguCode: targetSigunguCode, user, ip: ctx.ip,
         });
 
         // 저장된 것이 하나라도 있으면 "되돌릴 수 있는 등록"으로 남긴다(전부 실패했으면 보관할 것이 없다).

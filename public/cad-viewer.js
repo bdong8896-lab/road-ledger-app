@@ -3,6 +3,155 @@
 // document.getElementById 호출 시 "이 스크립트가 실행되는 문서" 기준으로 동작하므로,
 // 팝업 창에서 로드되면 자연히 팝업 창 자신의 DOM을 찾게 된다 — 별도 분기 불필요.
 
+// ---------- 공용 알림·확인창 (브라우저 기본 alert/confirm/prompt 대체) ----------
+// 기본 알림창은 디자인이 시스템과 다르고 긴 목록이 잘 안 보이며 화면 전체를 멈춘다. 이 헬퍼는 같은 테마의 작은 알림(토스트)과 확인 창으로 바꾼다.
+//   uiAlert(메시지)            — 짧으면 화면 아래 알림(자동으로 사라짐), 길거나 줄이 많으면 확인 버튼이 있는 창. Promise 반환.
+//   await uiConfirm(메시지, { okText, cancelText, danger }) → true/false
+//   await uiPrompt(메시지, { placeholder, type, okText })    → 입력한 글자 또는 취소하면 null
+// index.html과 cad-popup.html 둘 다 이 파일을 쓰므로 여기에 둔다(스타일은 style.css의 .ui-*).
+(function () {
+    const KIND_ERROR = /실패|오류|에러|없습니다|못했|불가|잘못|권한|초과|거부|막혔|올바르지|필요합니다|이상|차단/;
+    const KIND_OK = /완료|성공|되었습니다|됐습니다|했습니다|저장했|올렸|삭제했|복원했|되돌렸/;
+
+    function toastWrap() {
+        let w = document.getElementById('ui-toast-wrap');
+        if (!w) {
+            w = document.createElement('div');
+            w.id = 'ui-toast-wrap';
+            w.setAttribute('aria-live', 'polite');
+            document.body.appendChild(w);
+        }
+        return w;
+    }
+
+    function uiToast(message, kind, ms) {
+        return new Promise((resolve) => {
+            const text = String(message == null ? '' : message);
+            const k = kind || (KIND_ERROR.test(text) ? 'error' : KIND_OK.test(text) ? 'success' : 'info');
+            const el = document.createElement('div');
+            el.className = 'ui-toast ui-toast-' + k;
+            el.setAttribute('role', k === 'error' ? 'alert' : 'status');
+            const icon = k === 'error' ? 'fa-circle-exclamation' : k === 'success' ? 'fa-circle-check' : 'fa-circle-info';
+            el.innerHTML = '<i class="fa-solid ' + icon + '"></i><span class="ui-toast-msg"></span><button type="button" class="ui-toast-close" aria-label="알림 닫기"><i class="fa-solid fa-xmark"></i></button>';
+            el.querySelector('.ui-toast-msg').textContent = text;
+            const wrap = toastWrap();
+            wrap.appendChild(el);
+            let done = false;
+            const close = () => {
+                if (done) return;
+                done = true;
+                el.classList.add('ui-toast-out');
+                setTimeout(() => { el.remove(); resolve(); }, 180);
+            };
+            el.querySelector('.ui-toast-close').addEventListener('click', close);
+            // 오류는 오래, 글이 길면 더 오래 보여 준다
+            const dur = ms || Math.min(15000, (k === 'error' ? 6000 : 3500) + text.length * 40);
+            setTimeout(close, dur);
+            while (wrap.children.length > 4) wrap.firstChild.remove();
+        });
+    }
+
+    let modalOpen = 0;
+    function openModal({ message, buttons, input }) {
+        return new Promise((resolve) => {
+            const prevFocus = document.activeElement;
+            const back = document.createElement('div');
+            back.className = 'ui-modal-backdrop';
+            const box = document.createElement('div');
+            box.className = 'ui-modal';
+            box.setAttribute('role', 'dialog');
+            box.setAttribute('aria-modal', 'true');
+            const msg = document.createElement('div');
+            msg.className = 'ui-modal-msg';
+            msg.textContent = String(message == null ? '' : message);
+            box.appendChild(msg);
+            let inp = null;
+            if (input) {
+                inp = document.createElement('input');
+                inp.className = 'ui-modal-input';
+                inp.type = input.type || 'text';
+                inp.placeholder = input.placeholder || '';
+                inp.autocomplete = 'off';
+                box.appendChild(inp);
+            }
+            const bar = document.createElement('div');
+            bar.className = 'ui-modal-buttons';
+            box.appendChild(bar);
+            back.appendChild(box);
+            document.body.appendChild(back);
+            modalOpen++;
+            const finish = (value) => {
+                back.remove();
+                modalOpen--;
+                document.removeEventListener('keydown', onKey, true);
+                if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) { /* 무시 */ } }
+                resolve(value);
+            };
+            const btnEls = buttons.map((b) => {
+                const el = document.createElement('button');
+                el.type = 'button';
+                el.className = 'ui-modal-btn' + (b.primary ? ' primary' : '') + (b.danger ? ' danger' : '');
+                el.textContent = b.text;
+                el.addEventListener('click', () => finish(b.value(inp)));
+                bar.appendChild(el);
+                return el;
+            });
+            const primary = btnEls[buttons.findIndex((b) => b.primary)] || btnEls[btnEls.length - 1];
+            const cancelBtn = buttons.find((b) => b.cancel);
+            function onKey(e) {
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(cancelBtn ? cancelBtn.value(inp) : buttons[0].value(inp)); }
+                else if (e.key === 'Enter' && !(e.target && e.target.tagName === 'BUTTON')) { e.preventDefault(); e.stopPropagation(); primary.click(); }
+                else if (e.key === 'Tab') { // 창 밖으로 포커스가 나가지 않게
+                    const f = [...box.querySelectorAll('input,button')];
+                    if (!f.length) return;
+                    const first = f[0], last = f[f.length - 1];
+                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                }
+            }
+            document.addEventListener('keydown', onKey, true);
+            back.addEventListener('mousedown', (e) => { if (e.target === back && cancelBtn) finish(cancelBtn.value(inp)); });
+            (inp || primary).focus();
+        });
+    }
+
+    function uiAlert(message) {
+        const text = String(message == null ? '' : message);
+        const lines = text.split('\n').length;
+        if (text.length > 180 || lines > 5) {
+            return openModal({ message: text, buttons: [{ text: '확인', primary: true, value: () => undefined }] });
+        }
+        return uiToast(text);
+    }
+    function uiConfirm(message, opts) {
+        const o = opts || {};
+        const text = String(message == null ? '' : message);
+        // 삭제·완전 삭제를 묻는 창은 따로 지정하지 않아도 빨간 버튼(확인 → 삭제)으로 보여 실수로 누르지 않게 한다
+        const danger = o.danger !== undefined ? o.danger : /삭제|지웁니다/.test(text);
+        const okText = o.okText || (/삭제하시겠습니까|지웁니다/.test(text) ? '삭제' : '확인');
+        return openModal({
+            message: text,
+            buttons: [
+                { text: o.cancelText || '취소', cancel: true, value: () => false },
+                { text: okText, primary: true, danger, value: () => true },
+            ],
+        });
+    }
+    function uiPrompt(message, opts) {
+        const o = opts || {};
+        return openModal({
+            message,
+            input: { type: o.type || (/비밀번호/.test(String(message)) ? 'password' : 'text'), placeholder: o.placeholder },
+            buttons: [
+                { text: '취소', cancel: true, value: () => null },
+                { text: o.okText || '확인', primary: true, value: (inp) => (inp ? inp.value : '') },
+            ],
+        });
+    }
+    window.uiToast = uiToast; window.uiAlert = uiAlert; window.uiConfirm = uiConfirm; window.uiPrompt = uiPrompt;
+    window.uiModalOpen = () => modalOpen > 0;
+})();
+
 let currentRoute = null; // { road_grade, route_no, route_name, start_point, end_point }
 // "도로" 탭은 파일 목록이 아니라 "이 호선의 구간 중 어느 걸 볼지 고르는" 용도로
 // 바뀌었다 — 여기서 구간을 고르면 currentRoute가 그 구간으로 바뀌고, "도면" 탭이
@@ -89,7 +238,7 @@ async function downloadFileWithBusyCursor(url, filename, btnEl) {
     btnEl.innerHTML = '<i class="fa-solid fa-hourglass-half bulk-spinner"></i>';
     try {
         const res = await fetch(url);
-        if (!res.ok) { alert('다운로드에 실패했습니다.'); return; }
+        if (!res.ok) { uiAlert('다운로드에 실패했습니다.'); return; }
         const blob = await res.blob();
         const objectUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -98,7 +247,7 @@ async function downloadFileWithBusyCursor(url, filename, btnEl) {
         a.click();
         URL.revokeObjectURL(objectUrl);
     } catch (e) {
-        alert('다운로드에 실패했습니다.');
+        uiAlert('다운로드에 실패했습니다.');
     } finally {
         document.body.classList.remove('app-busy');
         btnEl.disabled = false;
@@ -133,7 +282,7 @@ function buildRouteFileRow(f) {
     const delBtn = row.querySelector('.file-del-btn');
     delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!confirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
+        if (!await uiConfirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
         await fetch(`/api/routes/files/${f.id}`, { method: 'DELETE' });
         loadRouteFileList();
     });
@@ -178,7 +327,7 @@ function buildRouteWholeFileRow(f) {
     const delBtn = row.querySelector('.rs-file-del-btn');
     delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!confirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
+        if (!await uiConfirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
         await fetch(`/api/routes/files/${f.id}`, { method: 'DELETE' });
         // "도면종류" 탭(loadRouteFileList)뿐 아니라 "도로" 탭(loadRouteSectionPicker,
         // 구간 목록 아래에 종류별 전체 도면을 같이 보여줌)에서도 이 행이 쓰이므로,
@@ -266,7 +415,7 @@ function buildRouteFileSegmentTable(segFiles) {
             delBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
             delBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (!confirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
+                if (!await uiConfirm(`"${f.original_name}" 파일을 삭제하시겠습니까?`)) return;
                 await fetch(`/api/routes/files/${f.id}`, { method: 'DELETE' });
                 loadRouteFileList();
             });
@@ -455,7 +604,7 @@ async function loadRouteFileList() {
 
 function requireEditModeForUpload() {
     if (document.body.classList.contains('admin-mode')) return true;
-    alert('편집 모드에서만 파일을 올릴 수 있습니다.');
+    uiAlert('편집 모드에서만 파일을 올릴 수 있습니다.');
     return false;
 }
 
@@ -519,7 +668,7 @@ function sameRouteTarget(m) {
 async function uploadRouteFile() {
     if (!requireEditModeForUpload()) return;
     const isDrawingTab = currentRouteCategory === '도로' || currentRouteCategory === '도면종류';
-    if (!currentRoute && !isDrawingTab) { alert('먼저 데이터보기 트리에서 노선을 선택하세요.'); return; }
+    if (!currentRoute && !isDrawingTab) { uiAlert('먼저 데이터보기 트리에서 노선을 선택하세요.'); return; }
     const fileInput = document.getElementById('route-upload-file');
     if (!fileInput || !fileInput.files.length) return;
 
@@ -589,9 +738,9 @@ async function uploadRouteFile() {
             autoUnmatched.slice(0, 10).forEach((u) => lines.push(`  · ${u.name} — ${u.reason}`));
             if (autoUnmatched.length > 10) lines.push(`  … 외 ${autoUnmatched.length - 10}개`);
         }
-        alert(lines.join('\n'));
+        uiAlert(lines.join('\n'));
     }
-    if (errors.length) alert(`${errors.length}건 실패:\n${errors.slice(0, 10).join('\n')}`);
+    if (errors.length) uiAlert(`${errors.length}건 실패:\n${errors.slice(0, 10).join('\n')}`);
     if (dupTokens.length) await resolveDuplicateRouteUploads(dupTokens, dupNames);
     if (!errors.length && !autoUnmatched.length && autoMatched.length + toUploadOneByOne.length === 1) {
         const single = autoMatched.length === 1 ? (sameRouteTarget(autoMatched[0]) ? autoMatched[0].file : null) : lastUploaded;
@@ -603,7 +752,7 @@ async function uploadRouteFile() {
 // 기존 파일은 이 질문에 답하기 전까지 그대로이고, 교체해도 기존 파일은 보관함으로 옮겨져 [일괄등록 이력]의 "이 등록 취소"로 되돌릴 수 있다.
 async function resolveDuplicateRouteUploads(tokens, names) {
     const list = names.slice(0, 10).map((n) => `  · ${n}`).join('\n') + (names.length > 10 ? `\n  … 외 ${names.length - 10}개` : '');
-    const replace = confirm(
+    const replace = await uiConfirm(
         `같은 이름의 도면이 이미 올라와 있어 따로 빼 두었습니다 (${names.length}개):\n${list}\n\n` +
         '[확인] 새 파일로 교체합니다. 기존 파일은 보관되어 [일괄등록 이력]에서 "이 등록 취소"로 되돌릴 수 있습니다.\n' +
         '[취소] 교체하지 않습니다. 기존 파일은 그대로 두고 새로 올린 파일은 버립니다.'
@@ -615,9 +764,9 @@ async function resolveDuplicateRouteUploads(tokens, names) {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || '처리하지 못했습니다.');
-        if (replace) { await loadRouteFileList(); alert(`${data.replaced || 0}개를 교체했습니다.`); }
+        if (replace) { await loadRouteFileList(); uiAlert(`${data.replaced || 0}개를 교체했습니다.`); }
     } catch (e) {
-        alert(e.message || '처리하지 못했습니다.');
+        uiAlert(e.message || '처리하지 못했습니다.');
     }
 }
 
@@ -629,7 +778,7 @@ function openRouteFileInViewer(file) {
         if (file.has_preview) {
             loadDxfFile(`/api/routes/files/${file.id}?inline=1&variant=dxf`, file.original_name, file);
         } else {
-            alert('이 DWG 파일은 미리보기를 사용할 수 없습니다.\n(서버에 DWG 변환 도구가 설정되지 않았거나 변환에 실패했습니다)\n다운로드 버튼으로 원본 파일은 받을 수 있습니다.');
+            uiAlert('이 DWG 파일은 미리보기를 사용할 수 없습니다.\n(서버에 DWG 변환 도구가 설정되지 않았거나 변환에 실패했습니다)\n다운로드 버튼으로 원본 파일은 받을 수 있습니다.');
         }
     } else if (typeof openFilePreview === 'function') {
         // 좌측 사이드바(메인 화면)에는 우측 분할뷰 미리보기가 있음
@@ -802,7 +951,7 @@ function openCadPopup() {
 
     const popup = window.open('cad-popup.html?' + params.toString(), 'cadPopup', 'width=1400,height=900,resizable=yes');
     if (!popup) {
-        alert('팝업이 차단되었습니다. 브라우저의 팝업 차단을 해제해주세요.');
+        uiAlert('팝업이 차단되었습니다. 브라우저의 팝업 차단을 해제해주세요.');
     }
 }
 
@@ -2698,7 +2847,7 @@ async function downloadSectionExportWith(scopeParams) {
         const check = await fetch(base + (params.toString() ? '&' : '') + 'check=1');
         if (!check.ok) {
             const data = await check.json().catch(() => ({}));
-            alert(data.error || '다운로드에 실패했습니다.');
+            uiAlert(data.error || '다운로드에 실패했습니다.');
             return;
         }
         const info = await check.json();
@@ -3059,7 +3208,7 @@ function setOverlayStatus(html) {
 }
 
 async function startDxfOverlay() {
-    if (!dxfViewer.entities.length || !dxfViewer.bbox) { alert('먼저 도면(DXF)을 열어 주세요.'); return; }
+    if (!dxfViewer.entities.length || !dxfViewer.bbox) { uiAlert('먼저 도면(DXF)을 열어 주세요.'); return; }
     if (typeof map === 'undefined' || !map) return;
     ensureOverlayCrs();
     const panel = document.getElementById('cad-overlay-panel');

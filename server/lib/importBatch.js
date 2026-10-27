@@ -165,7 +165,7 @@ async function latestAppliedId(sigunguCode) {
     return rows[0] ? rows[0].id : null;
 }
 
-async function undoBatch(batchId, user) {
+async function undoBatch(batchId, user, ip) {
     const { rows: [batch] } = await pool.query('SELECT * FROM bulk_import_batches WHERE id = $1', [batchId]);
     if (!batch) return { ok: false, status: 404, error: '등록 이력을 찾을 수 없습니다.' };
     if (user.sigunguCode && batch.sigungu_code && user.sigunguCode !== batch.sigungu_code) {
@@ -244,7 +244,7 @@ async function undoBatch(batchId, user) {
     await logAction(null, {
         action: 'bulk_undo', targetTable: 'road_sections', targetId: null,
         summary: `일괄등록 취소: #${batch.id} ${batch.source_label || ''} (${batch.summary ? batch.summary.slice(0, 80) : ''})`.trim(),
-        detail: { batchId: batch.id, missingFiles }, sigunguCode: batch.sigungu_code, user, ip: undefined,
+        detail: { batchId: batch.id, missingFiles }, sigunguCode: batch.sigungu_code, user, ip,
     });
     return { ok: true, missingFiles };
 }

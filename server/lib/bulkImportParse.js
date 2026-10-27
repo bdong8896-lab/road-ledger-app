@@ -18,9 +18,10 @@ const { parseDbf } = require('./dbfParser');
 const { parseShp } = require('./shpParser');
 const { detectCrs, reprojectGeometry, KRRIS_REQUIRED_EPSG } = require('./crsRegistry');
 const { getTableLabels } = require('./schemaLabels');
+const { CODEBOOK } = require('./govCodebook');
 
 // KRRIS(국가 도로대장 검수) 사전검사 — 실제 장성군 납품 심사에서 지적된 결함 중
-// 기계적으로 판정할 수 있는 두 가지를 미리보기 단계에서 잡는다.
+// 기계적으로 판정할 수 있는 두 가지(C-1, M-1)와, 코드표 대조(V-1)를 미리보기 단계에서 잡는다.
 //   C-1: 좌표계가 EPSG:5179(UTM-K)가 아님 — 도로대장 작성지침 43쪽. 우리 시스템은 어떤
 //        좌표계든 변환해 저장하므로 화면상 문제가 없지만, 그 원본을 KRRIS에 내면 반려된다.
 //   M-1: 필수(NN) 항목 값이 비어 있음 — 필수 여부는 테이블정의서 v2.3을 옮긴 DB 스키마
@@ -28,6 +29,37 @@ const { getTableLabels } = require('./schemaLabels');
 //        들어와 DB NOT NULL을 통과해버리고(실제 적재분에서 45건 확인), 숫자 필드 빈칸은
 //        null이 되어 확정 단계 INSERT 자체가 실패해 일괄등록 전체가 롤백된다.
 const NN_SAMPLE_LIMIT = 5; // 미리보기 화면에 필드별로 보여줄 대상 ID 개수(전체는 CSV로)
+
+// V-1: 코드표(공통입력코드정의서 v2.6, lib/govCodebook.js)에 없는 코드값. 코드 칸에 'U'/'D'나 '이팝'처럼
+//      코드가 아닌 값이 들어간 경우를 잡는다. 저장은 막지 않고(확인 필요 수준) 결함 목록에만 올린다.
+//      빈 값은 M-1이 따로 보므로 여기서는 건너뛴다.
+//   - 필드 이름(영문)이 코드북의 필드 식별자와 같은 칸만 대조한다(예: DIRECTION, PL_TYPE, SB_NAME).
+//   - 코드북의 TYPE처럼 레이어마다 뜻이 다른 필드는 코드를 합쳐 둔 것이라, "어느 레이어에서든 있는 코드"면 통과시킨다.
+//   - mco(관리기관)는 뺀다: 납품 데이터가 쓰는 값(예: 58950)이 공식 코드(장성군 46880)와 다른 경우가 실제로 있어
+//     대조하면 모든 행이 걸려 정작 중요한 경고가 묻힌다(아래 dbfMcoCode 주석 참고).
+const CODE_SKIP_FIELDS = new Set(['mco']);
+const CODE_VALUE_LIMIT = 10;     // 미리보기 화면에 필드별로 보여줄 코드값 개수
+const CODE_DEFECT_CAP = 20000;   // 레이어당 CSV 결함 목록에 담는 행 상한(건수 집계는 상한과 무관하게 전부 센다)
+
+const codeSetCache = new Map(); // 필드명(대문자) -> Set(코드)
+function codeSetOf(field) {
+    const key = field.toUpperCase();
+    if (!codeSetCache.has(key)) {
+        const book = CODEBOOK[key];
+        codeSetCache.set(key, book && Object.keys(book).length ? new Set(Object.keys(book)) : null);
+    }
+    return codeSetCache.get(key);
+}
+
+// DBF가 코드 칸을 숫자형으로 만들면 앞의 0이 사라진다(0401 → 401). 자릿수를 채워 본 값도 같은 코드로 본다.
+function isKnownCode(set, v) {
+    const s = typeof v === 'string' ? v.trim() : String(v);
+    if (set.has(s)) return true;
+    if (typeof v === 'number') {
+        for (let len = s.length + 1; len <= 5; len++) if (set.has(s.padStart(len, '0'))) return true;
+    }
+    return false;
+}
 
 function isBlank(v) {
     return v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
@@ -123,6 +155,9 @@ async function parseDelivery(extractDir) {
                     fieldMatch: { ok: true, missingInDbf: [], extraInDbf: [], missingRequired: [] },
                     warnings: [],
                     nnDefects: [], // M-1: { pk, field, kind: 'empty'|'null' }
+                    codeDefects: [],      // V-1: { pk, file, row, field, value } — CODE_DEFECT_CAP까지만 담는다
+                    codeTotal: 0,         // V-1 전체 건수(상한과 무관)
+                    codeStats: new Map(), // V-1 집계: field -> Map(코드값 -> { count, samples })
                 });
             }
             const layer = layersByCode.get(code);
@@ -251,6 +286,29 @@ async function parseDelivery(extractDir) {
                             if (v === null || v === undefined) rec.skipNnNull = true;
                         }
                     });
+                    // V-1: 코드표에 없는 코드값 (저장은 막지 않는다)
+                    const codeFields = [...columns].filter((c) => presentFields.has(c) && !CODE_SKIP_FIELDS.has(c) && codeSetOf(c));
+                    if (codeFields.length) {
+                        rows.forEach((rec, i) => {
+                            for (const field of codeFields) {
+                                const v = rec.row[field];
+                                if (isBlank(v) || isKnownCode(codeSetOf(field), v)) continue;
+                                const value = typeof v === 'string' ? v.trim() : String(v);
+                                const pkVal = rec.row[layer.pkColumn];
+                                const pk = isBlank(pkVal) ? `(${path.basename(dbfPath)} ${i + 1}번째 행)` : String(pkVal);
+                                layer.codeTotal++;
+                                if (!layer.codeStats.has(field)) layer.codeStats.set(field, new Map());
+                                const byValue = layer.codeStats.get(field);
+                                if (!byValue.has(value)) byValue.set(value, { count: 0, samples: [] });
+                                const st = byValue.get(value);
+                                st.count++;
+                                if (st.samples.length < NN_SAMPLE_LIMIT) st.samples.push(pk);
+                                if (layer.codeDefects.length < CODE_DEFECT_CAP) {
+                                    layer.codeDefects.push({ pk, file: path.basename(dbfPath), row: i + 1, field, value });
+                                }
+                            }
+                        });
+                    }
                     layer.newRecords.push(...rows);
                     // A0020000(도로대장총괄) 자체가 필수 필드 누락이면 road_sections 동기화도
                     // 시도하지 않는다 — gov_section INSERT를 건너뛰는 것과 같은 원칙.
@@ -327,12 +385,27 @@ function buildKrrisChecks(layers) {
             nn.push({ code: l.code, koreanName: l.koreanName, field, label: labels[field] || field, ...f });
         }
     }
+    // V-1: 코드표에 없는 값 — 레이어·필드별로 코드값 종류와 건수(많은 순)
+    const codes = [];
+    for (const l of layers) {
+        if (!l.codeStats.size) continue;
+        const labels = getTableLabels(l.table);
+        for (const [field, byValue] of l.codeStats) {
+            const all = [...byValue.entries()].map(([value, s]) => ({ value, count: s.count, samples: s.samples })).sort((a, b) => b.count - a.count);
+            codes.push({
+                code: l.code, koreanName: l.koreanName, field, label: labels[field] || field,
+                total: all.reduce((s, v) => s + v.count, 0), distinct: all.length, values: all.slice(0, CODE_VALUE_LIMIT),
+            });
+        }
+    }
     return {
         requiredEpsg: KRRIS_REQUIRED_EPSG,
         checkedShpLayers: layers.filter((l) => l.hasShp).length,
         crs,
         nn,
         nnTotal: layers.reduce((s, l) => s + l.nnDefects.length, 0),
+        codes,
+        codesTotal: layers.reduce((s, l) => s + l.codeTotal, 0),
     };
 }
 
@@ -346,13 +419,27 @@ function krrisDefectRows(parsed) {
         rows.push({ check: 'C-1 좌표계', code: c.code, layer: c.koreanName, pk: '', file: '', row: '', field: '', label: '', detail });
     }
     for (const l of parsed.layers) {
-        if (!l.nnDefects.length) continue;
         const labels = getTableLabels(l.table);
         for (const d of l.nnDefects) {
             rows.push({
                 check: 'M-1 필수항목', code: l.code, layer: l.koreanName, pk: d.pk, file: d.file || '', row: d.row || '', field: d.field,
                 label: labels[d.field] || d.field,
                 detail: d.kind === 'null' ? '값 없음(숫자) — 이 레코드는 저장되지 않음' : '빈 값',
+            });
+        }
+    }
+    for (const l of parsed.layers) {
+        const labels = getTableLabels(l.table);
+        for (const d of l.codeDefects) {
+            rows.push({
+                check: 'V-1 코드표', code: l.code, layer: l.koreanName, pk: d.pk, file: d.file, row: d.row, field: d.field,
+                label: labels[d.field] || d.field, detail: `코드표에 없는 값 "${d.value}"`,
+            });
+        }
+        if (l.codeTotal > l.codeDefects.length) {
+            rows.push({
+                check: 'V-1 코드표', code: l.code, layer: l.koreanName, pk: '', file: '', row: '', field: '', label: '',
+                detail: `이 레이어는 ${l.codeTotal.toLocaleString()}건 중 ${l.codeDefects.length.toLocaleString()}건만 목록에 담았습니다(상한)`,
             });
         }
     }

@@ -8,42 +8,25 @@
   기존 필지 단위 테이블(road_ledger)과 API는 과거 데이터 보존을 위해 스키마에는 남아있지만
   화면에서는 더 이상 쓰이지 않는다.
 
-## 최초 설치 (관공서별 신규 배포)
+## 설치·배포 문서 안내
 
-1. PostgreSQL DB 생성 후 스키마 적용
-   ```
-   psql -h <host> -U <user> -d <database> -f server/db/schema.sql
-   ```
-2. `server/.env.example`을 `server/.env`로 복사하고 값 채우기
-   - `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`: 해당 서버의 PostgreSQL 접속정보
-   - `SESSION_SECRET`: 무작위 문자열로 교체
-   - `VWORLD_API_KEY` / `VWORLD_REFERER`: 이 서버의 도메인·IP로 VWorld 개발자센터에
-     발급받은 키와, 그 키에 등록한 Referer 값 (관공서마다 IP가 달라 키를 새로 발급해야 함)
-   - `ITS_CCTV_API_KEY`: 국가교통정보센터(openapi.its.go.kr) CCTV API 키. 고속도로·국도
-     CCTV만 제공하며(군도·시도 등 지자체 관리 도로는 미포함), 키가 비어있으면 CCTV
-     레이어는 그냥 빈 상태로 남는다(에러 없음).
-   - `UPLOAD_DIR`: 도면·조서 파일 저장 경로
-   - `DWG_CONVERTER_PATH` (선택, 보통 비워둬도 됨): DWG 파일을 CAD 뷰어에서 보여줄 때
-     쓰는 DXF 변환기 경로. `server/vendor/libredwg-win64/dwg2dxf.exe`(LibreDWG,
-     GPL 오픈소스, 앱과 함께 배포됨)가 기본값이라 별도 설치 없이 바로 동작한다.
-     다른 변환기(유료 ODA File Converter 등)로 바꾸고 싶을 때만 이 값을 채운다.
-     비어있거나 파일이 없으면 DWG 업로드는 되지만 미리보기는 제공되지 않는다
-     (원본 다운로드만 가능, 에러 없이 넘어감).
+설치 대상에 따라 문서와 파일이 나뉘어 있다. 섞어서 쓰지 말 것.
 
-   로드뷰(카카오 Roadview)는 `public/kakao_sdk.js`(DS-LandInfo와 동일한 벤더 SDK, 레거시
-   Daum 지도 API 경로라 앱키/도메인 등록이 필요 없음)를 그대로 사용하므로 별도 설정이
-   필요 없다.
-3. 의존성 설치 및 관리자 계정 생성
-   ```
-   cd server
-   npm install
-   npm run seed-admin -- <아이디> <비밀번호> <표시이름>
-   ```
-4. 서버 실행
-   ```
-   npm start
-   ```
-   기본 포트는 `.env`의 `PORT` (기본 8080). `http://<서버IP>:<PORT>` 로 접속.
+| 하려는 일 | 폴더 | 시작 문서 |
+|---|---|---|
+| 다른 PC(개발·시연·검수용 로컬)에 설치 | `local-setup/` | [local-setup/로컬설치_가이드.txt](local-setup/로컬설치_가이드.txt) |
+| 운영 서버(IIS·pm2·HTTPS)에 설치·배포 | `deploy/` | [deploy/서버배포_가이드.txt](deploy/서버배포_가이드.txt), [deploy/서버배포_안내서.html](deploy/서버배포_안내서.html) |
+
+**로컬 설치 요약** (Windows, Node.js 18+ 와 Docker Desktop 필요):
+
+1. 프로젝트 폴더를 새 PC에 복사 (`local-setup/make-package.bat`으로 만든 ZIP 권장)
+2. `local-setup/install-local.bat` 더블클릭 — PostgreSQL 컨테이너, 스키마, `server/.env`, npm 설치, 관리자 계정까지 자동
+3. `server/.env`에 이 PC용 `VWORLD_API_KEY` 입력 (키는 서비스 URL에 잠겨 있어 다른 PC 키는 안 먹음)
+4. `local-setup/start-dev.bat` 실행 → `http://localhost:8080`
+
+기존 자료(DB·업로드 파일)를 옮기려면 `local-setup/backup-db.bat`(또는 `make-package.bat -WithData`)과
+`local-setup/restore-data.bat`을 쓴다. 환경변수 항목별 설명은 [server/.env.example](server/.env.example) 주석 참고.
+
 
 ## 구조
 
@@ -147,88 +130,15 @@ PDF 2종은 폰트에 유니코드 매핑이 없어 텍스트 추출이 안 됨(
 - 서버 자체의 IP/도메인은 어디에도 하드코딩되어 있지 않다 (모든 API 호출이 상대경로
   `/api/...`). 서버를 다른 IP로 옮기면 `.env`만 재설정하면 된다.
 
-## 운영 서버 배포 (105.24.1.170, Windows Server 2022 + IIS)
+## 운영 서버 배포
 
-화성시 "도로관리시스템 구축" 건으로 새로 할당받은 서버(105.24.1.170)에, 이미 떠있는
-다른 IIS 사이트(8080 포트 사용 중, 건드리지 않음)와 나란히 새 사이트로 배포한다.
-구조: **IIS(11800, 리버스프록시) → Node(3000, PM2로 상시 구동) → PostgreSQL(5432,
-로컬만 접속 허용)**. (이전 배포처(192.168.0.211:8081)와 내부 구조는 동일 — 자세한
-절차·트러블슈팅은 [deploy/서버배포_가이드.txt](deploy/서버배포_가이드.txt) 참고)
+운영 서버(Windows Server + IIS, 구조: **IIS(리버스프록시) → Node(3000, pm2) → PostgreSQL(로컬 전용)**)
+배포 절차·점검 목록·트러블슈팅은 모두 `deploy/` 폴더의 문서로 분리했다.
 
-### 1. PostgreSQL
+- [deploy/서버배포_가이드.txt](deploy/서버배포_가이드.txt) — 사전 준비(PostgreSQL 포트·계정 확인), 파일 업로드, 스키마 적용,
+  pm2, IIS 사이트, HTTPS, 백업, 재배포, 트러블슈팅
+- [deploy/서버배포_안내서.html](deploy/서버배포_안내서.html) — 같은 내용을 단계별로 정리한 안내서
+- [deploy/web.config](deploy/web.config) — IIS 리버스프록시 규칙 (서버 사이트 물리 경로 최상위에 복사)
+- [deploy/backup-prod.ps1](deploy/backup-prod.ps1) — 운영 서버 백업 스크립트
 
-이 서버는 PostgreSQL이 이미 설치되어 있지만 **포트/계정 정보를 모르는 상태**다.
-`deploy/서버배포_가이드.txt`의 "0. 사전 준비 → PostgreSQL 포트·계정 확인" 절차대로
-직접 확인/생성해야 한다(요약: `Get-NetTCPConnection`으로 실제 포트 확인 →
-비밀번호를 모르면 `pg_hba.conf`를 잠깐 trust로 바꿔 접속 → 우리 전용 `DSMap`
-계정/DB를 새로 생성 → 원래대로 복구). 확인되면 스키마 적용:
-```
-psql -h localhost -p <확인한 포트> -U DSMap -d DSMap -f server/db/schema.sql
-```
-PostgreSQL이 외부(다른 IP)에서 직접 접속 가능하지 않도록 `postgresql.conf`의
-`listen_addresses`와 `pg_hba.conf`를 로컬(127.0.0.1)만 허용하도록 확인 — 웹앱은
-같은 서버에서 localhost로만 접속하므로 외부 노출이 불필요하다.
-
-### 2. 앱 파일 배포
-
-`server/`, `public/` 전체를 서버로 복사(SFTP 등). `server/.env.production`에 이미
-운영 값(DB 접속정보, VWorld/CCTV 키, 새로 발급한 SESSION_SECRET)이 채워져 있으니,
-서버에 올린 뒤 파일명을 `.env`로 바꾼다. 그 다음:
-```
-cd server
-npm install --omit=dev
-node db/seed-admin.js <아이디> <비밀번호> <표시이름>   # 운영 관리자 계정 생성
-```
-
-### 3. Node를 PM2로 Windows 서비스 등록
-
-```
-npm install -g pm2 pm2-windows-startup
-pm2-startup install
-cd server
-pm2 start ecosystem.config.js
-pm2 save
-```
-`ecosystem.config.js`가 `PORT=3000`(즉 `.env`의 값)으로 `index.js`를 구동하고,
-크래시 시 자동 재시작한다. `pm2-startup install`로 등록해두면 서버 재부팅 후에도
-`pm2 save`로 저장된 프로세스가 자동 복구된다.
-
-### 4. IIS에 새 사이트(11800) 추가 + 리버스프록시
-
-IIS 자체는 이미 설치되어 있고(8080 포트에 다른 시스템이 떠 있음 — 그 사이트는
-건드리지 않는다), 우리는 별도 사이트를 하나 더 추가하기만 하면 된다.
-
-1. **URL Rewrite**, **Application Request Routing(ARR)** IIS 확장모듈 설치 여부 확인(미설치 시 설치).
-2. IIS 관리자 → 서버 최상위 노드 → "Application Request Routing Cache" →
-   우측 "Server Proxy Settings..." → **Enable proxy** 체크.
-3. 새 웹사이트 추가: 포트 `11800`, 물리 경로는 빈 폴더(정적 파일을 여기 두지 않음 —
-   Express가 직접 서빙하므로 IIS는 프록시 역할만 함).
-4. 그 물리 경로에 [`deploy/web.config`](deploy/web.config) 복사 — 모든 요청을
-   `http://localhost:3000`으로 리라이트하는 규칙이 들어있다.
-5. 방화벽 인바운드 규칙: **11800만 허용**(보안팀에 요청). 3000(Node)과 5432(Postgres)는
-   외부에 노출하지 않는다(로컬 전용).
-6. 접속 확인: `http://105.24.1.170:11800`
-
-### 5. VWorld 키 관련 주의
-
-105.24.1.170:11800(화성 도로관리시스템) 전용으로 새 키를 발급받아 `.env.production`에
-반영 완료:
-```
-VWORLD_API_KEY=<발급받은 VWorld 키 — 값은 server/.env.production에만 둠>
-VWORLD_REFERER=https://105.24.1.170:11800/
-```
-이전 서버(192.168.0.211:8081)용 키와는 다른 키이니 혼동하지 말 것. 개발키는 만료가 있으므로
-만료 전에 VWorld 개발자센터에서 운영키로 전환 신청해야 하고(연장신청 최대 3회), 서버의
-접속 주소(도메인 연결, 포트 변경 등)가 바뀌면 이 키의 서비스 URL도 같이 재등록해야
-지도가 계속 뜬다.
-
-### 6. SFTP 배포 설정 — 확인 필요
-
-기존 DS-LandInfo의 `.vscode/sftp.json`은 `remotePath: "/var/www/html"`(리눅스 경로),
-포트 `11800`으로 되어 있다. 이번에 말씀하신 "IIS로 구축된 윈도우 서버"라는 설명과는
-경로 형식이 안 맞는다(윈도우라면 보통 `C:\inetpub\wwwroot\...` 같은 경로). 아래 중
-어느 쪽인지 확인해주시면 `road-ledger-app`용 `.vscode/sftp.json`을 새로 만들겠다.
-
-- 같은 SFTP 서버(포트 11800, 계정 `Dsuser`)를 그대로 쓰되 **remotePath만** 새 IIS
-  사이트의 물리 경로로 바꾸면 되는지
-- 아니면 완전히 다른 SFTP 접속 정보(포트/계정/경로)를 새로 써야 하는지
+로컬 PC 설치용 파일(`local-setup/`)은 서버에 올리지 않는다.

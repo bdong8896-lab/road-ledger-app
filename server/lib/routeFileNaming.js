@@ -33,7 +33,7 @@ function parseStationFilename(originalName, sectionLengthKm) {
 //   - "도로" 카테고리(500m 단위, seg_variant 있음): P=평면도, Y=용지도
 //     (500_U 폴더도 실제 납품에 존재하지만 대응되는 유형이 아직 없어 미분류로 둔다)
 //   - "도면종류" 카테고리(노선 전체 단위 파일, 파일명 접두어로 구분):
-//     TOP=지적도(용지 관련 내용이라 "용지도"로 묶음), CON=노선 전체 평면도
+//     TOP=지적도(용지 관련 내용이라 "용지도"로 묶음; 접두어 없는 000501.DXF 형태도 TOP), CON=노선 전체 평면도
 //     ("평면도"로 묶음). 매설물도/구조물도는 아직 실제로 확인된 파일명 규칙이
 //     없어 항상 미분류(null) — 탭 구조는 만들어두되 채워지는 파일은 없다.
 function classifyDrawingType(file) {
@@ -44,6 +44,10 @@ function classifyDrawingType(file) {
     }
     if (file.file_category === '도면종류') {
         if (/^TOP/i.test(file.original_name)) return '용지도';
+        // ETC/TOP 폴더의 파일이 접두어 없이 {노선4}{구간2}.dxf(예: 000501.DXF)로 오는 납품이 있다(2026-10-23 장성 납품).
+        // 이름에 TOP이 없다는 이유로 미분류가 되어 용지도 탭에서 빠지던 것 — 숫자만으로 된 노선·구간 도면은 TOP 폴더 규칙으로 본다.
+        // 구간이 한 자리 모자란 5자리 이름(00802.DXF)도 실제 납품에 있어 5~6자리를 허용한다.
+        if (/^\d{5,6}\.(dxf|dwg)$/i.test(file.original_name)) return '용지도';
         if (/^CON/i.test(file.original_name)) return '평면도';
         // SE{노선4}{구간2}{측점5}: 신규 납품의 노선·구간 전체 평면도(CONT 폴더, 장성/화성 납품으로 확인)
         if (/^SE\d/i.test(file.original_name)) return '평면도';

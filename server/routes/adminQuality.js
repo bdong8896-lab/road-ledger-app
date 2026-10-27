@@ -8,7 +8,7 @@ const { requireAdminReauth } = require('../middleware/requireAuth');
 const { GOV_LAYER_MAP } = require('../lib/govLayerMap');
 const { getTableLabels } = require('../lib/schemaLabels');
 const { CODEBOOK } = require('../lib/govCodebook');
-const { logAction } = require('../lib/auditLog');
+const { logAction, clientIp } = require('../lib/auditLog');
 
 const router = express.Router();
 router.use(requireAdminReauth);
@@ -138,7 +138,7 @@ router.post('/fix', async (req, res) => {
             action: 'update', targetTable: table, targetId: all ? null : (pks.length === 1 ? pks[0] : null),
             summary: `필수항목 빈 값 채우기: ${layer.koreanName} · ${label} ${updated}건 → "${value}"`,
             detail: { table, column, value, updated, mode: all ? 'all' : 'selected', samplePks: result.rows.slice(0, 20).map((r) => r.pk) },
-            sigunguCode: req.session.user.sigunguCode, user: req.session.user, ip: req.ip,
+            sigunguCode: req.session.user.sigunguCode, user: req.session.user, ip: clientIp(req),
         });
     }
     res.json({ updated });

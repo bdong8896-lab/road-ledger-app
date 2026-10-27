@@ -10,6 +10,7 @@ const { requireAdminReauth } = require('../middleware/requireAuth');
 const { parseDelivery, krrisDefectRows } = require('../lib/bulkImportParse');
 const { runBulkConfirm } = require('../lib/bulkImportConfirm');
 const importBatch = require('../lib/importBatch');
+const { clientIp } = require('../lib/auditLog');
 const {
     createEmptyStaging, extractZip, getExtractDir, cleanup, sweepOldStagingDirs,
     resolveIncomingDir, mergeIncomingDir, stageFromIncomingDir, listIncomingFolders,
@@ -281,7 +282,7 @@ router.post('/:uploadId/confirm', async (req, res) => {
         uploadId, extractDir, targetSigunguCode, batchId,
         requestedRankName: (req.body.roadRankDisplayName || '').trim(),
         acknowledgeUnrecognizedCrs: !!req.body.acknowledgeUnrecognizedCrs,
-        user: req.session.user,
+        user: req.session.user, ip: clientIp(req),
     });
     res.status(202).json({ jobId: job.id, status: job.status });
 });

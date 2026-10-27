@@ -1,5 +1,5 @@
 # Road-ledger production backup (native PostgreSQL on Windows Server, no Docker).
-# For the local Docker PC use ..\backup-db.bat instead.
+# For the local Docker PC use ..\local-setup\backup-db.bat instead.
 #
 # What it does, one timestamped folder per run under $BackupRoot:
 #   1) pg_dump -Fc of the app database        -> road_ledger.dump

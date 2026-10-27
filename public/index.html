@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>도로대장 시스템</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
-<script>/* 저장된 화면 테마를 첫 그리기 전에 적용(밝은 테마 사용자가 로딩 중 어두운 화면을 잠깐 보지 않게) */try{if(localStorage.getItem('rl-theme')==='light')document.documentElement.setAttribute('data-theme','light')}catch(e){}</script>
+<script>/* 저장된 화면 테마를 첫 그리기 전에 적용(밝은 테마 사용자가 로딩 중 어두운 화면을 잠깐 보지 않게) */try{if(localStorage.getItem('rl-theme')==='light')document.documentElement.setAttribute('data-theme','light');var fs=localStorage.getItem('rl-fs');if(fs==='lg'||fs==='xl')document.documentElement.setAttribute('data-fs',fs)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" integrity="sha384-blOohCVdhjmtROpu8+CfTnUWham9nkX7P7OZQMst+RUnhtoY/9qemFAkIKOYxDI3" crossorigin="anonymous">
 <script src="https://cdn.jsdelivr.net/npm/ol@7.5.1/dist/ol.js" integrity="sha384-fgnsY/cRU3yn34YpGkLBh/4lzNBJVh159U+7K2IypwCNY+hmOBsypjKU7ZPs9aI6" crossorigin="anonymous"></script>
@@ -162,6 +162,7 @@
     <div id="left-pane">
         <div id="map-container">
             <div id="map"></div>
+            <div id="map-notice" role="alert" hidden></div>
             <div id="cad-overlay-panel" style="display:none;">
                 <div class="cov-head"><b><i class="fa-solid fa-layer-group"></i> 도면 겹쳐 보기</b><button type="button" id="cad-overlay-close" title="끄기"><i class="fa-solid fa-xmark"></i></button></div>
                 <div id="cad-overlay-status"></div>
@@ -178,13 +179,16 @@
                 <button onclick="map.getView().setZoom(map.getView().getZoom() - 1)" title="축소"><i class="fa-solid fa-minus"></i></button>
                 <button id="fit-all-routes-btn" title="등록된 노선 전체보기"><i class="fa-solid fa-expand"></i><span>전체보기</span></button>
                 <div class="toolbar-divider"></div>
-                <button id="btnBase" class="active" onclick="switchBase('base')"><i class="fa-solid fa-map"></i><span>일반</span></button>
-                <button id="btnSatellite" onclick="switchBase('satellite')"><i class="fa-solid fa-satellite"></i><span>위성</span></button>
+                <div class="toolbar-segment" role="group" aria-label="지도 종류">
+                    <button id="btnBase" class="active" onclick="switchBase('base')" title="일반 지도" aria-pressed="true"><i class="fa-solid fa-map"></i><span>일반</span></button>
+                    <button id="btnSatellite" onclick="switchBase('satellite')" title="위성 사진" aria-pressed="false"><i class="fa-solid fa-satellite"></i><span>위성</span></button>
+                    <button id="btnProvider" type="button" title="지도 제공처: 브이월드 (누르면 카카오맵으로 바꿉니다)"><i class="fa-solid fa-repeat"></i><span>브이월드</span></button>
+                </div>
                 <div class="toolbar-divider"></div>
-                <button id="open-split-btn" onclick="toggleSplitView()"><i class="fa-solid fa-table-columns"></i><span>분할</span></button>
+                <button id="open-split-btn" onclick="toggleSplitView()" title="분할 화면 켜기/끄기"><i class="fa-solid fa-table-columns"></i><span>분할</span></button>
                 <button id="cadastral-edit-btn" title="지적편집도 켜기/끄기 — 용도지역 색과 지역 이름(카카오맵)" aria-pressed="false"><i class="fa-solid fa-layer-group"></i><span>지적편집도</span></button>
                 <div class="toolbar-dropdown-wrapper">
-                    <button id="roadview-btn"><i class="fa-solid fa-street-view"></i><span>로드뷰</span></button>
+                    <button id="roadview-btn" title="로드뷰(카카오) 켜기/끄기"><i class="fa-solid fa-street-view"></i><span>로드뷰</span></button>
                     <div id="roadview-facility-select-menu" class="toolbar-dropdown-menu" style="display:none;">
                         <button type="button" id="roadview-facility-select-btn" title="로드뷰를 유지한 채 지도에서 시설물을 클릭해 정보/첨부파일을 봅니다"><i class="fa-solid fa-map-pin"></i><span>시설물 선택</span></button>
                     </div>
@@ -279,6 +283,7 @@
                 <span id="user-display-name"></span>
                 <button id="admin-mode-toggle" title="편집 모드(구간 등록·수정·삭제)" style="display:none;"><i class="fa-solid fa-user-shield"></i></button>
                 <button id="admin-console-btn" title="관리 콘솔(계정·이력·일괄등록)" style="display:none;"><i class="fa-solid fa-screwdriver-wrench"></i></button>
+                <button id="font-size-btn" title="글씨 크기: 보통 (누르면 크게 → 아주 크게 → 보통)" aria-label="글씨 크기 바꾸기"><span aria-hidden="true">가</span></button>
                 <button class="theme-toggle" id="theme-toggle-btn" title="밝은 화면으로 전환"><i class="fa-solid fa-sun"></i></button>
                 <button id="pw-change-btn" title="비밀번호 변경"><i class="fa-solid fa-key"></i></button>
                 <button id="logout-btn" title="로그아웃"><i class="fa-solid fa-right-from-bracket"></i></button>
@@ -306,6 +311,10 @@
                     <span class="category-icon"><i class="fa-solid fa-road"></i></span>
                     <span class="category-label">도로대장</span>
                     <i class="fa-solid fa-chevron-down section-caret"></i>
+                </div>
+                <div id="ledger-tree-filter">
+                    <input type="search" id="tree-filter-input" placeholder="노선·구간 찾기" aria-label="노선·구간 찾기" autocomplete="off">
+                    <label class="tree-only-registered" title="등록된 노선이 없는 도로 종류는 숨깁니다"><input type="checkbox" id="tree-only-registered" checked> 등록된 것만</label>
                 </div>
                 <div id="ledger-tree"></div>
                 <div id="tree-multi-bar" hidden>
@@ -611,6 +620,9 @@
                         <option value="delete">삭제</option>
                         <option value="bulk_import">일괄등록</option>
                         <option value="bulk_undo">일괄등록 취소</option>
+                        <option value="maint_create">점검·보수 등록</option>
+                        <option value="maint_update">점검·보수 수정</option>
+                        <option value="maint_delete">점검·보수 삭제</option>
                         <option value="restore">복원</option>
                         <optgroup label="접속·계정">
                             <option value="login">로그인</option>

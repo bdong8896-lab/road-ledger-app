@@ -168,7 +168,7 @@ async function submitPasswordChange() {
         if (!res.ok) { errEl.textContent = data.error || '비밀번호 변경에 실패했습니다.'; return; }
         document.getElementById('pw-modal').classList.remove('open');
         ['pw-current', 'pw-new', 'pw-new2'].forEach((id) => { document.getElementById(id).value = ''; });
-        if (!pwModalForced) alert('비밀번호가 변경되었습니다.');
+        if (!pwModalForced) uiAlert('비밀번호가 변경되었습니다.');
         if (pwModalOnDone) pwModalOnDone();
     } catch (e) {
         errEl.textContent = '서버에 연결할 수 없습니다.';
@@ -280,7 +280,7 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 });
 
 // ---------- 앱 초기화 ----------
-let map, base, satellite, wfsSource, wfsLayer, clickHighlightLayer;
+let map, base, satellite, kakaoBase, kakaoSat, kakaoSatLabels, wfsSource, wfsLayer, clickHighlightLayer;
 let cctvLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, routeHighlightLayer, zoningAreaLayer, roadCenterlineLayer, buildingLayer;
 let sectionFacilityLayer;
 // 지도에서 클릭으로 고른 500m 섹터(road_sectors) 강조선 — routeHighlightLayer
@@ -512,6 +512,13 @@ function initMap() {
         }),
         visible: false,
     });
+    kakaoBase = createKakaoBaseLayer();
+    kakaoSat = createKakaoSkyviewLayer();
+    kakaoSatLabels = createKakaoSkyviewLabelLayer();
+    watchBaseMapTiles(base, '브이월드 일반');
+    watchBaseMapTiles(satellite, '브이월드 위성');
+    watchBaseMapTiles(kakaoBase, '카카오 일반');
+    watchBaseMapTiles(kakaoSat, '카카오 위성');
 
     const wfsTileGrid = ol.tilegrid.createXYZ({ tileSize: 512 });
     wfsSource = new ol.source.Vector({
@@ -540,7 +547,7 @@ function initMap() {
         properties: { isWFS: true },
         style: (feature) => {
             const zoom = map.getView().getZoom();
-            const isSat = satellite.getVisible();
+            const isSat = baseType === 'satellite';
             const pnu = feature.get('pnu');
             const isRegistered = pnu && registeredPnuSet.has(pnu);
             // 지적선 레이어는 항상 로드/표시 상태를 유지한다(등록 필지 초록색 강조,
@@ -754,13 +761,14 @@ function initMap() {
 
     map = new ol.Map({
         target: 'map',
-        layers: [base, satellite, cadastralEditLayer, wfsLayer, zoningAreaLayer, buildingLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, roadCenterlineLayer, cctvLayer, clickHighlightLayer, routeHighlightLayer, sectorHighlightLayer, sectionFacilityLayer, facilityJumpLayer, measureLayer, roadviewGuideLayer, issueVectorLayer],
+        layers: [base, satellite, kakaoBase, kakaoSat, kakaoSatLabels, cadastralEditLayer, wfsLayer, zoningAreaLayer, buildingLayer, siggLayer, emdLayer, myRegionEmdLayer, riLayer, roadNetLayer, roadCenterlineLayer, cctvLayer, clickHighlightLayer, routeHighlightLayer, sectorHighlightLayer, sectionFacilityLayer, facilityJumpLayer, measureLayer, roadviewGuideLayer, issueVectorLayer],
         view: new ol.View({ center: ol.proj.fromLonLat([127.5, 36.0]), zoom: 7, minZoom: 6, maxZoom: 21 }),
         // OpenLayers 기본 확대/축소 컨트롤(좌상단 흰 배경 +/- 버튼)은 이미 있는
         // 커스텀 좌측 툴바(#left-toolbar)와 중복이라 끈다.
         controls: ol.control.defaults.defaults({ zoom: false, rotate: false }),
     });
 
+    restoreBaseMapChoice(); // 저장된 배경지도(제공처·종류) 복원 — 처음이면 브이월드 일반
     map.on('moveend', () => { wfsLayer.changed(); refreshRegisteredHighlight(); refreshCctvMarkers(); });
     map.on('singleclick', onMapClick);
     window.addEventListener('resize', () => map.updateSize());
@@ -883,13 +891,53 @@ function updateMapScale() {
     el.textContent = `축척 1 : ${Math.round(scale).toLocaleString()}`;
 }
 
-function switchBase(type) {
-    const isSat = type === 'satellite';
-    base.setVisible(!isSat);
-    satellite.setVisible(isSat);
-    document.getElementById('btnBase').classList.toggle('active', !isSat);
-    document.getElementById('btnSatellite').classList.toggle('active', isSat);
+// 배경지도 = 제공처(브이월드/카카오) × 종류(일반/위성). 고른 값은 브라우저별로 기억한다(localStorage 'rl-basemap').
+let baseProvider = 'vworld';
+let baseType = 'base';
+const BASEMAP_KEY = 'rl-basemap';
+function applyBaseMap() {
+    const sat = baseType === 'satellite';
+    const kakao = baseProvider === 'kakao';
+    base.setVisible(!kakao && !sat);
+    satellite.setVisible(!kakao && sat);
+    kakaoBase.setVisible(kakao && !sat);
+    kakaoSat.setVisible(kakao && sat);
+    kakaoSatLabels.setVisible(kakao && sat);
+    document.getElementById('btnBase').classList.toggle('active', !sat);
+    document.getElementById('btnSatellite').classList.toggle('active', sat);
+    document.getElementById('btnBase').setAttribute('aria-pressed', String(!sat));
+    document.getElementById('btnSatellite').setAttribute('aria-pressed', String(sat));
+    const prov = document.getElementById('btnProvider');
+    if (prov) {
+        const name = kakao ? '카카오' : '브이월드';
+        const other = kakao ? '브이월드' : '카카오';
+        prov.classList.toggle('is-kakao', kakao);
+        prov.querySelector('span').textContent = name;
+        prov.title = `지도 제공처: ${name} (누르면 ${other}맵으로 바꿉니다)`;
+        prov.setAttribute('aria-label', prov.title);
+    }
+    renderMapFooter();
+    hideMapNotice(); // 다른 배경지도로 바꾸면 이전 배경지도의 실패 안내는 닫는다(새 배경지도가 실패하면 다시 뜬다)
+    try { localStorage.setItem(BASEMAP_KEY, JSON.stringify({ provider: baseProvider, type: baseType })); } catch (e) { /* 저장 못 해도 이번 화면에는 적용됨 */ }
     wfsLayer.changed();
+}
+function switchBase(type) {
+    baseType = type === 'satellite' ? 'satellite' : 'base';
+    applyBaseMap();
+}
+function switchBaseProvider(provider) {
+    baseProvider = provider === 'kakao' ? 'kakao' : 'vworld';
+    applyBaseMap();
+}
+function restoreBaseMapChoice() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(BASEMAP_KEY) || 'null');
+        if (saved) {
+            baseProvider = saved.provider === 'kakao' ? 'kakao' : 'vworld';
+            baseType = saved.type === 'satellite' ? 'satellite' : 'base';
+        }
+    } catch (e) { /* 저장값이 없거나 깨졌으면 기본값(브이월드 일반) */ }
+    applyBaseMap();
 }
 
 // ---------- 등록된 필지 색상 표기 ----------
@@ -1448,11 +1496,14 @@ const ANALYSIS_TYPES = {
     '용도지역': { layers: ZONING_LAYERS, nameOf: (p) => (p.uname || '').trim() },
     '용도지구': { layers: USE_DISTRICT_LAYERS, nameOf: (p) => (p.uname || '').trim() },
     '건물': {
-        layers: BUILDING_LAYERS,
+        // 건물통합정보(lt_c_spbd)만으로는 도형이 빠진 건물이 있어 건축물정보(lt_c_bldginfo)도 같이 조회해 합친다(runZoningAnalysis 참고).
+        layers: [...BUILDING_LAYERS, 'lt_c_bldginfo'],
         nameOf: (p) => {
             if (p.buld_nm) return p.buld_nm;
             const addr = [p.rd_nm, p.buld_no].filter(Boolean).join(' ');
-            return addr || '건물';
+            if (addr) return addr;
+            // lt_c_bldginfo에는 주소 필드가 없다 — 건물명, 없으면 동명칭, 없으면 용도, 그것도 없으면 "건물"
+            return p.bld_nm || p.dong_nm || buildingUsabilityLabel(p.usability) || '건물';
         },
     },
 };
@@ -1634,6 +1685,47 @@ function makeBuildingLayer() {
     return layer;
 }
 
+// 필지와 겹치는 부분을 구한다. turf.intersect는 VWorld 도형이 조금만 꼬여 있어도(자기교차 등) 예외를 던지는데, 예전에는 그걸 삼키고 그 결과를 "정보 없음"으로
+// 버려서 건물이 있는데도 없다고 나왔다. 실패하면 도형을 정리(buffer 0)해서 한 번 더 시도하고, 그래도 안 되면 "겹침 여부만" 확인해 면적 없이 포함시킨다.
+function parcelOverlap(parcelFeature, zoneFeature) {
+    const tries = [
+        () => turf.intersect(parcelFeature, zoneFeature),
+        () => turf.intersect(turf.buffer(parcelFeature, 0), turf.buffer(zoneFeature, 0)),
+    ];
+    for (const t of tries) {
+        try {
+            const r = t();
+            return { ok: true, area: r ? turf.area(r) : 0 };
+        } catch (e) { /* 다음 방법 */ }
+    }
+    try { return { ok: true, area: null, overlaps: turf.booleanIntersects(parcelFeature, zoneFeature) }; } catch (e) { /* noop */ }
+    return { ok: false };
+}
+
+// 필지 전체를 덮는 사각형(BOX)으로 조회한다. 예전에는 "클릭한 점" 하나로만 조회해서, 건물이 필지 안에 있어도 클릭한 곳이 건물 밖이면 없다고 나왔고
+// 필지가 용도지역 둘에 걸쳐도 클릭한 쪽만 나왔다. 사각형으로 가져온 뒤 필지와 실제로 겹치는 것만 남긴다(parcelOverlap).
+async function fetchZoneFeatures(layer, parcelFeature) {
+    const [minX, minY, maxX, maxY] = turf.bbox(parcelFeature);
+    const out = [];
+    let failed = false;
+    for (let page = 1; page <= 3; page++) {
+        const params = new URLSearchParams({
+            service: 'data', request: 'GetFeature', data: layer, key: VWORLD_KEY,
+            geomFilter: `BOX(${minX},${minY},${maxX},${maxY})`, size: '1000', page: String(page), crs: 'EPSG:4326',
+        });
+        let res;
+        try { res = await vworldFetchJson('https://api.vworld.kr/req/data?' + params.toString()); } catch (e) { failed = true; break; }
+        const status = res?.response?.status;
+        if (status === 'NOT_FOUND') break;                    // 이 범위에 해당 레이어 자료가 없음(정상)
+        if (status !== 'OK') { failed = true; break; }        // ERROR 등 — "없음"과 구분해서 알려준다
+        const feats = res.response.result?.featureCollection?.features || [];
+        out.push(...feats);
+        const totalPages = parseInt(res.response.page?.total, 10) || 1;
+        if (page >= totalPages) break;
+    }
+    return { feats: out, failed };
+}
+
 async function runZoningAnalysis() {
     if (!currentPopupParcel) return;
     const analysisType = document.getElementById('analysis-type-select').value;
@@ -1643,41 +1735,56 @@ async function runZoningAnalysis() {
     resultEl.style.display = 'block';
     resultEl.innerHTML = '<div class="za-empty">분석 중...</div>';
 
-    const [lon, lat] = currentPopupParcel.lonLat;
-    const geomFilter = `point(${lon} ${lat})`;
-    const requests = config.layers.map((layer) => {
-        const params = new URLSearchParams({
-            service: 'data', request: 'GetFeature', data: layer,
-            key: VWORLD_KEY, geomFilter, size: '10', crs: 'EPSG:4326',
-        });
-        return vworldFetchJson('https://api.vworld.kr/req/data?' + params.toString()).catch(() => null);
-    });
-    const responses = await Promise.all(requests);
+    const parcelFeature = currentPopupParcel.geojson;
+    const responses = await Promise.all(config.layers.map((layer) => fetchZoneFeatures(layer, parcelFeature)));
+    const failedLayers = responses.filter((r) => r.failed).length;
 
     const zones = [];
     responses.forEach((res) => {
-        const feats = res?.response?.result?.featureCollection?.features || [];
-        feats.forEach((f) => {
+        res.feats.forEach((f) => {
             const name = config.nameOf(f.properties || {});
-            if (name) zones.push({ name, geojson: { type: 'Feature', geometry: f.geometry, properties: f.properties } });
+            if (name) zones.push({ name, props: f.properties || {}, geojson: { type: 'Feature', geometry: f.geometry, properties: f.properties } });
         });
     });
 
     let parcelArea = null;
-    try { parcelArea = turf.area(currentPopupParcel.geojson); } catch (e) { /* noop */ }
+    try { parcelArea = turf.area(parcelFeature); } catch (e) { /* noop */ }
 
-    const rows = zones.map((z) => {
-        let area = null;
-        try {
-            const intersection = turf.intersect(currentPopupParcel.geojson, z.geojson);
-            if (intersection) area = turf.area(intersection);
-        } catch (e) { /* 교차 계산 실패 시 면적 미표시 */ }
-        const rate = area != null && parcelArea ? (area / parcelArea) * 100 : null;
-        return { name: z.name, area, rate };
-    }).filter((r) => r.area != null && r.area > 1); // 오차로 인한 극소 면적 제외
+    let unmeasured = 0;
+    let rows = [];
+    zones.forEach((z) => {
+        const o = parcelOverlap(parcelFeature, z.geojson);
+        if (!o.ok) { unmeasured++; return; }
+        if (o.area === null) { if (o.overlaps) rows.push({ name: z.name, props: z.props, area: null, rate: null, geojson: z.geojson }); return; }
+        if (o.area <= 1) return; // 오차로 인한 극소 면적 제외
+        rows.push({ name: z.name, props: z.props, area: o.area, rate: parcelArea ? (o.area / parcelArea) * 100 : null, geojson: z.geojson });
+    });
+
+    // 건물: 건물통합정보와 건축물정보가 같은 건물을 각각 내려주므로 겹치는 것은 하나로 합치고(이름이 있는 쪽을 남김),
+    // 건축물정보의 속성 없는 빈 레코드(ufid NN)는 같은 자리에 정상 레코드가 있으면 버린다.
+    if (analysisType === '건물') {
+        const kept = [];
+        rows.sort((x, y) => (y.props.ufid !== 'NN' ? 1 : 0) - (x.props.ufid !== 'NN' ? 1 : 0) || (y.area || 0) - (x.area || 0));
+        rows.forEach((r) => {
+            const dup = kept.some((k) => {
+                const o = parcelOverlap(k.geojson, r.geojson);
+                const small = Math.min(k.area || Infinity, r.area || Infinity);
+                return o.ok && o.area != null && isFinite(small) && o.area >= small * 0.5;
+            });
+            if (!dup) kept.push(r);
+        });
+        rows = kept;
+    }
+    rows.sort((x, y) => (y.area || 0) - (x.area || 0));
 
     if (rows.length === 0) {
-        resultEl.innerHTML = `<div class="za-empty">해당 위치의 ${escapeHtml(analysisType)} 정보를 찾을 수 없습니다.</div>`;
+        // 조회에 실패한 것과 정말 없는 것을 구분해서 알려준다 — 예전에는 둘 다 "찾을 수 없습니다"로 나왔다.
+        const note = failedLayers
+            ? `<div class="za-empty">${escapeHtml(analysisType)} 정보를 불러오지 못했습니다(VWorld 응답 오류 ${failedLayers}건). 잠시 후 다시 시도하세요.</div>`
+            : unmeasured
+                ? `<div class="za-empty">${escapeHtml(analysisType)} 도형 ${unmeasured}건은 계산하지 못했습니다. 지도에서 직접 확인하세요.</div>`
+                : `<div class="za-empty">이 필지에서 ${escapeHtml(analysisType)} 정보를 찾을 수 없습니다.</div>`;
+        resultEl.innerHTML = note;
         return;
     }
 
@@ -1694,10 +1801,11 @@ async function runZoningAnalysis() {
                     <tr>
                         <td>${String(i + 1).padStart(2, '0')}</td>
                         <td><span class="za-swatch" style="background:${zoningColor(r.name)};"></span></td>
-                        <td>${escapeHtml(r.name)} (면적:${r.area.toLocaleString(undefined, { maximumFractionDigits: 2 })}㎡, ${r.rate != null ? r.rate.toFixed(2) : '-'}%)</td>
+                        <td>${escapeHtml(r.name)} (면적:${r.area != null ? r.area.toLocaleString(undefined, { maximumFractionDigits: 2 }) + '㎡' : '계산 불가'}, ${r.rate != null ? r.rate.toFixed(2) : '-'}%)</td>
                     </tr>`).join('')}
             </tbody>
         </table>
+        ${failedLayers ? `<div class="za-empty">일부 자료(${failedLayers}건)는 불러오지 못해 빠졌을 수 있습니다.</div>` : ''}
     `;
 }
 
@@ -1916,6 +2024,18 @@ function buildFilePreviewMediaHtml(originalName, viewUrl, downloadUrl, sizeStyle
         return `<img src="${viewUrl}" style="${sizeStyle}object-fit:contain;display:block;">`;
     }
     if (ext === 'pdf') {
+        // 시설물 PDF: 사진처럼 누르면 새 창에서 크게 연다. <iframe> 안은 클릭이 PDF 뷰어로 들어가 링크가 동작하지 않으므로,
+        //  - 여러 파일을 쭉 보여주는 목록에서는 iframe 대신 눌러서 여는 카드로 보여주고(높이 지정 없는 iframe은 아주 작게 나오기도 함),
+        //  - 파일 하나를 크게 보는 화면에서는 iframe 위에 "새 창으로 크게 보기" 버튼을 얹는다.
+        if (/\/api\/sections\/facility-files\//.test(viewUrl)) {
+            if (/height:100%/.test(sizeStyle)) {
+                return `<div style="position:relative;${sizeStyle}"><iframe src="${viewUrl}" style="width:100%;height:100%;border:none;display:block;"></iframe>`
+                    + `<a href="${viewUrl}" target="_blank" rel="noopener" class="pdf-open-btn" title="PDF를 새 창에서 크게 엽니다"><i class="fa-solid fa-up-right-from-square"></i> 새 창으로 크게 보기</a></div>`;
+            }
+            return `<a href="${viewUrl}" target="_blank" rel="noopener" class="pdf-open-card" title="클릭하면 PDF를 새 창에서 크게 엽니다">`
+                + `<i class="fa-solid fa-file-pdf"></i><span class="pdf-open-name">${escapeHtml(originalName)}</span>`
+                + `<span class="pdf-open-hint">클릭하면 새 창에서 크게 엽니다 <i class="fa-solid fa-up-right-from-square"></i></span></a>`;
+        }
         return `<iframe src="${viewUrl}" style="${sizeStyle}border:none;"></iframe>`;
     }
     if (PREVIEWABLE_VIDEO_EXT.includes(ext)) {
@@ -2163,9 +2283,13 @@ function buildFacilityInfoBarHtml(info) {
     const fields = (info.attributes || [])
         .map((a) => `<div class="fib-field"><div class="fib-k">${escapeHtml(a.label)}</div><div class="fib-v">${escapeHtml(String(a.value))}</div></div>`)
         .join('');
+    // 점검·보수 이력과 변경 이력 보기(보기는 모두, 기록 추가·수정·삭제는 이력 창 안에서 편집 모드만)
+    const histHtml = (info.table && info.rdid)
+        ? `<button type="button" class="fib-hist" data-table="${escapeHtml(info.table)}" data-rdid="${escapeHtml(info.rdid)}" data-label="${escapeHtml(info.label || '')}" data-name="${escapeHtml(info.name || '')}" title="이 시설물의 점검·보수 이력과 변경 이력"><i class="fa-solid fa-clock-rotate-left"></i> 이력</button>`
+        : '';
     return `
         <div class="facility-info-bar" style="--fib-accent:${accent};">
-            <div class="fib-header"><span class="fib-badge">${badge}</span>${nameHtml}${uploadHtml}${delHtml}</div>
+            <div class="fib-header"><span class="fib-badge">${badge}</span>${nameHtml}${histHtml}${uploadHtml}${delHtml}</div>
             <div class="fib-fields">${fields}</div>
         </div>`;
 }
@@ -2180,7 +2304,7 @@ async function uploadFacilityFiles(table, rdid, files, replace) {
     const res = await fetch('/api/sections/facility-files', { method: 'POST', body: formData });
     const data = await res.json().catch(() => ({}));
     if (res.status === 409 && data.conflicts && !replace) {
-        if (!confirm(`같은 이름의 파일이 이미 있습니다:\n${data.conflicts.slice(0, 5).join('\n')}\n\n덮어쓰시겠습니까?(이전 파일은 지워집니다)`)) return false;
+        if (!await uiConfirm(`같은 이름의 파일이 이미 있습니다:\n${data.conflicts.slice(0, 5).join('\n')}\n\n덮어쓰시겠습니까?(이전 파일은 지워집니다)`)) return false;
         return uploadFacilityFiles(table, rdid, files, true);
     }
     if (!res.ok) throw new Error(data.error || '업로드 실패');
@@ -2201,14 +2325,14 @@ async function refreshFacilityView(table, rdid) {
 
 // 시설물 파일 삭제 — 서버에서 지우고(30일은 서버 보관 폴더에 남음) 그 시설물의 파일 보기를 다시 연다
 async function deleteFacilityFile(id, name, table, rdid) {
-    if (!document.body.classList.contains('admin-mode')) { alert('편집 모드에서만 파일을 지울 수 있습니다.'); return false; }
-    if (!confirm(`'${name}' 파일을 삭제하시겠습니까?\n서버에서 지워지며, 30일 동안은 서버 보관 폴더에 남아 관리자가 복구할 수 있습니다.`)) return false;
+    if (!document.body.classList.contains('admin-mode')) { uiAlert('편집 모드에서만 파일을 지울 수 있습니다.'); return false; }
+    if (!await uiConfirm(`'${name}' 파일을 삭제하시겠습니까?\n서버에서 지워지며, 30일 동안은 서버 보관 폴더에 남아 관리자가 복구할 수 있습니다.`)) return false;
     try {
         const res = await fetch('/api/sections/facility-files/' + encodeURIComponent(id), { method: 'DELETE' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || '삭제 실패');
     } catch (err) {
-        alert(err.message || '삭제 실패');
+        uiAlert(err.message || '삭제 실패');
         return false;
     }
     if (table && rdid) await refreshFacilityView(table, rdid);
@@ -2229,14 +2353,14 @@ document.addEventListener('change', async (e) => {
     const files = [...input.files];
     input.value = '';
     if (!files.length) return;
-    if (!document.body.classList.contains('admin-mode')) { alert('편집 모드에서만 파일을 올릴 수 있습니다.'); return; }
+    if (!document.body.classList.contains('admin-mode')) { uiAlert('편집 모드에서만 파일을 올릴 수 있습니다.'); return; }
     const label = input.closest('.fib-upload');
     if (label) label.classList.add('busy');
     try {
         const ok = await uploadFacilityFiles(input.dataset.table, input.dataset.rdid, files, false);
         if (ok) await refreshFacilityView(input.dataset.table, input.dataset.rdid);
     } catch (err) {
-        alert(err.message || '업로드 실패');
+        uiAlert(err.message || '업로드 실패');
     } finally {
         if (label && label.isConnected) label.classList.remove('busy');
     }
@@ -2431,8 +2555,8 @@ async function goToFacility(item) {
         const params = new URLSearchParams({ table: item.table, facility_rdid: item.rdid });
         record = (await fetch('/api/sections/facility-detail?' + params.toString()).then((r) => r.json())).record;
     } catch (e) { /* 아래에서 안내 */ }
-    if (!record) { alert('시설물 정보를 불러오지 못했습니다.'); return; }
-    if (!record.geom) { alert('이 시설물은 위치 정보가 없어 지도로 이동할 수 없습니다.'); return; }
+    if (!record) { uiAlert('시설물 정보를 불러오지 못했습니다.'); return; }
+    if (!record.geom) { uiAlert('이 시설물은 위치 정보가 없어 지도로 이동할 수 없습니다.'); return; }
     jumpToFacilityLocation(record.geom);
     const feature = new ol.format.GeoJSON().readFeature(
         { type: 'Feature', geometry: record.geom, properties: {} }, { featureProjection: map.getView().getProjection() }
@@ -2624,12 +2748,24 @@ async function reverseGeocodeRoadAddress(lon, lat) {
 }
 
 // ---------- 오른쪽(사이드바) 접기 ----------
+// 분할화면이 열릴 때 화면이 복잡해지지 않게 오른쪽 사이드바를 접고, 분할화면이 닫히면 다시 펼친다.
+// 분할화면이 접은 경우(사이드바가 펼쳐져 있었을 때)에만 되돌린다 — 이미 접어 둔 사용자의 선택은 그대로 둔다.
+let sidebarCollapsedBySplit = false;
+function setRightSidebarCollapsed(collapsed) {
+    const sidebar = document.getElementById('sidebar');
+    const toggleBtn = document.getElementById('sidebarToggle');
+    if (!sidebar || !toggleBtn) return;
+    sidebar.classList.toggle('collapsed', collapsed);
+    toggleBtn.classList.toggle('collapsed', collapsed);
+}
+
 function initSidebarToggle() {
     const sidebar = document.getElementById('sidebar');
     const toggleBtn = document.getElementById('sidebarToggle');
     toggleBtn.addEventListener('click', () => {
         sidebar.classList.toggle('collapsed');
         toggleBtn.classList.toggle('collapsed');
+        sidebarCollapsedBySplit = false; // 사용자가 직접 접거나 펼쳤으면 분할화면이 닫힐 때 자동으로 되돌리지 않는다
         setTimeout(() => map.updateSize(), 220);
     });
     initSidebarResize();
@@ -2788,12 +2924,17 @@ function toggleSplitView() {
     const btn = document.getElementById('open-split-btn');
 
     if (isSplitOpen) {
+        if (!document.getElementById('sidebar').classList.contains('collapsed')) {
+            setRightSidebarCollapsed(true);
+            sidebarCollapsedBySplit = true;
+        }
         splitter.style.display = 'flex';
         rightPane.style.display = 'block';
         rightPane.style.width = '40%';
         btn.classList.add('active');
         if (!isRoadviewMode) document.getElementById('sat_map').style.display = 'block';
     } else {
+        if (sidebarCollapsedBySplit) { setRightSidebarCollapsed(false); sidebarCollapsedBySplit = false; }
         splitter.style.display = 'none';
         rightPane.style.display = 'none';
         rightPane.style.width = '0';
@@ -2975,7 +3116,7 @@ function initRoadview() {
         if (typeof kakao !== 'undefined' && kakao.maps) {
             kakao.maps.load(() => openRoadviewAt(lat, lng));
         } else {
-            alert('카카오맵 SDK 로드 실패. 네트워크 연결을 확인해주세요.');
+            uiAlert('카카오맵 SDK 로드 실패. 네트워크 연결을 확인해주세요.');
         }
     });
 }
@@ -3100,7 +3241,7 @@ let cadastralEditLayer = null; // 지적편집도(카카오 PNGSD_CAD02) — 기
 // 로드뷰 안내선과 지적편집도가 같은 카카오 타일 그리드·좌표계를 쓰므로 공통으로 만든다.
 // tilePath: 카카오 타일 종류/버전(kakao_sdk.js의 URI_FUNC 값), displayMaxLevel: 이보다 축소되면 숨김.
 // 주소는 https — 로드뷰도 예전엔 http였는데 운영을 HTTPS로 바꾸면 혼합 콘텐츠로 막힐 수 있었다.
-function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex }) {
+function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex, urlOf, visible }) {
     // z=0이 가장 축소(level=14, 해상도 큼), z가 커질수록 확대(level=1, 해상도 작음) —
     // OpenLayers TileGrid는 resolutions가 z 증가에 따라 감소해야 한다.
     const levelByZ = [];
@@ -3125,7 +3266,7 @@ function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex }) {
             const cell = resolutions[z] * 256;
             const H = Math.floor(((extent[0] + extent[2]) / 2 - KAKAO_RV_ORIGIN_X) / cell);
             const V = Math.floor(((extent[1] + extent[3]) / 2 - KAKAO_RV_ORIGIN_Y) / cell);
-            return `https://mts.daumcdn.net/api/v1/tile/${tilePath}/latest/${level}/${V}/${H}.png`;
+            return urlOf ? urlOf(level, V, H) : `https://mts.daumcdn.net/api/v1/tile/${tilePath}/latest/${level}/${V}/${H}.png`;
         },
     });
     // 카카오 level(displayMaxLevel)의 실측 지상 해상도를, 우리 지도의 명목
@@ -3135,7 +3276,25 @@ function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex }) {
         ? kakaoRvResolution(displayMaxLevel) / Math.cos(38 * Math.PI / 180)
         : undefined;
 
-    return new ol.layer.Tile({ source, visible: false, opacity, zIndex, maxResolution });
+    return new ol.layer.Tile({ source, visible: !!visible, opacity, zIndex, maxResolution });
+}
+
+// ---------- 카카오 배경지도(일반/위성) ----------
+// 기본 배경지도는 브이월드이고, 왼쪽 도구 모음의 제공처 버튼으로 카카오맵 일반·위성(스카이뷰)으로 바꿔 볼 수 있다.
+// 지적편집도·로드뷰 안내선과 같은 카카오 타일 그리드를 쓰므로 같은 생성기(createKakaoTileLayer)를 쓴다.
+//   일반   : PNGSD02 (kakao_sdk.js URI_FUNC.ROADMAP)
+//   위성   : map_skyview 항공사진 + 지명·도로명 글자 타일(PNGSD_SKYH02, URI_FUNC.HYBRID)을 위에 겹친다
+function createKakaoBaseLayer() {
+    return createKakaoTileLayer({ tilePath: 'PNGSD02/v19_ktmbq', displayMaxLevel: null, opacity: 1, zIndex: 0, visible: false });
+}
+function createKakaoSkyviewLayer() {
+    return createKakaoTileLayer({
+        displayMaxLevel: null, opacity: 1, zIndex: 0, visible: false,
+        urlOf: (level, V, H) => `https://map.daumcdn.net/map_skyview/L${level}/${V}/${H}.jpg?v=160114`,
+    });
+}
+function createKakaoSkyviewLabelLayer() {
+    return createKakaoTileLayer({ tilePath: 'PNGSD_SKYH02/v19_nzhdi', displayMaxLevel: null, opacity: 1, zIndex: 1, visible: false });
 }
 
 function createRoadviewGuideLayer() {
@@ -3387,11 +3546,20 @@ async function adminFetch(input, init) {
 // ---------- 지도 하단 저작권 문구 ----------
 // 로그인한 계정의 관할 지자체 영문명으로 서버가 만든다(예: "copyright © 2026 HWASEONG CITY.
 // All Rights Reserved."). 로그인 화면·관리 콘솔에는 표시하지 않는다. 빈 값이면 숨김.
+let mapFooterText = '';
+// 저작권 문구 + (카카오 배경지도를 쓸 때) 배경지도 출처 표시
+function renderMapFooter() {
+    const el = document.getElementById('map-footer');
+    if (!el) return;
+    const credit = baseProvider === 'kakao' ? '배경지도 © Kakao' : '';
+    el.textContent = [mapFooterText, credit].filter(Boolean).join(' · ');
+    updateMapFooterPosition();
+}
 async function loadMapFooter() {
     try {
         const { copyright } = await fetch('/api/auth/site-info').then((r) => r.json());
-        document.getElementById('map-footer').textContent = copyright || '';
-        updateMapFooterPosition();
+        mapFooterText = copyright || '';
+        renderMapFooter();
     } catch (e) { /* 문구가 없어도 동작에는 영향 없음 */ }
 }
 
@@ -3492,7 +3660,7 @@ function buildAccountRow(acc) {
     const resetBtn = row.querySelector('.acc-reset-btn');
     if (resetBtn) {
         resetBtn.addEventListener('click', async () => {
-            const tmp = prompt(`"${acc.username}"의 임시 비밀번호를 입력하세요(영문·숫자·특수문자 3종류 이상 8자 이상).\n그 계정은 이 비밀번호로 로그인한 뒤 새 비밀번호로 바꿔야 하고, 지금 로그인돼 있는 세션은 모두 끊깁니다.`);
+            const tmp = await uiPrompt(`"${acc.username}"의 임시 비밀번호를 입력하세요(영문·숫자·특수문자 3종류 이상 8자 이상).\n그 계정은 이 비밀번호로 로그인한 뒤 새 비밀번호로 바꿔야 하고, 지금 로그인돼 있는 세션은 모두 끊깁니다.`);
             if (tmp === null) return;
             const res = await adminFetch(`/api/auth/accounts/${acc.id}/reset-password`, {
                 method: 'POST',
@@ -3500,29 +3668,29 @@ function buildAccountRow(acc) {
                 body: JSON.stringify({ newPassword: tmp }),
             });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok) { alert(data.error || '비밀번호 재설정에 실패했습니다.'); return; }
-            alert(`재설정되었습니다. 임시 비밀번호를 "${acc.username}" 사용자에게 안전하게 전달하세요.`);
+            if (!res.ok) { uiAlert(data.error || '비밀번호 재설정에 실패했습니다.'); return; }
+            uiAlert(`재설정되었습니다. 임시 비밀번호를 "${acc.username}" 사용자에게 안전하게 전달하세요.`);
         });
     }
     const approveBtn = row.querySelector('.acc-approve-btn');
     if (approveBtn) {
         approveBtn.addEventListener('click', async () => {
-            if (!confirm(`"${acc.username}" 계정의 가입을 승인하시겠습니까?\n승인하면 관할(${sigungu})의 데이터를 조회할 수 있게 됩니다.`)) return;
+            if (!await uiConfirm(`"${acc.username}" 계정의 가입을 승인하시겠습니까?\n승인하면 관할(${sigungu})의 데이터를 조회할 수 있게 됩니다.`)) return;
             const res = await adminFetch(`/api/auth/accounts/${acc.id}/approve`, { method: 'POST' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                alert(data.error || '승인에 실패했습니다.');
+                uiAlert(data.error || '승인에 실패했습니다.');
                 return;
             }
             loadAccountsList();
         });
     }
     row.querySelector('.acc-del-btn').addEventListener('click', async () => {
-        if (!confirm(`계정 "${acc.username}"을(를) 삭제하시겠습니까?`)) return;
+        if (!await uiConfirm(`계정 "${acc.username}"을(를) 삭제하시겠습니까?`)) return;
         const res = await adminFetch(`/api/auth/accounts/${acc.id}`, { method: 'DELETE' });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            alert(data.error || '삭제에 실패했습니다.');
+            uiAlert(data.error || '삭제에 실패했습니다.');
             return;
         }
         loadAccountsList();
@@ -3572,6 +3740,7 @@ async function createAccount() {
 
 const AUDIT_ACTION_LABELS = {
     create: '등록', update: '수정', delete: '삭제', bulk_import: '일괄등록', bulk_undo: '일괄등록 취소', restore: '복원',
+    maint_create: '점검·보수 등록', maint_update: '점검·보수 수정', maint_delete: '점검·보수 삭제',
     login: '로그인', login_fail: '로그인 실패', logout: '로그아웃',
     signup: '가입 신청', approve: '가입 승인', account_create: '계정 생성', account_delete: '계정 삭제',
     password_change: '비밀번호 변경', password_reset: '비밀번호 재설정',
@@ -3600,7 +3769,7 @@ async function downloadAuditLog() {
         const res = await adminFetch('/api/audit-log/export?' + auditLogFilterParams().toString());
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            alert(data.error || '이력 다운로드에 실패했습니다.');
+            uiAlert(data.error || '이력 다운로드에 실패했습니다.');
             return;
         }
         const blob = await res.blob();
@@ -3614,7 +3783,7 @@ async function downloadAuditLog() {
         URL.revokeObjectURL(url);
         loadAuditLog(1); // 방금 남은 "이력 다운로드" 기록까지 목록에 반영
     } catch (e) {
-        alert('이력 다운로드 중 오류가 발생했습니다.');
+        uiAlert('이력 다운로드 중 오류가 발생했습니다.');
     } finally {
         btn.disabled = false;
         btn.innerHTML = originalHtml;
@@ -3651,16 +3820,16 @@ async function renderAuditRetention() {
     const run = document.getElementById('ar-run-btn');
     if (run) run.addEventListener('click', async () => {
         const before = document.getElementById('ar-before').value;
-        if (!before) { alert('날짜를 선택하세요.'); return; }
-        if (!confirm(`${before} 이전의 변경·접속 이력을 파일로 저장한 뒤 DB에서 삭제합니다.\n저장된 파일은 서버 보관 폴더에 남습니다. 계속하시겠습니까?`)) return;
+        if (!before) { uiAlert('날짜를 선택하세요.'); return; }
+        if (!await uiConfirm(`${before} 이전의 변경·접속 이력을 파일로 저장한 뒤 DB에서 삭제합니다.\n저장된 파일은 서버 보관 폴더에 남습니다. 계속하시겠습니까?`)) return;
         run.disabled = true;
         run.textContent = '저장 중...';
         try {
             const res = await adminFetch('/api/audit-log/archive', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ before }) });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || '정리 실패');
-            alert(`${data.saved.toLocaleString()}건을 ${data.fileName} 파일로 저장하고 DB에서 정리했습니다.`);
-        } catch (e) { alert(e.message || '정리 실패'); }
+            uiAlert(`${data.saved.toLocaleString()}건을 ${data.fileName} 파일로 저장하고 DB에서 정리했습니다.`);
+        } catch (e) { uiAlert(e.message || '정리 실패'); }
         await renderAuditRetention();
         loadAuditLog(1);
     });
@@ -3669,12 +3838,12 @@ async function renderAuditRetention() {
 async function downloadAuditArchive(name) {
     try {
         const res = await adminFetch('/api/audit-log/archive-files/' + encodeURIComponent(name));
-        if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || '다운로드 실패'); return; }
+        if (!res.ok) { const data = await res.json().catch(() => ({})); uiAlert(data.error || '다운로드 실패'); return; }
         const url = URL.createObjectURL(await res.blob());
         const a = document.createElement('a');
         a.href = url; a.download = name; a.click();
         URL.revokeObjectURL(url);
-    } catch (e) { alert('다운로드 중 오류가 발생했습니다.'); }
+    } catch (e) { uiAlert('다운로드 중 오류가 발생했습니다.'); }
 }
 
 async function loadAuditLog(page) {
@@ -3776,21 +3945,21 @@ async function loadImportHistory() {
 }
 
 async function undoImportBatch(b) {
-    const typed = prompt(
+    const typed = await uiPrompt(
         `일괄등록 #${b.id} (${b.source_label || '출처 이름 없음'})을 취소합니다.\n\n` +
         '- 이 등록이 덮어쓴 값은 등록 전 값으로 돌아가고, 이 등록으로 새로 생긴 데이터·사진·도면은 삭제됩니다.\n' +
         '- 등록 이후에 화면에서 직접 고친 값도 등록 전 값으로 돌아갑니다.\n\n' +
         '계속하려면 "취소"를 입력하세요.'
     );
     if (typed === null) return;
-    if (typed.trim() !== '취소') { alert('"취소"를 정확히 입력해야 진행됩니다. 되돌리지 않았습니다.'); return; }
+    if (typed.trim() !== '취소') { uiAlert('"취소"를 정확히 입력해야 진행됩니다. 되돌리지 않았습니다.'); return; }
     try {
         const res = await adminFetch(`/api/admin/imports/${b.id}/undo`, { method: 'POST' });
         const d = await res.json();
         if (!res.ok) throw new Error(d.error || '되돌리기 실패');
-        alert(d.missingFiles ? `되돌렸습니다. 다만 파일 ${d.missingFiles}개는 서버에서 찾지 못해 복원하지 못했습니다.` : '되돌렸습니다.');
+        uiAlert(d.missingFiles ? `되돌렸습니다. 다만 파일 ${d.missingFiles}개는 서버에서 찾지 못해 복원하지 못했습니다.` : '되돌렸습니다.');
     } catch (e) {
-        alert(e.message || '되돌리기 실패');
+        uiAlert(e.message || '되돌리기 실패');
     }
     loadLedgerTree();
     loadImportHistory();
@@ -3870,11 +4039,11 @@ async function submitQualityFix(all) {
     const q = qualityCurrent;
     if (!q) return;
     const value = document.getElementById('quality-value').value.trim();
-    if (!value) { alert('채울 값을 입력하세요.'); return; }
+    if (!value) { uiAlert('채울 값을 입력하세요.'); return; }
     const pks = [...document.querySelectorAll('#quality-detail .quality-row-check:checked')].map((c) => c.value);
-    if (!all && !pks.length) { alert('채울 행을 먼저 선택하세요.'); return; }
+    if (!all && !pks.length) { uiAlert('채울 행을 먼저 선택하세요.'); return; }
     const target = all ? `이 항목의 빈 값 ${q.total.toLocaleString()}건 모두` : `선택한 ${pks.length}건`;
-    if (!confirm(`${q.layerName} · ${q.label}: ${target}에 "${value}"을(를) 채웁니다.\n이미 값이 있는 칸은 바뀌지 않습니다. 계속할까요?`)) return;
+    if (!await uiConfirm(`${q.layerName} · ${q.label}: ${target}에 "${value}"을(를) 채웁니다.\n이미 값이 있는 칸은 바뀌지 않습니다. 계속할까요?`)) return;
     try {
         const res = await adminFetch('/api/admin/quality/fix', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3882,9 +4051,9 @@ async function submitQualityFix(all) {
         });
         const d = await res.json();
         if (!res.ok) throw new Error(d.error || '저장 실패');
-        alert(`${d.updated.toLocaleString()}건을 채웠습니다.`);
+        uiAlert(`${d.updated.toLocaleString()}건을 채웠습니다.`);
     } catch (e) {
-        alert(e.message || '저장 실패');
+        uiAlert(e.message || '저장 실패');
         return;
     }
     await loadQualitySummary();
@@ -4020,7 +4189,7 @@ function renderDataMgmtList() {
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || '변경 실패');
                 } catch (e) {
-                    alert(e.message || '변경 실패');
+                    uiAlert(e.message || '변경 실패');
                 }
                 loadLedgerTree();
                 loadDataMgmtList();
@@ -4057,11 +4226,11 @@ async function deleteSelectedRoutes() {
     const drawings = picked.reduce((n, r) => n + r.drawingCount, 0);
     const names = picked.slice(0, 8).map((r) => `  · ${r.roadGrade} ${[r.routeNo, r.routeName].filter(Boolean).join(' ')} (구간 ${r.sections.length}개)`);
     if (picked.length > 8) names.push(`  … 외 ${picked.length - 8}개 노선`);
-    const typed = prompt(
+    const typed = await uiPrompt(
         `다음 노선을 삭제합니다.\n\n${names.join('\n')}\n\n구간 ${sections.length}개, 시설물 ${facility.toLocaleString()}건, 도면 ${drawings.toLocaleString()}건이 함께 삭제 휴지통으로 옮겨지며, ${trashDays}일 안에는 '삭제 휴지통' 탭에서 복원할 수 있습니다.\n\n계속하려면 "삭제"를 입력하세요.`
     );
     if (typed === null) return;
-    if (typed.trim() !== '삭제') { alert('"삭제"를 정확히 입력해야 삭제됩니다. 삭제를 취소했습니다.'); return; }
+    if (typed.trim() !== '삭제') { uiAlert('"삭제"를 정확히 입력해야 삭제됩니다. 삭제를 취소했습니다.'); return; }
 
     const btn = document.getElementById('datamgmt-delete-btn');
     btn.disabled = true;
@@ -4074,7 +4243,7 @@ async function deleteSelectedRoutes() {
         data = await res.json();
         if (!res.ok) throw new Error(data.error || '삭제 실패');
     } catch (e) {
-        alert(e.message || '삭제 실패');
+        uiAlert(e.message || '삭제 실패');
         updateDataMgmtFooter();
         return;
     }
@@ -4098,9 +4267,9 @@ async function deleteSelectedRoutes() {
     loadTrashList();
     await loadDataMgmtList();
     if (data.failed && data.failed.length) {
-        alert(`구간 ${data.deleted}개를 삭제했고 ${data.failed.length}개는 삭제하지 못했습니다:\n${data.failed.slice(0, 5).map((f) => `  · ${f.rdid}: ${f.error}`).join('\n')}`);
+        uiAlert(`구간 ${data.deleted}개를 삭제했고 ${data.failed.length}개는 삭제하지 못했습니다:\n${data.failed.slice(0, 5).map((f) => `  · ${f.rdid}: ${f.error}`).join('\n')}`);
     } else {
-        alert(`구간 ${data.deleted}개를 삭제했습니다. ${trashDays}일 안에는 '삭제 휴지통'에서 복원할 수 있습니다.`);
+        uiAlert(`구간 ${data.deleted}개를 삭제했습니다. ${trashDays}일 안에는 '삭제 휴지통'에서 복원할 수 있습니다.`);
     }
 }
 
@@ -4120,7 +4289,7 @@ async function downloadStatsExcel() {
         a.href = url; a.download = m ? decodeURIComponent(m[1]) : '도로대장_현황통계.xlsx';
         a.click();
         URL.revokeObjectURL(url);
-    } catch (e) { alert(e.message || '엑셀을 만들지 못했습니다.'); }
+    } catch (e) { uiAlert(e.message || '엑셀을 만들지 못했습니다.'); }
     finally { btn.disabled = false; btn.innerHTML = html; }
 }
 
@@ -4157,7 +4326,7 @@ async function runDataChecks() {
         const res = await adminFetch('/api/admin/reports/checks/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ thresholdM }) });
         const d = await res.json();
         if (!res.ok && res.status !== 409) throw new Error(d.error || '점검을 시작하지 못했습니다.');
-    } catch (e) { alert(e.message || '점검을 시작하지 못했습니다.'); return; }
+    } catch (e) { uiAlert(e.message || '점검을 시작하지 못했습니다.'); return; }
     pollChecks();
 }
 
@@ -4246,14 +4415,14 @@ async function loadTrashList() {
 }
 
 async function restoreTrashItem(it, name) {
-    if (!confirm(`'${name}'을(를) 삭제 전 상태로 복원하시겠습니까?`)) return;
+    if (!await uiConfirm(`'${name}'을(를) 삭제 전 상태로 복원하시겠습니까?`)) return;
     try {
         const res = await adminFetch(`/api/admin/sections/trash/${it.id}/restore`, { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || '복원 실패');
-        alert(`복원했습니다 (${data.restoredRows.toLocaleString()}건).${data.missingFiles ? `\n파일 ${data.missingFiles}개는 보관 폴더에서 찾지 못해 복원되지 않았습니다.` : ''}`);
+        uiAlert(`복원했습니다 (${data.restoredRows.toLocaleString()}건).${data.missingFiles ? `\n파일 ${data.missingFiles}개는 보관 폴더에서 찾지 못해 복원되지 않았습니다.` : ''}`);
     } catch (e) {
-        alert(e.message || '복원 실패');
+        uiAlert(e.message || '복원 실패');
     }
     loadLedgerTree();
     loadTrashList();
@@ -4261,20 +4430,20 @@ async function restoreTrashItem(it, name) {
 }
 
 async function purgeTrashItem(it, name) {
-    if (!confirm(`'${name}'을(를) 휴지통에서 지금 완전히 지웁니다.\n이후에는 복원할 수 없습니다. 계속하시겠습니까?`)) return;
+    if (!await uiConfirm(`'${name}'을(를) 휴지통에서 지금 완전히 지웁니다.\n이후에는 복원할 수 없습니다. 계속하시겠습니까?`)) return;
     try {
         const res = await adminFetch(`/api/admin/sections/trash/${it.id}`, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || '삭제 실패');
     } catch (e) {
-        alert(e.message || '삭제 실패');
+        uiAlert(e.message || '삭제 실패');
     }
     loadTrashList();
 }
 
 
 async function deleteSectionFromTree(rdid, label) {
-    if (!confirm(`'${label}' 구간을 삭제하시겠습니까?\n삭제한 구간은 ${trashDays}일 동안 휴지통에 보관되며, 관리 콘솔 > 등록 데이터 관리 > 삭제 휴지통에서 복원할 수 있습니다.`)) return;
+    if (!await uiConfirm(`'${label}' 구간을 삭제하시겠습니까?\n삭제한 구간은 ${trashDays}일 동안 휴지통에 보관되며, 관리 콘솔 > 등록 데이터 관리 > 삭제 휴지통에서 복원할 수 있습니다.`)) return;
     const res = await fetch(`/api/sections/${rdid}`, { method: 'DELETE' });
     if (res.ok) {
         if (currentSectionRdid === rdid) {
@@ -4290,7 +4459,7 @@ async function deleteSectionFromTree(rdid, label) {
         loadLedgerTree();
     } else {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || '삭제 실패');
+        uiAlert(data.error || '삭제 실패');
     }
 }
 
@@ -4407,7 +4576,7 @@ function initBulkRegister() {
         const files = [...(fileList || [])];
         if (!files.length) return;
         const ok = files.filter((f) => /\.(zip|dwg|dxf)$/i.test(f.name));
-        if (ok.length !== files.length) alert('ZIP, DWG, DXF 파일만 선택할 수 있습니다. 다른 파일은 제외했습니다.');
+        if (ok.length !== files.length) uiAlert('ZIP, DWG, DXF 파일만 선택할 수 있습니다. 다른 파일은 제외했습니다.');
         if (!ok.length) return;
         rdFiles = ok;
         rdFileNameEl.textContent = ok.length === 1 ? ok[0].name : `${ok[0].name} 외 ${ok.length - 1}개`;
@@ -4426,9 +4595,9 @@ function initBulkRegister() {
     rdUploadBtn.addEventListener('click', async () => {
         const opt = rdRouteSelect.selectedOptions[0];
         const routeChosen = !!(opt && opt.value);
-        if (!rdFiles.length) { alert('먼저 도면 파일 또는 ZIP을 선택하세요.'); return; }
+        if (!rdFiles.length) { uiAlert('먼저 도면 파일 또는 ZIP을 선택하세요.'); return; }
         if (routeChosen && (rdFiles.length !== 1 || !/\.zip$/i.test(rdFiles[0].name))) {
-            alert('노선을 고른 경우에는 ZIP 파일 1개만 올릴 수 있습니다. 여러 파일은 "자동 인식"으로 올리세요.');
+            uiAlert('노선을 고른 경우에는 ZIP 파일 1개만 올릴 수 있습니다. 여러 파일은 "자동 인식"으로 올리세요.');
             return;
         }
 
@@ -4453,7 +4622,7 @@ function initBulkRegister() {
             if (!res.ok) throw new Error(data.error || 'ZIP 업로드 실패');
         } catch (e) {
             rdStatusEl.textContent = '';
-            alert(e.message);
+            uiAlert(e.message);
             return;
         } finally {
             bulkTabEl.classList.remove('bulk-loading');
@@ -4752,7 +4921,7 @@ function initBulkRegister() {
         hideReviewError();
     }
 
-    // KRRIS(국가 도로대장 검수) 사전검사 결과 — C-1 좌표계, M-1 필수항목 빈 값.
+    // KRRIS(국가 도로대장 검수) 사전검사 결과 — C-1 좌표계, M-1 필수항목 빈 값, V-1 코드표에 없는 값.
     // 등록을 막지는 않고(업체 데이터를 일단 받아두고 보완 요청하는 흐름), 결함 목록을
     // CSV로 내려받아 업체에 그대로 보낼 수 있게 한다. 서버 lib/bulkImportParse.js 참고.
     function renderKrrisChecks(data) {
@@ -4773,7 +4942,17 @@ function initBulkRegister() {
                 <td>${escapeHtml(n.label)}<span class="kr-field">${escapeHtml(n.field)}</span></td>
                 <td class="kr-num">${(n.emptyCount + n.nullCount).toLocaleString()}${n.nullCount ? '<span class="kr-skip">저장 제외 ' + n.nullCount + '</span>' : ''}</td>
             </tr>`).join('');
-        const anyDefect = crsBad || k.nnTotal;
+        // V-1: 코드표에 없는 코드값 — 필드별로 어떤 값이 몇 건인지(많은 순 일부)
+        const hasCodeCheck = typeof k.codesTotal === 'number'; // 서버가 V-1을 아직 모르는 옛 버전이면 항목 자체를 숨긴다
+        const codesTotal = k.codesTotal || 0;
+        const codeRows = (k.codes || []).map((c) => `
+            <tr>
+                <td>${escapeHtml(c.koreanName)}</td>
+                <td>${escapeHtml(c.label)}<span class="kr-field">${escapeHtml(c.field)}</span></td>
+                <td class="kr-num">${c.total.toLocaleString()}</td>
+                <td>${c.values.map((v) => `<span class="kr-code">${escapeHtml(v.value)}<i>×${v.count.toLocaleString()}</i></span>`).join(' ')}${c.distinct > c.values.length ? ` 외 ${c.distinct - c.values.length}종` : ''}</td>
+            </tr>`).join('');
+        const anyDefect = crsBad || k.nnTotal || codesTotal;
         krrisEl.innerHTML = `
             <div class="kr-head">
                 <span>KRRIS 사전검사</span>
@@ -4789,6 +4968,12 @@ function initBulkRegister() {
                 <div><b>M-1 필수항목</b> <span class="kr-msg">${k.nnTotal ? `빈 값 ${k.nnTotal.toLocaleString()}건` : '누락 없음'}</span>
                 ${k.nnTotal ? `<table class="kr-table"><thead><tr><th>레이어</th><th>항목</th><th>건수</th></tr></thead><tbody>${nnRows}</tbody></table>` : ''}</div>
             </div>
+            ${hasCodeCheck ? `<div class="kr-item ${codesTotal ? 'fail' : 'pass'}">
+                <i class="fa-solid ${codesTotal ? 'fa-triangle-exclamation' : 'fa-circle-check'}"></i>
+                <div><b>V-1 코드표</b> <span class="kr-msg">${codesTotal ? `코드표에 없는 값 ${codesTotal.toLocaleString()}건` : '이상 없음'}</span>
+                ${codesTotal ? `<div class="kr-sub">공통입력코드정의서(v2.6)의 코드가 아닌 값입니다. 등록은 되지만 원본 수정이 필요한지 확인하세요. 관리기관(MCO)은 대조하지 않습니다.</div>
+                <table class="kr-table"><thead><tr><th>레이어</th><th>항목</th><th>건수</th><th>값</th></tr></thead><tbody>${codeRows}</tbody></table>` : ''}</div>
+            </div>` : ''}
             ${anyDefect ? '<div class="kr-note">등록은 그대로 진행할 수 있습니다. 이 원본을 KRRIS에 제출하면 위 항목이 결함으로 지적됩니다.</div>' : ''}
         `;
         const dl = document.getElementById('bulk-krris-download');
@@ -4803,7 +4988,7 @@ function initBulkRegister() {
             const res = await adminFetch(`/api/bulk-import/${encodeURIComponent(uploadId)}/krris-report`);
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
-                alert(err.error || '결함 목록을 만들지 못했습니다.');
+                uiAlert(err.error || '결함 목록을 만들지 못했습니다.');
                 return;
             }
             const blob = await res.blob();
@@ -4815,7 +5000,7 @@ function initBulkRegister() {
             a.click();
             URL.revokeObjectURL(url);
         } catch (e) {
-            alert('결함 목록 다운로드 중 오류가 발생했습니다.');
+            uiAlert('결함 목록 다운로드 중 오류가 발생했습니다.');
         } finally {
             btn.disabled = false;
             btn.innerHTML = original;
@@ -5023,7 +5208,7 @@ function initLedgerTreeToolbar() {
 // "열어서 바로 보기"가 목적이라 파일로 저장되지 않는다.
 async function openLedgerReportPreview() {
     if (!currentRoute || !currentRoute.rdid) {
-        alert('조서 미리보기는 구간을 하나 선택했을 때만 가능합니다.');
+        uiAlert('조서 미리보기는 구간을 하나 선택했을 때만 가능합니다.');
         return;
     }
     // window.open()은 반드시 클릭 핸들러 안에서 await 없이(동기적으로) 바로
@@ -5033,7 +5218,7 @@ async function openLedgerReportPreview() {
     // 데이터가 준비되면 그 창에 내용을 채워 넣는 순서로 바꿨다.
     const win = window.open('', '_blank');
     if (!win) {
-        alert('팝업이 차단되었습니다 — 브라우저의 팝업 차단을 해제해주세요.');
+        uiAlert('팝업이 차단되었습니다 — 브라우저의 팝업 차단을 해제해주세요.');
         return;
     }
     win.document.write('<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>조서 불러오는 중...</title></head><body style="font-family:\'Malgun Gothic\',sans-serif;padding:40px;color:#555;">불러오는 중...</body></html>');
@@ -5049,7 +5234,7 @@ async function openLedgerReportPreview() {
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             win.close();
-            alert(data.error || '조서 생성에 실패했습니다.');
+            uiAlert(data.error || '조서 생성에 실패했습니다.');
             return;
         }
         const buf = await res.arrayBuffer();
@@ -5127,7 +5312,7 @@ async function lrpDownloadZip(btnId, url, originalLabel, busyLabel, errorLabel) 
         const res = await fetch(url);
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            alert(data.error || '조서 생성에 실패했습니다.');
+            uiAlert(data.error || '조서 생성에 실패했습니다.');
             return;
         }
         const blob = await res.blob();
@@ -5140,7 +5325,7 @@ async function lrpDownloadZip(btnId, url, originalLabel, busyLabel, errorLabel) 
         a.click();
         URL.revokeObjectURL(blobUrl);
     } catch (e) {
-        alert(errorLabel);
+        uiAlert(errorLabel);
     } finally {
         btn.disabled = false;
         btn.innerHTML = original;
@@ -5157,7 +5342,7 @@ document.getElementById('lrp-download-all').addEventListener('click', () => {
         win.document.close();
     } catch (e) {
         console.error('[ledger-report-preview]', e);
-        alert('조서 미리보기 중 오류가 발생했습니다.');
+        uiAlert('조서 미리보기 중 오류가 발생했습니다.');
     } finally {
         document.body.classList.remove('app-busy');
         btn.disabled = false;
@@ -5232,6 +5417,7 @@ async function loadLedgerTree() {
         container.appendChild(gradeNode.node);
     });
     if (treeMultiMode) applyTreeMultiCheckboxes(); // 선택 모드가 켜진 채로 목록이 다시 그려지면 체크박스를 다시 붙인다
+    applyTreeFilter();
 }
 
 // ---------- 여러 노선 골라서 내려받기 ----------
@@ -5282,7 +5468,7 @@ function downloadCheckedRoutes() {
     const rdids = checkedTreeRoutes().flatMap((l) => l.dataset.rdids.split(',').filter(Boolean));
     if (!rdids.length) return;
     if (rdids.length > TREE_MULTI_MAX_SECTIONS) {
-        alert(`한 번에 구간 ${TREE_MULTI_MAX_SECTIONS}개까지만 내려받을 수 있습니다. 지금 ${rdids.length}개를 골랐으니 나누어 받아 주세요.`);
+        uiAlert(`한 번에 구간 ${TREE_MULTI_MAX_SECTIONS}개까지만 내려받을 수 있습니다. 지금 ${rdids.length}개를 골랐으니 나누어 받아 주세요.`);
         return;
     }
     downloadSectionExportWith({ rdids: rdids.join(',') });
@@ -5730,7 +5916,7 @@ async function showGradeRoutesOnMap(grade) {
 
 function drawRoutesOnMap(items, emptyMessage) {
     if (!items || !items.length) {
-        if (emptyMessage) alert(emptyMessage);
+        if (emptyMessage) uiAlert(emptyMessage);
         return;
     }
     // 노선 하나 선택할 때 쓰는 것과 같은 강조 레이어(routeHighlightLayer)를
@@ -5985,7 +6171,7 @@ function blinkIssueFeature(feature, times = 4, intervalMs = 250) {
 // ---------- 사용자도로관리: 경로수정(Modify) ----------
 function startEditRoute() {
     const feature = issueVectorLayer.getSource().getFeatures().find((f) => f.get('issueId') === currentIssueId);
-    if (!feature) { alert('경로 정보를 불러오지 못했습니다.'); return; }
+    if (!feature) { uiAlert('경로 정보를 불러오지 못했습니다.'); return; }
     const geomType = feature.getGeometry().getType();
     const hint = geomType === 'Point' ? '지도에서 지점을 드래그해 위치를 수정하세요'
         : geomType === 'Polygon' ? '지도에서 정점을 드래그해 구역을 수정하세요'
@@ -6114,7 +6300,7 @@ async function saveRoadIssue() {
 async function deleteRoadIssueConfirm() {
     if (!currentIssueId) return;
     const title = document.getElementById('im-title').value || '';
-    if (!confirm(`'${title}' 항목을 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.`)) return;
+    if (!await uiConfirm(`'${title}' 항목을 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.`)) return;
     const res = await fetch(`/api/road-issues/${currentIssueId}`, { method: 'DELETE' });
     if (res.ok) {
         issueVectorLayer.getSource().clear();
@@ -6122,7 +6308,7 @@ async function deleteRoadIssueConfirm() {
         loadIssueTree();
     } else {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || '삭제 실패');
+        uiAlert(data.error || '삭제 실패');
     }
 }
 
@@ -6228,11 +6414,11 @@ async function downloadIssueGeoJson() {
     const checkedIds = Array.from(document.querySelectorAll('#issue-tree .issue-leaf-visibility:checked'))
         .map((cb) => cb.dataset.issueId);
     if (checkedIds.length === 0) {
-        alert('다운로드할 항목의 체크박스를 먼저 선택하세요.');
+        uiAlert('다운로드할 항목의 체크박스를 먼저 선택하세요.');
         return;
     }
     const res = await fetch(`/api/road-issues/geojson?ids=${checkedIds.join(',')}`);
-    if (!res.ok) { alert('다운로드에 실패했습니다.'); return; }
+    if (!res.ok) { uiAlert('다운로드에 실패했습니다.'); return; }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -6320,14 +6506,14 @@ function buildIssueTreeLeaf(label, id, geomType) {
     delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
     delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!confirm(`'${label}' 항목을 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.`)) return;
+        if (!await uiConfirm(`'${label}' 항목을 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.`)) return;
         const res = await fetch(`/api/road-issues/${id}`, { method: 'DELETE' });
         if (res.ok) {
             if (currentIssueId === id) closeRoadIssueModal();
             loadIssueTree();
         } else {
             const data = await res.json().catch(() => ({}));
-            alert(data.error || '삭제 실패');
+            uiAlert(data.error || '삭제 실패');
         }
     });
     labelEl.appendChild(delBtn);
@@ -6474,3 +6660,455 @@ function selectSectionForLeftSidebar(section) {
     }
 }
 
+// ============================================================================
+// 화면 다듬기 — 글씨 크기, 배경지도 불러오기 실패 안내, 노선 트리 찾기/등록된 것만 보기, 접근성(키보드·화면낭독 이름)
+// ============================================================================
+
+// ---------- 글씨 크기(보통/크게/아주 크게) ----------
+// 모든 글자가 rem 기준이라 <html>의 글자 크기만 바꾸면 화면 전체가 같이 커진다. 브라우저별로 기억한다(localStorage 'rl-fs').
+const FONT_SIZE_STEPS = [['', '보통'], ['lg', '크게'], ['xl', '아주 크게']];
+function currentFontStep() {
+    const v = document.documentElement.getAttribute('data-fs') || '';
+    return FONT_SIZE_STEPS.findIndex((s) => s[0] === v) < 0 ? 0 : FONT_SIZE_STEPS.findIndex((s) => s[0] === v);
+}
+function applyFontStep(idx) {
+    const [val, label] = FONT_SIZE_STEPS[idx];
+    if (val) document.documentElement.setAttribute('data-fs', val); else document.documentElement.removeAttribute('data-fs');
+    try { localStorage.setItem('rl-fs', val); } catch (e) { /* 저장 못 해도 이번 화면에는 적용됨 */ }
+    const next = FONT_SIZE_STEPS[(idx + 1) % FONT_SIZE_STEPS.length][1];
+    const btn = document.getElementById('font-size-btn');
+    if (btn) {
+        btn.title = `글씨 크기: ${label} (누르면 ${next})`;
+        btn.setAttribute('aria-label', btn.title);
+        btn.dataset.step = String(idx);
+    }
+    if (typeof map !== 'undefined' && map && map.updateSize) setTimeout(() => map.updateSize(), 50);
+}
+function initFontSizeButton() {
+    const btn = document.getElementById('font-size-btn');
+    if (!btn) return;
+    applyFontStep(currentFontStep());
+    btn.addEventListener('click', () => applyFontStep((currentFontStep() + 1) % FONT_SIZE_STEPS.length));
+}
+
+// ---------- 배경지도 불러오기 실패 안내 ----------
+// VWorld 인증키나 등록 주소(Referer)가 맞지 않거나 업무망에서 막히면 지도가 빈 화면으로만 보여 원인을 알 수 없었다.
+// 타일이 연속으로 실패하고 하나도 성공하지 못했을 때만 지도 위에 안내를 띄우고, 다시 불러와지면 스스로 닫는다.
+function showMapNotice(html, onRetry) {
+    const el = document.getElementById('map-notice');
+    if (!el) return;
+    el.innerHTML = html + (onRetry ? ' <button type="button" class="map-notice-retry">다시 불러오기</button>' : '') +
+        ' <button type="button" class="map-notice-close" aria-label="안내 닫기"><i class="fa-solid fa-xmark"></i></button>';
+    el.hidden = false;
+    const retry = el.querySelector('.map-notice-retry');
+    if (retry) retry.addEventListener('click', () => { el.hidden = true; onRetry(); });
+    el.querySelector('.map-notice-close').addEventListener('click', () => { el.hidden = true; });
+}
+function hideMapNotice() {
+    const el = document.getElementById('map-notice');
+    if (el) el.hidden = true;
+}
+function watchBaseMapTiles(layer, label) {
+    const source = layer.getSource();
+    let ok = 0;
+    let fail = 0;
+    source.on('tileloadend', () => {
+        ok++;
+        fail = 0;
+        if (layer.getVisible()) hideMapNotice();
+    });
+    source.on('tileloaderror', () => {
+        fail++;
+        if (ok === 0 && fail >= 4 && layer.getVisible()) {
+            const keyMissing = !VWORLD_KEY;
+            showMapNotice(
+                `<i class="fa-solid fa-triangle-exclamation"></i> <b>${label} 배경지도를 불러오지 못했습니다.</b> ` +
+                (keyMissing ? 'VWorld 인증키가 설정되지 않았습니다(서버 .env의 VWORLD_API_KEY).'
+                    : '인터넷 연결, VWorld 인증키와 등록 주소(서버 .env의 VWORLD_REFERER)를 확인하세요.') +
+                ' 도로·시설물 자료는 그대로 사용할 수 있습니다.',
+                () => { fail = 0; source.refresh(); }
+            );
+        }
+    });
+}
+
+// ---------- 노선 트리: 찾기 + 등록된 것만 보기 ----------
+// 도로 종류 13개를 항상 다 보여주면 목록이 길어서, 기본으로 등록된 노선이 있는 종류만 보여 준다(체크를 끄면 전부 표시).
+// 글자를 입력하면 노선·구간 이름에 맞는 것만 남기고 해당 도로 종류를 펼친다.
+const TREE_ONLY_KEY = 'rl-tree-only';
+function treeOnlyRegistered() {
+    const cb = document.getElementById('tree-only-registered');
+    return !cb || cb.checked;
+}
+function applyTreeFilter() {
+    const container = document.getElementById('ledger-tree');
+    if (!container) return;
+    const q = ((document.getElementById('tree-filter-input') || {}).value || '').trim().toLowerCase();
+    const onlyReg = treeOnlyRegistered();
+    let anyVisible = false;
+    container.querySelectorAll(':scope > .tree-node').forEach((grade) => {
+        const isEmpty = grade.classList.contains('is-empty');
+        let visible = !(onlyReg && isEmpty);
+        if (q) {
+            // 도로 종류 이름이 맞으면 그 아래 노선을 전부, 아니면 노선·구간 이름이 맞는 것만 보여 준다
+            const gradeName = ((grade.querySelector(':scope > .tree-node-label > span') || {}).textContent || '').toLowerCase();
+            const gradeMatch = gradeName.includes(q);
+            let routeVisible = 0;
+            grade.querySelectorAll(':scope > .tree-children > .tree-node').forEach((route) => {
+                if (route.classList.contains('tree-node-empty')) return;
+                const routeLabel = ((route.querySelector(':scope > .tree-node-label') || {}).textContent || '').toLowerCase();
+                const leaves = [...route.querySelectorAll('.tree-leaf')];
+                let leafMatch = 0;
+                leaves.forEach((leaf) => {
+                    const hit = gradeMatch || routeLabel.includes(q) || (leaf.textContent || '').toLowerCase().includes(q);
+                    leaf.classList.toggle('tree-filtered-out', !hit);
+                    if (hit) leafMatch++;
+                });
+                const show = gradeMatch || routeLabel.includes(q) || leafMatch > 0;
+                route.classList.toggle('tree-filtered-out', !show);
+                if (show) { routeVisible++; if (leafMatch && !gradeMatch && !routeLabel.includes(q)) route.classList.add('open'); }
+            });
+            visible = (gradeMatch || routeVisible > 0) && !(onlyReg && isEmpty);
+            if (visible) grade.classList.add('open');
+        } else {
+            grade.querySelectorAll('.tree-filtered-out').forEach((n) => n.classList.remove('tree-filtered-out'));
+        }
+        grade.classList.toggle('tree-filtered-out', !visible);
+        if (visible) anyVisible = true;
+    });
+    let msg = container.querySelector(':scope > .tree-filter-empty');
+    if (!anyVisible && container.children.length && !container.querySelector(':scope > .tree-empty')) {
+        if (!msg) {
+            msg = document.createElement('div');
+            msg.className = 'tree-empty tree-filter-empty';
+            container.appendChild(msg);
+        }
+        msg.textContent = q ? `"${q}"에 해당하는 노선·구간이 없습니다.` : '등록된 노선이 없습니다. "등록된 것만" 체크를 끄면 모든 도로 종류가 보입니다.';
+    } else if (msg) {
+        msg.remove();
+    }
+}
+function initTreeFilter() {
+    const input = document.getElementById('tree-filter-input');
+    const cb = document.getElementById('tree-only-registered');
+    if (!input || !cb) return;
+    try { cb.checked = localStorage.getItem(TREE_ONLY_KEY) !== '0'; } catch (e) { /* 기본값 사용 */ }
+    let timer = null;
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(applyTreeFilter, 120); });
+    cb.addEventListener('change', () => {
+        try { localStorage.setItem(TREE_ONLY_KEY, cb.checked ? '1' : '0'); } catch (e) { /* 무시 */ }
+        applyTreeFilter();
+    });
+}
+
+// ---------- 접근성: 이름 없는 버튼에 이름 붙이기, 키보드로 누르기 ----------
+// 아이콘만 있는 버튼은 화면낭독기가 "버튼"이라고만 읽는다. 눈에 보이는 글자가 없고 title(풍선 도움말)이 있으면 그것을 이름(aria-label)으로 쓴다.
+// <div>로 만든 클릭 요소(사이드바 접기 탭 등)는 버튼 역할과 키보드 포커스를 준다. 나중에 화면에 추가되는 버튼도 같이 처리한다.
+function polishAccessibility(root) {
+    const scope = root && root.querySelectorAll ? root : document;
+    scope.querySelectorAll('button:not([aria-label]), [role="button"]:not([aria-label])').forEach((el) => {
+        const hasText = (el.textContent || '').trim().length > 0 && !el.querySelector(':scope > i:only-child');
+        const title = el.getAttribute('title');
+        if (title && (!hasText || (el.textContent || '').trim().length < 2)) el.setAttribute('aria-label', title);
+    });
+    ['sidebarToggle', 'leftSidebarToggle'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.hasAttribute('role')) { el.setAttribute('role', 'button'); el.setAttribute('tabindex', '0'); if (el.title) el.setAttribute('aria-label', el.title); }
+    });
+    scope.querySelectorAll('.tree-node-label:not([tabindex])').forEach((el) => {
+        el.setAttribute('tabindex', '0');
+        el.setAttribute('role', 'button');
+    });
+    const sidebarEl = document.getElementById('sidebarToggle');
+    if (sidebarEl && !sidebarEl.getAttribute('aria-label')) sidebarEl.setAttribute('aria-label', '오른쪽 패널 접기/펴기');
+}
+function initAccessibility() {
+    polishAccessibility(document);
+    // Enter/Space로 role="button" 요소 누르기
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const t = e.target;
+        if (!t || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.tagName === 'BUTTON' || t.tagName === 'A') return;
+        if (t.getAttribute && t.getAttribute('role') === 'button') { e.preventDefault(); t.click(); }
+    });
+    let timer = null;
+    new MutationObserver((muts) => {
+        if (timer) return;
+        timer = setTimeout(() => { timer = null; polishAccessibility(document); }, 400);
+    }).observe(document.body, { childList: true, subtree: true });
+}
+
+initFontSizeButton();
+initTreeFilter();
+initAccessibility();
+(function initBaseMapProviderButton() {
+    const btn = document.getElementById('btnProvider');
+    if (btn) btn.addEventListener('click', () => switchBaseProvider(baseProvider === 'kakao' ? 'vworld' : 'kakao'));
+})();
+
+// ============================================================================
+// 시설물 점검·보수 이력 + 변경 이력 (속성정보 창 위쪽의 "이력" 버튼)
+//   점검·보수 : 시설물마다 점검/보수 기록을 쌓는다. 보기는 모두, 추가·수정·삭제는 편집 모드(관리자)에서만 — 서버도 관리자만 받는다.
+//   변경 이력 : 점검·보수 기록 변경, 사진·보고서 올리기/삭제, 일괄등록으로 새로 들어오거나 값이 바뀐 것을 시간순으로 보여 준다.
+// API: /api/facility-history (routes/facilityHistory.js)
+// ============================================================================
+const FH_RESULTS = { 점검: ['양호', '보통', '불량', '조치필요'], 보수: ['예정', '진행중', '완료'] };
+const FH_RESULT_CLASS = { 양호: 'ok', 보통: 'mid', 불량: 'bad', 조치필요: 'bad', 예정: 'mid', 진행중: 'mid', 완료: 'ok' };
+const FH_TYPE_ICON = {
+    maint: 'fa-screwdriver-wrench', file: 'fa-paperclip', import_new: 'fa-file-import', import_update: 'fa-file-circle-check', edit: 'fa-pen',
+};
+let fhCtx = null; // { table, rdid, label, name, tab, editingId }
+
+function fhTodayKst() {
+    const d = new Date(Date.now() + 9 * 3600 * 1000);
+    return d.toISOString().slice(0, 10);
+}
+function fhDaysBetween(fromYmd, toYmd) {
+    return Math.round((Date.parse(toYmd + 'T00:00:00Z') - Date.parse(fromYmd + 'T00:00:00Z')) / 86400000);
+}
+function fhMoney(n) {
+    return n == null ? '' : Number(n).toLocaleString() + '원';
+}
+
+function fhEnsureModal() {
+    let back = document.getElementById('fh-backdrop');
+    if (back) return back;
+    back = document.createElement('div');
+    back.id = 'fh-backdrop';
+    back.className = 'fh-backdrop';
+    back.hidden = true;
+    back.innerHTML = `
+        <div id="fh-modal" role="dialog" aria-modal="true" aria-labelledby="fh-title">
+            <div class="fh-head">
+                <span class="fh-badge" id="fh-badge"></span>
+                <b id="fh-title"></b>
+                <span class="fh-rdid" id="fh-rdid"></span>
+                <button type="button" class="fh-close" id="fh-close" aria-label="이력 창 닫기"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="fh-tabs" role="tablist">
+                <button type="button" role="tab" data-tab="maint" class="active">점검·보수 이력 <span class="fh-count" id="fh-count-maint"></span></button>
+                <button type="button" role="tab" data-tab="changes">변경 이력</button>
+            </div>
+            <div class="fh-body" id="fh-body"></div>
+        </div>`;
+    document.body.appendChild(back);
+    back.addEventListener('mousedown', (e) => { if (e.target === back) closeFacilityHistory(); });
+    back.querySelector('#fh-close').addEventListener('click', closeFacilityHistory);
+    back.querySelectorAll('.fh-tabs button').forEach((b) => b.addEventListener('click', () => fhShowTab(b.dataset.tab)));
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !back.hidden && !(typeof uiModalOpen === 'function' && uiModalOpen())) closeFacilityHistory();
+    });
+    return back;
+}
+
+function closeFacilityHistory() {
+    const back = document.getElementById('fh-backdrop');
+    if (back) back.hidden = true;
+    fhCtx = null;
+}
+
+async function openFacilityHistory(table, rdid, label, name) {
+    const back = fhEnsureModal();
+    fhCtx = { table, rdid, label: label || '시설물', name: name || '', tab: 'maint', editingId: null, adding: false };
+    document.getElementById('fh-badge').textContent = fhCtx.label;
+    document.getElementById('fh-badge').style.setProperty('--fh-accent', facilityColor(fhCtx.label));
+    document.getElementById('fh-title').textContent = fhCtx.name || fhCtx.label;
+    document.getElementById('fh-rdid').textContent = rdid;
+    back.hidden = false;
+    await fhShowTab('maint');
+    const first = back.querySelector('.fh-tabs button.active');
+    if (first) first.focus();
+}
+
+async function fhShowTab(tab) {
+    if (!fhCtx) return;
+    fhCtx.tab = tab;
+    fhCtx.editingId = null;
+    fhCtx.adding = false;
+    document.querySelectorAll('#fh-modal .fh-tabs button').forEach((b) => {
+        const on = b.dataset.tab === tab;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', String(on));
+    });
+    const body = document.getElementById('fh-body');
+    body.innerHTML = '<div class="state-msg"><i class="fa-solid fa-spinner fa-spin"></i> 불러오는 중...</div>';
+    const ctx = fhCtx;
+    try {
+        if (tab === 'maint') {
+            const params = new URLSearchParams({ table: ctx.table, rdid: ctx.rdid });
+            const res = await fetch('/api/facility-history/maintenance?' + params.toString());
+            const data = await res.json();
+            if (fhCtx !== ctx || ctx.tab !== 'maint') return; // 그 사이 다른 시설물을 열거나 탭을 바꿈
+            ctx.maint = data;
+            fhRenderMaint();
+        } else {
+            const params = new URLSearchParams({ table: ctx.table, rdid: ctx.rdid });
+            const res = await fetch('/api/facility-history/changes?' + params.toString());
+            const data = await res.json();
+            if (fhCtx !== ctx || ctx.tab !== 'changes') return;
+            fhRenderChanges(data.items || []);
+        }
+    } catch (e) {
+        if (fhCtx !== ctx) return;
+        body.innerHTML = '<div class="state-msg is-error">이력을 불러오지 못했습니다.<button type="button" class="state-retry">다시 시도</button></div>';
+        body.querySelector('.state-retry').addEventListener('click', () => fhShowTab(tab));
+    }
+}
+
+function fhNextDueBadge(nextDue) {
+    if (!nextDue) return '';
+    const days = fhDaysBetween(fhTodayKst(), nextDue);
+    if (days < 0) return `<span class="fh-due is-over">기한 ${-days}일 지남</span>`;
+    if (days <= 30) return `<span class="fh-due is-soon">${days === 0 ? '오늘' : days + '일 남음'}</span>`;
+    return `<span class="fh-due">${days}일 남음</span>`;
+}
+
+function fhRenderMaint() {
+    const body = document.getElementById('fh-body');
+    const { items = [], summary } = fhCtx.maint || {};
+    document.getElementById('fh-count-maint').textContent = items.length ? `(${items.length})` : '';
+    const last = summary && summary.lastInspection;
+    const chips = [
+        `<span class="fh-chip">점검 <b>${summary ? summary.inspections : 0}</b>건</span>`,
+        `<span class="fh-chip">보수 <b>${summary ? summary.repairs : 0}</b>건</span>`,
+        last ? `<span class="fh-chip">최근 점검 <b>${escapeHtml(last.performed_on)}</b>${last.result ? ` <span class="fh-result is-${FH_RESULT_CLASS[last.result] || 'mid'}">${escapeHtml(last.result)}</span>` : ''}</span>` : '<span class="fh-chip is-none">점검 기록 없음</span>',
+        summary && summary.nextDue ? `<span class="fh-chip">다음 점검 예정 <b>${escapeHtml(summary.nextDue)}</b> ${fhNextDueBadge(summary.nextDue)}</span>` : '',
+    ].join('');
+    const cards = items.map((r) => `
+        <article class="fh-card" data-id="${r.id}">
+            <div class="fh-card-top">
+                <span class="fh-kind is-${r.kind === '점검' ? 'insp' : 'repair'}">${escapeHtml(r.kind)}</span>
+                <b class="fh-date">${escapeHtml(r.performed_on)}</b>
+                ${r.result ? `<span class="fh-result is-${FH_RESULT_CLASS[r.result] || 'mid'}">${escapeHtml(r.result)}</span>` : ''}
+                <span class="fh-card-actions fh-admin-only">
+                    <button type="button" class="fh-edit" data-id="${r.id}" aria-label="이 기록 수정"><i class="fa-solid fa-pen"></i></button>
+                    <button type="button" class="fh-del" data-id="${r.id}" aria-label="이 기록 삭제"><i class="fa-solid fa-trash"></i></button>
+                </span>
+            </div>
+            <div class="fh-card-title">${escapeHtml(r.title)}</div>
+            ${r.detail ? `<div class="fh-card-detail">${escapeHtml(r.detail)}</div>` : ''}
+            <div class="fh-card-meta">
+                ${r.contractor ? `<span><i class="fa-solid fa-building-user"></i> ${escapeHtml(r.contractor)}</span>` : ''}
+                ${r.cost_won != null ? `<span><i class="fa-solid fa-won-sign"></i> ${escapeHtml(fhMoney(r.cost_won))}</span>` : ''}
+                ${r.next_due ? `<span><i class="fa-solid fa-calendar-check"></i> 다음 점검 ${escapeHtml(r.next_due)} ${fhNextDueBadge(r.next_due)}</span>` : ''}
+                <span class="fh-by">${escapeHtml(r.updated_by_name || r.created_by_name || '')} · ${escapeHtml(typeof fmtDateTimeKo === 'function' ? fmtDateTimeKo(r.updated_at || r.created_at) : '')}</span>
+            </div>
+        </article>`).join('');
+    body.innerHTML = `
+        <div class="fh-summary">${chips}</div>
+        <div class="fh-toolbar fh-admin-only"><button type="button" class="fh-add"><i class="fa-solid fa-plus"></i> 점검·보수 기록 추가</button></div>
+        <div id="fh-form-slot"></div>
+        <div class="fh-list">${cards || '<div class="state-msg">아직 점검·보수 기록이 없습니다.<br><span class="fh-admin-only-text">편집 모드에서 기록을 추가할 수 있습니다.</span></div>'}</div>`;
+    body.querySelector('.fh-add').addEventListener('click', () => fhOpenForm(null));
+    body.querySelectorAll('.fh-edit').forEach((b) => b.addEventListener('click', () => fhOpenForm(Number(b.dataset.id))));
+    body.querySelectorAll('.fh-del').forEach((b) => b.addEventListener('click', () => fhDelete(Number(b.dataset.id))));
+}
+
+function fhOpenForm(id) {
+    const slot = document.getElementById('fh-form-slot');
+    if (!slot) return;
+    const rec = id ? (fhCtx.maint.items || []).find((r) => String(r.id) === String(id)) : null; // bigint는 문자열로 온다
+    fhCtx.editingId = id;
+    const kind = rec ? rec.kind : '점검';
+    const resultOpts = (k, sel) => `<option value="">(선택 안 함)</option>` + FH_RESULTS[k].map((x) => `<option value="${x}"${x === sel ? ' selected' : ''}>${x}</option>`).join('');
+    slot.innerHTML = `
+        <form class="fh-form" novalidate>
+            <div class="fh-form-title">${rec ? '기록 수정' : '새 점검·보수 기록'}</div>
+            <div class="fh-row">
+                <label>구분
+                    <select name="kind">${['점검', '보수'].map((k) => `<option value="${k}"${k === kind ? ' selected' : ''}>${k}</option>`).join('')}</select>
+                </label>
+                <label>일자 <input type="date" name="performed_on" value="${escapeHtml(rec ? rec.performed_on : fhTodayKst())}" required></label>
+                <label>결과 <select name="result">${resultOpts(kind, rec && rec.result)}</select></label>
+            </div>
+            <label class="fh-wide">내용 (한 줄) <input type="text" name="title" maxlength="200" value="${escapeHtml(rec ? rec.title : '')}" placeholder="예: 정기 안전점검, 난간 도장 보수" required></label>
+            <label class="fh-wide">상세 <textarea name="detail" rows="3" maxlength="5000" placeholder="점검 내용·조치 사항·특이사항">${escapeHtml(rec && rec.detail ? rec.detail : '')}</textarea></label>
+            <div class="fh-row">
+                <label>비용(원) <input type="number" name="cost_won" min="0" step="1" value="${rec && rec.cost_won != null ? rec.cost_won : ''}"></label>
+                <label>업체·담당 <input type="text" name="contractor" maxlength="100" value="${escapeHtml(rec && rec.contractor ? rec.contractor : '')}"></label>
+                <label>다음 점검 예정일 <input type="date" name="next_due" value="${escapeHtml(rec && rec.next_due ? rec.next_due : '')}"></label>
+            </div>
+            <div class="fh-form-error" role="alert"></div>
+            <div class="fh-form-buttons">
+                <button type="button" class="fh-cancel">취소</button>
+                <button type="submit" class="fh-save">저장</button>
+            </div>
+        </form>`;
+    const form = slot.querySelector('form');
+    form.elements.kind.addEventListener('change', () => { form.elements.result.innerHTML = resultOpts(form.elements.kind.value, ''); });
+    slot.querySelector('.fh-cancel').addEventListener('click', () => { slot.innerHTML = ''; fhCtx.editingId = null; });
+    form.addEventListener('submit', (e) => { e.preventDefault(); fhSave(form); });
+    form.elements.title.focus();
+}
+
+async function fhSave(form) {
+    const errEl = form.querySelector('.fh-form-error');
+    errEl.textContent = '';
+    const f = form.elements;
+    const payload = {
+        table: fhCtx.table, rdid: fhCtx.rdid, kind: f.kind.value, performed_on: f.performed_on.value, result: f.result.value,
+        title: f.title.value, detail: f.detail.value, cost_won: f.cost_won.value, contractor: f.contractor.value, next_due: f.next_due.value,
+    };
+    const id = fhCtx.editingId;
+    const btn = form.querySelector('.fh-save');
+    btn.disabled = true;
+    try {
+        const res = await fetch(id ? `/api/facility-history/maintenance/${id}` : '/api/facility-history/maintenance', {
+            method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { errEl.textContent = data.error || '저장하지 못했습니다.'; return; }
+        uiToast(id ? '기록을 수정했습니다.' : '기록을 추가했습니다.', 'success');
+        await fhShowTab('maint');
+    } catch (e) {
+        errEl.textContent = '저장하지 못했습니다. 네트워크 연결을 확인하세요.';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function fhDelete(id) {
+    const rec = (fhCtx.maint.items || []).find((r) => String(r.id) === String(id));
+    if (!rec) return;
+    if (!await uiConfirm(`${rec.performed_on} ${rec.kind} 기록 "${rec.title}"을(를) 삭제하시겠습니까?\n삭제하면 되돌릴 수 없지만, 삭제했다는 사실은 변경 이력에 남습니다.`)) return;
+    try {
+        const res = await fetch(`/api/facility-history/maintenance/${id}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '삭제하지 못했습니다.');
+        uiToast('기록을 삭제했습니다.', 'success');
+        await fhShowTab('maint');
+    } catch (e) {
+        uiAlert(e.message || '삭제하지 못했습니다.');
+    }
+}
+
+function fhRenderChanges(items) {
+    const body = document.getElementById('fh-body');
+    if (!items.length) {
+        body.innerHTML = '<div class="state-msg">기록된 변경 이력이 없습니다.<br>이 시설물이 처음 등록된 일괄등록 기록은 보관 기간(30일, 최근 10건)이 지나면 사라질 수 있습니다.</div>';
+        return;
+    }
+    body.innerHTML = '<ol class="fh-timeline">' + items.map((it) => {
+        const fields = (it.fields || []).length
+            ? `<ul class="fh-fields">${it.fields.map((f) => `<li><span class="fh-fk">${escapeHtml(f.label)}</span> <span class="fh-before">${escapeHtml(f.before)}</span> <i class="fa-solid fa-arrow-right"></i> <span class="fh-after">${escapeHtml(f.after)}</span></li>`).join('')}</ul>`
+            : '';
+        return `<li class="fh-tl-item is-${escapeHtml(it.type)}">
+            <span class="fh-tl-dot"><i class="fa-solid ${FH_TYPE_ICON[it.type] || 'fa-circle'}"></i></span>
+            <div class="fh-tl-main">
+                <div class="fh-tl-time">${escapeHtml(typeof fmtDateTimeKo === 'function' ? fmtDateTimeKo(it.at) : it.at)}${it.who ? ` · ${escapeHtml(it.who)}` : ''}</div>
+                <div class="fh-tl-text">${escapeHtml(it.text)}</div>
+                ${fields}
+                ${it.note ? `<div class="fh-tl-note">${escapeHtml(it.note)}</div>` : ''}
+            </div>
+        </li>`;
+    }).join('') + '</ol>';
+}
+
+// 속성정보 창의 "이력" 버튼
+document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('.fib-hist') : null;
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openFacilityHistory(btn.dataset.table, btn.dataset.rdid, btn.dataset.label, btn.dataset.name);
+});

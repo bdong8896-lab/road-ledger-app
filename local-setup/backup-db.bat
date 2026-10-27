@@ -17,11 +17,12 @@ REM   docker exec road-ledger-pg pg_restore -U road_ledger_app -d road_ledger --
 
 REM ===== edit only this section if needed =====
 set CONTAINER=road-ledger-pg
-set BACKUP_ROOT=%~dp0backups
+set BACKUP_ROOT=%~dp0..\backups
 set KEEP_DAYS=14
 REM ==============================================
+for %%I in ("%BACKUP_ROOT%") do set BACKUP_ROOT=%%~fI
 
-for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0server\.env") do (
+for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0..\server\.env") do (
     if "%%A"=="PGDATABASE" set PGDATABASE=%%B
     if "%%A"=="PGUSER" set PGUSER=%%B
     if "%%A"=="PGPASSWORD" set PGPASSWORD=%%B
@@ -43,7 +44,7 @@ if errorlevel 1 goto :error
 docker exec %CONTAINER% rm -f /tmp/road_ledger_backup.dump
 
 echo [2/3] Backing up uploaded files...
-robocopy "%~dp0server\uploads" "%DAY_DIR%\uploads" /MIR /XD bulk-import bulk-import-incoming bulk-import-tmp route-drawings-tmp route-drawings-zip-tmp _thumbs /NFL /NDL /NJH /NJS
+robocopy "%~dp0..\server\uploads" "%DAY_DIR%\uploads" /MIR /XD bulk-import bulk-import-incoming bulk-import-tmp route-drawings-tmp route-drawings-zip-tmp _thumbs /NFL /NDL /NJH /NJS
 if %errorlevel% GEQ 8 goto :error
 
 echo [3/3] Cleaning up old backups...

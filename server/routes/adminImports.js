@@ -2,6 +2,7 @@
 const express = require('express');
 const { requireAdminReauth } = require('../middleware/requireAuth');
 const importBatch = require('../lib/importBatch');
+const { clientIp } = require('../lib/auditLog');
 
 const router = express.Router();
 router.use(requireAdminReauth);
@@ -22,7 +23,7 @@ router.post('/:id/undo', async (req, res) => {
     if (!Number.isInteger(id)) return res.status(400).json({ error: '잘못된 번호입니다.' });
     // 저장 작업이 진행 중일 때는 되돌릴 수 없다(같은 행을 동시에 바꾸게 된다).
     if (getRunningBulkJob()) return res.status(409).json({ error: '일괄등록이 진행 중입니다. 끝난 뒤에 다시 시도하세요.' });
-    const r = await importBatch.undoBatch(id, req.session.user);
+    const r = await importBatch.undoBatch(id, req.session.user, clientIp(req));
     if (!r.ok) return res.status(r.status).json({ error: r.error });
     res.json({ ok: true, missingFiles: r.missingFiles });
 });

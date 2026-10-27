@@ -367,3 +367,31 @@ CREATE TABLE IF NOT EXISTS section_trash_files (
     trash_path     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_section_trash_files_trash ON section_trash_files(trash_id);
+
+-- ============================================================
+-- 시설물 점검·보수 이력 — 시설물(facility_table + facility_rdid)마다 점검/보수 기록을 쌓는다(routes/facilityHistory.js).
+-- 시설물 테이블이 49종이고 PK 이름이 제각각이라 FK는 걸지 않고, 시설물이 지워져도 기록은 남는다(목록은 시설물 기준으로만 조회).
+-- kind: 점검 | 보수.  result: 점검=양호/보통/불량/조치필요, 보수=예정/진행중/완료.  next_due: 다음 점검 예정일.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS facility_maintenance (
+    id               BIGSERIAL PRIMARY KEY,
+    facility_table   VARCHAR(60) NOT NULL,
+    facility_rdid    VARCHAR(40) NOT NULL,
+    kind             VARCHAR(10) NOT NULL CHECK (kind IN ('점검', '보수')),
+    performed_on     DATE NOT NULL,
+    result           VARCHAR(20),
+    title            VARCHAR(200) NOT NULL,
+    detail           TEXT,
+    cost_won         BIGINT,
+    contractor       VARCHAR(100),
+    next_due         DATE,
+    sigungu_code     VARCHAR(5),
+    created_by       INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    created_by_name  VARCHAR(50),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by       INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    updated_by_name  VARCHAR(50),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_facility_maintenance_facility ON facility_maintenance(facility_table, facility_rdid, performed_on DESC);
+CREATE INDEX IF NOT EXISTS idx_facility_maintenance_due ON facility_maintenance(sigungu_code, next_due) WHERE next_due IS NOT NULL;

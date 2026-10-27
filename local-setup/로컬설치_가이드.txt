@@ -1,0 +1,274 @@
+========================================================
+ 도로대장 시스템 — 다른 PC(로컬)에 설치하기
+========================================================
+대상  : 개발·시연·검수용 Windows PC (Windows 10/11)
+구조  : 브라우저 → Node.js(8080) → PostgreSQL(Docker 컨테이너, 5433)
+작성일: 2026-10-27
+
+※ 이 문서는 "내 PC에 따로 설치해서 써 보는" 경우만 다룬다.
+   화성시 등 운영 서버(IIS·pm2·HTTPS) 배포는 별개 문서다 → ..\deploy\서버배포_가이드.txt
+   (두 문서의 파일은 섞이지 않는다: 이 폴더 local-setup\ = 로컬용, deploy\ = 서버용)
+
+
+--------------------------------------------------------
+0. 이 폴더(local-setup)에 든 파일
+--------------------------------------------------------
+  로컬설치_가이드.txt   이 문서
+  install-local.bat     자동 설치(더블클릭). 실제 작업은 install-local.ps1
+  install-local.ps1     DB 컨테이너 → 스키마 → .env → npm → 관리자 계정까지 한 번에
+  env.local.template    server\.env 템플릿(자동 설치가 값을 채워 사용)
+  start-dev.bat         실행: DB 컨테이너 시작 + 서버 시작
+  backup-db.bat         백업: DB 덤프 + 업로드 파일 복사 → backups\날짜_시각\
+  make-package.bat/.ps1 다른 PC로 옮길 "깨끗한 설치용 ZIP" 만들기 (-WithData 로 자료 포함)
+  restore-data.bat/.ps1 백업·패키지의 자료를 이 PC의 DB·uploads 로 복원
+
+
+--------------------------------------------------------
+1. 준비물 (새 PC에 먼저 설치)
+--------------------------------------------------------
+  1) Node.js  LTS (18 이상)            https://nodejs.org
+       확인: PowerShell 에서  node -v
+  2) Docker Desktop                     https://www.docker.com/products/docker-desktop
+       설치 후 한 번 실행해 두고, 고래 아이콘이 멈출 때까지 기다린다(엔진 시작).
+       (Windows 에서 WSL2 설치를 요구하면 안내대로 설치 후 재부팅)
+  3) 인터넷 연결 — 최초 설치(npm, PostgreSQL 이미지 내려받기)와 사용 중
+       지도·라이브러리(CDN)에 필요하다. 폐쇄망 PC 는 서버배포_가이드 9번 참고.
+  4) VWorld 지도 키 — 이 PC 전용으로 새로 발급 (아래 3번)
+  5) 프로젝트 파일 — 이 폴더가 들어 있는 road-ledger-app 전체
+       · 개발 PC 에서 make-package.bat 으로 만든 ZIP 을 풀거나(권장)
+       · 프로젝트 폴더를 통째로 복사. 단 아래는 복사하지 말 것
+           server\node_modules\  (새 PC 에서 설치)
+           server\.env           (PC 전용 비밀번호·키)
+           server\uploads\ 안의 파일 (자료는 7번 참고)
+       복사 위치 예: D:\road-ledger-app   (경로에 한글·공백이 없는 편이 안전)
+
+
+--------------------------------------------------------
+2. A. 자동 설치 (권장)
+--------------------------------------------------------
+  1) 프로젝트 폴더의 local-setup\install-local.bat 을 더블클릭
+       (Docker Desktop 이 실행 중이어야 한다)
+  2) 관리자 아이디와 비밀번호(8자 이상)를 묻는다. 비밀번호는 화면에 보이지 않는다.
+  3) 끝나면 "설치 완료" 가 뜬다. 지도 키는 3번에서 따로 넣는다.
+
+  자동 설치가 하는 일
+    - 컨테이너 road-ledger-pg 생성(PostgreSQL 16, 포트 5433, 비밀번호 무작위 생성)
+        · 이미 같은 이름의 컨테이너가 있으면 지우지 않고 그대로 쓴다(데이터 보존)
+        · DB 데이터는 도커 볼륨(road-ledger-pg-data)에 저장된다
+    - server\db\schema.sql, gov_facility_schema.sql 적용 (한글 깨짐 방지 UTF-8 고정)
+    - server\.env 생성 (SESSION_SECRET 무작위). 이미 있으면 덮어쓰지 않는다
+    - npm ci(없으면 npm install) 로 패키지 설치
+    - 관리자 계정 생성. ※ 다시 실행해 같은 아이디를 넣으면 그 계정의 비밀번호가 바뀐다
+
+  옵션 (install-local.bat 뒤에 붙인다)
+    -PgPort 5434          DB 포트가 이미 쓰이고 있을 때
+    -AppPort 8090         앱 포트가 이미 쓰이고 있을 때 (접속 주소도 바뀜)
+    -Container 이름       컨테이너 이름 변경 (이때 start-dev.bat, backup-db.bat 의
+                          CONTAINER 값도 같이 바꿀 것)
+    -VworldKey 키값       지도 키를 설치 때 바로 넣기
+    -Force                기존 server\.env 를 새로 만듦(이전 파일은 .env.bak 으로 보관)
+    -SkipNpm              npm 설치 건너뛰기
+    예) local-setup\install-local.bat -PgPort 5434 -AppPort 8090
+
+  PowerShell 에서 "스크립트 실행이 비활성화" 오류가 나면 .bat 으로 실행한다
+  (.bat 이 -ExecutionPolicy Bypass 로 호출한다).
+
+
+--------------------------------------------------------
+3. VWorld 지도 키 (지도가 안 뜨는 가장 흔한 원인)
+--------------------------------------------------------
+  VWorld 키는 "서비스 URL" 에 잠겨 있어서, 다른 PC·서버용 키를 가져오면
+  지도가 안 뜬다(401/403). 이 PC 용으로 새로 발급받는다.
+
+  1) https://www.vworld.kr 개발자센터 → 인증키 발급
+       서비스 URL:  http://localhost      (포트는 적지 않아도 된다)
+  2) 발급받은 키를 server\.env 에 입력
+       VWORLD_API_KEY=발급받은키
+       VWORLD_REFERER=http://localhost/    ← 키 발급 때 등록한 URL 과 같게
+  3) 서버 재시작 (start-dev.bat 창에서 Ctrl+C 후 다시 실행)
+
+  ※ 다른 PC 에서 http://그PC의IP:8080 으로 접속해 쓸 때는 접속 주소가 달라지므로
+     그 주소로 등록한 키/Referer 가 따로 필요하다(서버배포_가이드 8번과 같은 원리).
+  ※ 키는 개인 정보다. 메신저·문서에 붙여넣지 말고 .env 에만 둔다(.env 는 git 제외).
+
+
+--------------------------------------------------------
+4. 실행과 접속
+--------------------------------------------------------
+  실행 : local-setup\start-dev.bat 더블클릭
+         (DB 컨테이너 시작 → 서버 시작. 이 검은 창을 닫으면 서버도 꺼진다)
+  접속 : 브라우저에서 http://localhost:8080   (-AppPort 를 줬다면 그 포트)
+  종료 : 서버 창에서 Ctrl+C (DB 컨테이너는 켜진 채여도 무방. 끄려면 docker stop road-ledger-pg)
+
+  PC 를 재부팅하면: Docker Desktop 이 켜진 뒤 start-dev.bat 을 다시 실행한다.
+  (컨테이너는 restart 정책 unless-stopped 로 만들어져, 직접 멈추지 않았다면 Docker 가 켜질 때 DB 도 같이 올라온다.
+   start-dev.bat 이 어차피 docker start 를 해 주므로 신경 쓰지 않아도 된다)
+
+
+--------------------------------------------------------
+5. B. 수동 설치 (자동 설치가 안 될 때 / 과정을 직접 보고 싶을 때)
+--------------------------------------------------------
+  자동 설치가 하는 일을 손으로 하는 순서다. PowerShell 기준.
+
+  [1] DB — 방법 1: Docker (자동 설치와 동일)
+      docker run -d --name road-ledger-pg --restart unless-stopped -p 5433:5432 `
+        -e POSTGRES_USER=road_ledger_app -e POSTGRES_PASSWORD=<비밀번호> -e POSTGRES_DB=road_ledger `
+        -v road-ledger-pg-data:/var/lib/postgresql/data postgres:16-alpine
+
+      스키마 적용 (호스트에 psql 이 없어도 됨 — 컨테이너 안의 psql 사용):
+      docker cp server\db\schema.sql road-ledger-pg:/tmp/schema.sql
+      docker cp server\db\gov_facility_schema.sql road-ledger-pg:/tmp/gov.sql
+      docker exec -e PGCLIENTENCODING=UTF8 road-ledger-pg psql -U road_ledger_app -d road_ledger -f /tmp/schema.sql
+      docker exec -e PGCLIENTENCODING=UTF8 road-ledger-pg psql -U road_ledger_app -d road_ledger -f /tmp/gov.sql
+
+  [1'] DB — 방법 2: Docker 없이 PostgreSQL 직접 설치
+      PostgreSQL 16 이상을 설치한 뒤(설치 시 정한 postgres 비밀번호 기억) DB·계정 생성:
+        & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -h localhost
+          CREATE USER road_ledger_app WITH PASSWORD '<비밀번호>';
+          CREATE DATABASE road_ledger OWNER road_ledger_app;
+      스키마 적용 (반드시 인코딩 지정. 안 하면 한글이 깨져 "UHC" 오류가 난다):
+        $env:PGCLIENTENCODING = "UTF8"
+        & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -h localhost -p 5432 -U road_ledger_app -d road_ledger -f server\db\schema.sql
+        & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -h localhost -p 5432 -U road_ledger_app -d road_ledger -f server\db\gov_facility_schema.sql
+      이 경우 .env 의 PGPORT 는 5432 로 쓰고, start-dev.bat 은 Docker 컨테이너를 찾다가 멈추므로
+      쓰지 말고 server 폴더에서 직접 실행한다:  cd server ; npm start
+
+  [2] 환경설정: local-setup\env.local.template 을 server\.env 로 복사한 뒤
+      @@로 감싼 자리(@@PG_PASSWORD@@ 등)를 모두 실제 값으로 바꾼다.
+      SESSION_SECRET 은 아무 무작위 문자열(32자 이상)로.
+
+  [3] 패키지 + 관리자 계정
+      cd server
+      npm ci
+      node db/seed-admin.js <아이디> <비밀번호(8자 이상)> <표시이름>
+
+  [4] 실행: npm start  →  http://localhost:8080
+
+
+--------------------------------------------------------
+6. 로그인 계정 관리
+--------------------------------------------------------
+  - 위에서 만든 관리자 계정으로 로그인 → 관리 콘솔에서 사용자 계정을 만든다.
+  - 시군구 관할을 지정하려면: node db/seed-admin.js <아이디> <비밀번호> <표시이름> <시군구코드> <시군구명>
+    (코드를 생략하면 전체 시군구를 보는 계정)
+  - 비밀번호를 잊었으면 같은 명령을 새 비밀번호로 다시 실행하면 바뀐다.
+  - "1234" 같은 쉬운 비밀번호는 쓰지 않는다. 실제 자료를 올릴 PC 라면 더욱.
+
+
+--------------------------------------------------------
+7. 자료(데이터) 옮기기 — 기존 PC 의 노선·시설물·도면을 새 PC 에서 그대로 보고 싶을 때
+--------------------------------------------------------
+  자료는 두 곳에 있다: ① DB(노선·시설물·계정·이력)  ② server\uploads\ (도면·사진·PDF)
+  ※ uploads 는 수 GB 가 될 수 있다(개발 PC 는 약 3.5GB). ZIP 에 같이 넣으면 매우 크므로
+     외장하드·네트워크 복사가 낫다.
+  ※ 실제 자료가 담긴 파일이므로 보안 규정에 맞게 취급하고, 옮긴 뒤 임시 사본은 지운다.
+
+  [방법 1] 한 번에 (자료가 크지 않을 때)
+    기존 PC : local-setup\make-package.bat -WithData   → local-setup\dist\*.zip
+    새 PC   : ZIP 풀기 → install-local.bat → restore-data.bat (YES 입력)
+
+  [방법 2] 백업 폴더로 (자료가 클 때 권장)
+    기존 PC : local-setup\backup-db.bat  → backups\yyyyMMdd_HHmmss\ (road_ledger.dump + uploads\)
+    그 폴더를 새 PC 로 복사
+    새 PC   : (코드는 ZIP 으로 따로) install-local.bat 으로 설치한 뒤
+              local-setup\restore-data.bat -BackupDir <복사한 백업 폴더>
+
+  복원 주의
+    - 복원은 새 PC 의 DB 에 있던 같은 이름 테이블을 덮어쓴다(확인 질문에 YES 를 입력해야 진행).
+    - 복원 후에는 "기존 PC 의 계정·비밀번호" 로 로그인한다(설치 때 만든 관리자 계정은 사라짐).
+    - 서버가 켜져 있으면 복원 후 한 번 껐다 켠다.
+    - 복원 후 지도는 이 PC 용 VWorld 키(3번)가 있어야 보인다. .env 는 복원 대상이 아니다.
+
+
+--------------------------------------------------------
+8. 백업
+--------------------------------------------------------
+  local-setup\backup-db.bat 더블클릭 → backups\yyyyMMdd_HHmmss\ 에
+    road_ledger.dump (pg_dump 사용자 지정 형식) + uploads\ (임시 폴더 제외)
+  14일이 지난 날짜 폴더는 자동 삭제(파일 안의 KEEP_DAYS 로 조정).
+  매일 자동 백업은 Windows "작업 스케줄러" 에 이 bat 을 등록한다.
+  백업 폴더는 같은 PC 가 아닌 다른 디스크·PC 에도 복사해 둔다.
+
+
+--------------------------------------------------------
+9. 새 버전 코드 반영 (업데이트)
+--------------------------------------------------------
+  1) 반드시 먼저 backup-db.bat 으로 백업
+  2) 개발 PC 에서 만든 새 ZIP 의 내용을 기존 폴더에 덮어쓴다
+       (server\.env, server\uploads, server\node_modules 는 ZIP 에 없으니 그대로 남는다)
+  3) install-local.bat 을 다시 실행
+       - 스키마는 IF NOT EXISTS 라 기존 자료를 건드리지 않고 새 테이블·컬럼만 추가한다
+       - ⚠ 관리자 아이디/비밀번호를 다시 물으며, 같은 아이디면 그 비밀번호로 바뀐다.
+         비밀번호를 바꾸고 싶지 않으면 서버 폴더에서 직접:  cd server ; npm ci
+         (스키마만 갱신하려면 5번 [1]의 docker cp / exec 두 줄을 다시 실행)
+  4) start-dev.bat 으로 서버 재시작
+
+
+--------------------------------------------------------
+10. 완전히 지우고 다시 설치
+--------------------------------------------------------
+  ⚠ 자료가 모두 사라진다. 필요하면 먼저 backup-db.bat.
+    docker rm -f road-ledger-pg
+    docker volume rm road-ledger-pg-data        (예전 방식으로 만든 컨테이너는 볼륨 이름이 다를 수 있음: docker volume ls)
+    Remove-Item server\.env, server\node_modules -Recurse -Force
+    (업로드 파일까지 지우려면 server\uploads\ 안의 내용도 삭제)
+  그다음 install-local.bat 을 다시 실행한다.
+
+
+--------------------------------------------------------
+11. 문제가 생겼을 때
+--------------------------------------------------------
+  [Docker 엔진에 연결할 수 없습니다]
+    Docker Desktop 이 완전히 켜지지 않은 것. 시작 메뉴에서 실행하고 1~2분 기다린 뒤 재시도.
+
+  [포트 5433 / 8080 이 이미 사용 중]
+    다른 프로그램이 쓰는 중. 점유 프로세스 확인:
+      Get-NetTCPConnection -LocalPort 8080 -State Listen | Select OwningProcess
+      Get-Process -Id <OwningProcess>
+    PC 마다 충돌하는 포트가 다르다. 설치 때 -PgPort / -AppPort 로 비는 포트를 고르면 된다
+    (이미 설치했다면 server\.env 의 PORT / PGPORT 를 고치고 컨테이너를 해당 포트로 다시 만든다).
+
+  [지도가 안 나오고 하얀 화면 / 401·403]
+    VWorld 키 문제가 대부분(3번). F12 → Network 탭에서 /api/vworld 응답을 본다.
+    키 비어 있음 · 다른 PC 키 · VWORLD_REFERER 가 등록한 URL 과 다름 중 하나다.
+
+  [로그인이 안 됨]
+    - 비밀번호 확인. 모르면 6번처럼 seed-admin 을 다시 실행해 새 비밀번호로 덮어쓴다.
+    - 같은 아이디로 5회 연속 틀리면 10분간 로그인이 잠긴다. 기다리거나 서버를 재시작하면 풀린다.
+
+  [schema 적용 중 "인코딩 UHC" 오류]
+    한글 Windows 의 psql 클라이언트 인코딩 문제. $env:PGCLIENTENCODING = "UTF8" 후 다시 실행
+    (자동 설치는 이미 고정해 두었다. 수동 설치 방법 2 에서만 해당).
+
+  [npm install 이 실패 / sharp 오류]
+    Node.js 버전이 너무 낮거나(18 미만) 인터넷이 막힌 경우. node -v 확인, 사내 프록시 환경이면
+    npm config set proxy / https-proxy 설정 후 재시도.
+
+  [DWG 도면 미리보기가 안 나옴]
+    server\vendor\libredwg-win64\dwg2dxf.exe 는 Windows 용이다. 이 폴더가 ZIP 에 포함됐는지 확인.
+    (원본 다운로드는 항상 가능. 미리보기만 해당)
+
+  [서버 창이 바로 닫힘]
+    start-dev.bat 을 탐색기가 아니라 PowerShell 에서 실행해 오류 메시지를 읽는다:
+      cd local-setup ; .\start-dev.bat
+
+  [install-local.bat 이 중간에 멈추고 한글이 깨져 보임]
+    정상 동작에는 영향 없는 화면 표시 문제. 콘솔 글꼴을 "맑은 고딕" 등으로 바꾸거나
+    Windows Terminal 에서 실행한다.
+
+
+--------------------------------------------------------
+12. 로컬 PC 에서 하지 않는 것 / 서버와의 차이
+--------------------------------------------------------
+                   로컬 PC (이 문서)              운영 서버 (deploy\서버배포_가이드.txt)
+  접속 방식        http://localhost:8080          IIS 리버스프록시(11800/HTTPS) → Node 3000
+  DB               Docker PostgreSQL 5433         서버에 설치된 PostgreSQL 5432
+  프로세스 유지    start-dev.bat (창을 닫으면 꺼짐) pm2 + 재부팅 자동시작
+  화면 파일        public\ (원본)                 public-dist\ (난독화 빌드), SERVE_DIR=public-dist
+  환경파일         server\.env (자동 생성)        server\.env.production → .env
+  HTTPS            사용 안 함                     쿠키 Secure, ALLOWED_ORIGINS 등 설정
+  백업             backup-db.bat                  deploy\backup-prod.ps1 + 작업 스케줄러
+  VWorld 키        http://localhost 로 등록       https://서버주소:포트 로 등록
+
+  로컬에서 테스트한 뒤 서버에 올릴 때는 로컬 .env / node_modules / uploads 를 올리지 않는다.
+  서버 배포 절차는 ..\deploy\서버배포_가이드.txt 를 따른다.
