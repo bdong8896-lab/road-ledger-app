@@ -248,6 +248,10 @@
     server\vendor\libredwg-win64\dwg2dxf.exe 는 Windows 용이다. 이 폴더가 ZIP 에 포함됐는지 확인.
     (원본 다운로드는 항상 가능. 미리보기만 해당)
 
+  [start-dev.bat 이 "'t'은(는) 인식할 수 없는..." 같은 오류를 내며 실행되지 않음]
+    .bat 파일을 한글이 든 UTF-8 + LF 줄바꿈으로 저장하면 cmd 가 파일을 잘못 읽는다. 이 폴더의 .bat 은 영문(ASCII) + CRLF 로 만들어져 있으니
+    수정할 때도 한글을 넣지 말고 CRLF 로 저장한다(.gitattributes 가 git 에서도 CRLF 로 유지한다).
+
   [서버 창이 바로 닫힘]
     start-dev.bat 을 탐색기가 아니라 PowerShell 에서 실행해 오류 메시지를 읽는다:
       cd local-setup ; .\start-dev.bat

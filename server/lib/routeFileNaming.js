@@ -30,16 +30,17 @@ function parseStationFilename(originalName, sectionLengthKm) {
 // "도면종류" 탭이 도로 탭(500m 구간 평면도/용지도)을 포함하는 상위 개념으로
 // 바뀌면서, 파일 하나가 "평면도/용지도/매설물도/구조물도" 중 어디에 속하는지
 // 판정하는 규칙이 필요해졌다. 실사용자 확인 기준:
-//   - "도로" 카테고리(500m 단위, seg_variant 있음): P=평면도, Y=용지도
-//     (500_U 폴더도 실제 납품에 존재하지만 대응되는 유형이 아직 없어 미분류로 둔다)
+//   - "도로" 카테고리(500m 단위, seg_variant 있음): P=평면도, Y=용지도, U=매설물도
+//     (500_U 폴더 = 매설물도: 2026-10-27 사용자 확인)
 //   - "도면종류" 카테고리(노선 전체 단위 파일, 파일명 접두어로 구분):
 //     TOP=지적도(용지 관련 내용이라 "용지도"로 묶음; 접두어 없는 000501.DXF 형태도 TOP), CON=노선 전체 평면도
-//     ("평면도"로 묶음). 매설물도/구조물도는 아직 실제로 확인된 파일명 규칙이
+//     ("평면도"로 묶음). 구조물도는 아직 실제로 확인된 파일명 규칙이
 //     없어 항상 미분류(null) — 탭 구조는 만들어두되 채워지는 파일은 없다.
 function classifyDrawingType(file) {
     if (file.file_category === '도로') {
         if (file.seg_variant === 'P') return '평면도';
         if (file.seg_variant === 'Y') return '용지도';
+        if (file.seg_variant === 'U') return '매설물도';
         return null;
     }
     if (file.file_category === '도면종류') {
