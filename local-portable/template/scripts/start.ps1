@@ -25,11 +25,17 @@ try { $pgRoot = Get-PgRoot $root } catch { Write-Host ""; Write-Host "  실패: 
 $pgBin   = Join-Path $pgRoot 'pg\bin'
 $pgdata  = Join-Path $pgRoot 'data\pgdata'
 $pgLog   = Join-Path $pgRoot 'data\pg.log'
+$pidFile = Join-Path $data 'server.pid'   # 실행 관리 창(launcher.ps1)이 이 프로세스가 살아 있는지 보는 데 쓴다
+# 실행 관리 창이 띄운 경우(RL_GUI): 입력창을 띄울 수 없으므로 값은 환경변수로 받고, 없으면 묻지 않고 실패로 끝낸다
+$guiMode = [bool]$env:RL_GUI
+if (-not $AdminUser -and $env:RL_ADMIN_USER) { $AdminUser = $env:RL_ADMIN_USER }
+if (-not $AdminPassword -and $env:RL_ADMIN_PASSWORD) { $AdminPassword = $env:RL_ADMIN_PASSWORD }
+if (-not $PSBoundParameters.ContainsKey('VworldKey') -and $null -ne $env:RL_VWORLD_KEY) { $VworldKey = $env:RL_VWORLD_KEY.Trim(); $vworldFromEnv = $true } else { $vworldFromEnv = $false }
 
 function Info($m) { Write-Host $m }
 function Ok($m)   { Write-Host "  OK  $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "  !!  $m" -ForegroundColor Yellow }
-function Fail($m) { Write-Host ""; Write-Host "  실패: $m" -ForegroundColor Red; Write-Host ""; Remove-PgRoot; exit 1 }
+function Fail($m) { Write-Host ""; Write-Host "  실패: $m" -ForegroundColor Red; Write-Host ""; Remove-Item $pidFile -Force -ErrorAction SilentlyContinue; Remove-PgRoot; exit 1 }
 function RandomText($len) { $c = (48..57) + (65..90) + (97..122); -join (1..$len | ForEach-Object { [char]($c | Get-Random) }) }
 function Run($file, $argList) {
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
@@ -65,6 +71,9 @@ foreach ($f in @($node, (Join-Path $pgBin 'pg_ctl.exe'), (Join-Path $pgBin 'init
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($isAdmin) { Fail "관리자 권한으로 실행되어 있습니다. PostgreSQL 은 관리자 권한으로는 실행되지 않습니다.`n  '관리자 권한으로 실행'을 하지 말고, start.bat 을 그냥 더블클릭하세요." }
 
+New-Item -ItemType Directory -Force -Path $data | Out-Null
+[System.IO.File]::WriteAllText($pidFile, "$PID")
+
 # 인터넷에서 받은 ZIP 을 풀면 실행 파일에 '차단' 표시가 붙어 경고창이 뜰 수 있다 — 처음 한 번만 풀어 준다.
 $unblockMark = Join-Path $data '.unblocked'
 if (-not (Test-Path $unblockMark)) {
@@ -74,8 +83,17 @@ if (-not (Test-Path $unblockMark)) {
     New-Item -ItemType File -Force -Path $unblockMark | Out-Null
 }
 
+# ---- 기본값 파일(defaults.env): 패키지를 만들 때 넣어 둔 VWorld 키·기본 관리자 계정. 없으면 아래에서 직접 물어본다.
+$defaults = @{}
+$defFile = Join-Path $PSScriptRoot 'defaults.env'
+if (Test-Path $defFile) {
+    foreach ($line in [System.IO.File]::ReadAllLines($defFile, [System.Text.Encoding]::UTF8)) {
+        if ($line -match '^\s*([A-Z_]+)\s*=\s*(.*)$') { $defaults[$Matches[1]] = $Matches[2].Trim() }
+    }
+}
+
 # ---- 1. 처음 실행이면 DB 만들기
-$firstRun = -not (Test-Path (Join-Path $pgdata 'PG_VERSION'))
+$firstRun =-not (Test-Path (Join-Path $pgdata 'PG_VERSION'))
 if ($firstRun) {
     Info ""
     Info "[처음 실행] 데이터베이스를 준비합니다. 1~2분 걸립니다."
@@ -109,8 +127,13 @@ if ($firstRun) {
     }
     Ok "테이블 만들기(스키마 적용)"
 
-    # VWorld 키(없어도 실행은 되지만 지도가 안 뜬다)
-    if ($null -eq $VworldKey) {
+    # VWorld 키(없어도 실행은 되지만 지도가 안 뜬다) — 명령줄 값 > defaults.env > 직접 입력
+    # (문자열 매개변수의 기본값 $null 은 빈 문자열로 바뀌므로, "-VworldKey 를 줬는지"는 $PSBoundParameters 로 판단한다)
+    $vworldGiven = $PSBoundParameters.ContainsKey('VworldKey') -or $vworldFromEnv
+    if (-not $vworldGiven -and $defaults['VWORLD_API_KEY']) { $VworldKey = $defaults['VWORLD_API_KEY']; $vworldGiven = $true; Ok "VWorld 키: 패키지에 내장된 키를 사용합니다" }
+    $vworldReferer = if ($defaults['VWORLD_REFERER']) { $defaults['VWORLD_REFERER'] } else { 'http://localhost/' }
+    if (-not $vworldGiven -and $guiMode) { $VworldKey = ''; $vworldGiven = $true }
+    if (-not $vworldGiven) {
         Info ""
         Info "  VWorld 지도 키를 입력하세요. 이 PC 용으로 발급받은 키(서비스 URL: http://localhost)입니다."
         $VworldKey = (Read-Host '  키 (지금 없으면 그냥 Enter — 나중에 app\server\.env 에 넣으면 됩니다)').Trim()
@@ -126,7 +149,7 @@ PGPASSWORD=$dbPass
 SESSION_SECRET=$(RandomText 48)
 SESSION_MAX_AGE_HOURS=8
 VWORLD_API_KEY=$VworldKey
-VWORLD_REFERER=http://localhost/
+VWORLD_REFERER=$vworldReferer
 ITS_CCTV_API_KEY=
 UPLOAD_DIR=../../data/uploads
 SERVE_DIR=public-dist
@@ -137,7 +160,11 @@ ADMIN_REAUTH_MINUTES=15
     Ok "설정 파일 만들기 (app\server\.env)"
     if (-not $VworldKey) { Warn "VWorld 키가 비어 있어 지도가 보이지 않습니다. 키를 받으면 app\server\.env 의 VWORLD_API_KEY= 뒤에 넣고 다시 실행하세요." }
 
-    # 관리자 계정
+    # 관리자 계정 — 명령줄 값 > defaults.env(묻지 않고 바로 생성) > 직접 입력
+    $adminFromDefaults = $false
+    if (-not $AdminUser -and $defaults['ADMIN_USER']) { $AdminUser = $defaults['ADMIN_USER'] }
+    if (-not $AdminPassword -and $defaults['ADMIN_PASSWORD']) { $AdminPassword = $defaults['ADMIN_PASSWORD']; $adminFromDefaults = $true }
+    if ($guiMode -and (-not $AdminUser -or -not $AdminPassword)) { Fail "관리자 계정 정보가 없습니다. 실행 관리 창에서 다시 ‘서버 시작’을 눌러 입력하세요." }
     if (-not $AdminUser) {
         Info ""
         $AdminUser = (Read-Host '  관리자 아이디 (기본 admin)').Trim()
@@ -147,7 +174,9 @@ ADMIN_REAUTH_MINUTES=15
         $sec = Read-Host '  관리자 비밀번호 (8자 이상, 입력은 화면에 보이지 않음)' -AsSecureString
         $AdminPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
     }
-    if ($AdminPassword.Length -lt 8) { Fail "비밀번호는 8자 이상이어야 합니다. start.bat 을 다시 실행하면 이어서 진행됩니다." }
+    if ($adminFromDefaults) {
+        if ($AdminPassword.Length -lt 8) { Warn "기본 관리자 비밀번호가 8자 미만입니다. 이 PC 안에서만 접속되지만, 다른 용도로 쓰기 전에 꼭 바꾸세요." }
+    } elseif ($AdminPassword.Length -lt 8) { Fail "비밀번호는 8자 이상이어야 합니다. start.bat 을 다시 실행하면 이어서 진행됩니다." }
     Push-Location $server
     try {
         $r = Run $node @('db/seed-admin.js', $AdminUser, $AdminPassword, $AdminUser)
@@ -181,14 +210,14 @@ if ($st.Code -ne 0) {
 Ok "DB 실행 중 (포트 $PgPort)"
 
 if (PortInUse $AppPort) {
-    Fail "앱 포트 $AppPort 를 다른 프로그램이 사용 중입니다. 이미 이 프로그램이 실행 중인지 확인하세요(열려 있는 검은 창).`n  포트를 바꾸려면 app\server\.env 의 PORT 를 고치세요."
+    Fail "앱 포트 $AppPort 를 다른 프로그램이 사용 중입니다. 이미 이 프로그램이 실행 중인지(열려 있는 창) 확인하세요.`n  포트를 바꾸려면 app\server\.env 의 PORT 를 고치세요."
 }
 
 # ---- 4. 서버 시작 (이 창에서 계속 실행)
 $url = "http://localhost:$AppPort"
 Info ""
 Info "  서버를 시작합니다: $url"
-Info "  끝내려면 이 창에서 Ctrl+C 를 누르세요. (창만 닫으면 DB 가 남습니다 — stop.bat 으로 끄세요)"
+if (-not $guiMode) { Info "  끝내려면 이 창에서 Ctrl+C 를 누르세요. (창만 닫으면 DB 가 남습니다 — tools\stop.bat 으로 끄세요)" }
 Info ""
 if (-not $NoBrowser) {
     $opener = "for(`$i=0;`$i -lt 60;`$i++){ try { `$c=New-Object Net.Sockets.TcpClient('127.0.0.1',$AppPort); `$c.Close(); break } catch { Start-Sleep 1 } }; Start-Process '$url'"
@@ -199,6 +228,7 @@ Push-Location $server
 try {
     & $node 'index.js'
 } finally {
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
     Pop-Location
     Info ""
     Info "  서버가 종료되었습니다. DB 를 끕니다..."

@@ -79,6 +79,32 @@ try {
     & robocopy (Join-Path $here 'template') $stage /E /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { Fail "template 복사 오류(robocopy $LASTEXITCODE)" }
     Copy-Item (Join-Path $here '포터블_사용법.txt') (Join-Path $stage 'README.txt') -Force
+    # 아이콘 파일(실행 관리 창이 머리글·창 아이콘으로 쓴다)
+    Copy-Item (Join-Path $here 'assets\app.ico') (Join-Path $stage 'scripts\app.ico') -Force
+    Copy-Item (Join-Path $here 'assets\app-256.png') (Join-Path $stage 'scripts\app-256.png') -Force
+
+    # 실행 파일 RoadLedger.exe — 아이콘이 든 작은 시작 프로그램(콘솔 창 없이 실행 관리 창을 띄운다). .NET Framework 의 csc.exe 로 컴파일한다.
+    $csc = Join-Path $env:windir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if (-not (Test-Path $csc)) { $csc = Join-Path $env:windir 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+    if (-not (Test-Path $csc)) { Fail 'csc.exe(.NET Framework 4)를 찾을 수 없어 RoadLedger.exe 를 만들 수 없습니다.' }
+    $exeOut = Join-Path $stage 'RoadLedger.exe'
+    $cscOut = & $csc /nologo /target:winexe "/out:$exeOut" "/win32icon:$(Join-Path $here 'assets\app.ico')" /codepage:65001 /optimize+ /r:System.Windows.Forms.dll /r:System.dll (Join-Path $here 'launcher\Launcher.cs') 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeOut)) { Fail "RoadLedger.exe 컴파일 실패:`n$($cscOut -join "`n")" }
+    Write-Host "  RoadLedger.exe 생성 ($([math]::Round((Get-Item $exeOut).Length / 1KB)) KB)"
+
+    # 기본값(VWorld 키, 기본 관리자 계정)을 패키지에 내장한다 — defaults.local.env 는 git 에 올리지 않는 로컬 파일이다.
+    # 없으면 처음 실행 때 직접 입력받는 패키지가 된다. 양식: defaults.env.example
+    $defLocal = Join-Path $here 'defaults.local.env'
+    if (Test-Path $defLocal) {
+        Copy-Item $defLocal (Join-Path $stage 'scripts\defaults.env') -Force
+        $dv = @{}
+        foreach ($line in [System.IO.File]::ReadAllLines($defLocal, [System.Text.Encoding]::UTF8)) { if ($line -match '^\s*([A-Z_]+)\s*=\s*(.*)$') { $dv[$Matches[1]] = $Matches[2].Trim() } }
+        $keyShown = if ($dv['VWORLD_API_KEY']) { $dv['VWORLD_API_KEY'].Substring(0, [Math]::Min(8, $dv['VWORLD_API_KEY'].Length)) + '…(내장)' } else { '없음(처음 실행 때 입력)' }
+        $adminShown = if ($dv['ADMIN_USER'] -and $dv['ADMIN_PASSWORD']) { "$($dv['ADMIN_USER']) (비밀번호 내장 — 처음 실행 때 묻지 않고 생성)" } else { '없음(처음 실행 때 입력)' }
+        Write-Host "  기본값 내장: VWorld 키 = $keyShown ; 관리자 계정 = $adminShown"
+    } else {
+        Write-Host "  기본값 없음(defaults.local.env 가 없음): VWorld 키·관리자 계정은 처음 실행 때 직접 입력받습니다." -ForegroundColor Yellow
+    }
 
     Write-Host ""
     Write-Host "폴더 완성: $stage  (전체 $(SizeMB $stage) MB)" -ForegroundColor Green

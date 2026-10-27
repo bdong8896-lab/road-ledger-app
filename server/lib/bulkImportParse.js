@@ -19,6 +19,7 @@ const { parseShp } = require('./shpParser');
 const { detectCrs, reprojectGeometry, KRRIS_REQUIRED_EPSG } = require('./crsRegistry');
 const { getTableLabels } = require('./schemaLabels');
 const { CODEBOOK } = require('./govCodebook');
+const { CODE_ALIASES } = require('./codeAliases');
 
 // KRRIS(국가 도로대장 검수) 사전검사 — 실제 장성군 납품 심사에서 지적된 결함 중
 // 기계적으로 판정할 수 있는 두 가지(C-1, M-1)와, 코드표 대조(V-1)를 미리보기 단계에서 잡는다.
@@ -52,9 +53,13 @@ function codeSetOf(field) {
 }
 
 // DBF가 코드 칸을 숫자형으로 만들면 앞의 0이 사라진다(0401 → 401). 자릿수를 채워 본 값도 같은 코드로 본다.
-function isKnownCode(set, v) {
+function isKnownCode(field, v) {
+    const set = codeSetOf(field);
     const s = typeof v === 'string' ? v.trim() : String(v);
     if (set.has(s)) return true;
+    // 정의서 주석이 인정하는 다른 표기(예: 표지명칭 406 = 40600) — lib/codeAliases.js
+    const alias = CODE_ALIASES[field.toUpperCase()];
+    if (alias && alias[s] && set.has(alias[s])) return true;
     if (typeof v === 'number') {
         for (let len = s.length + 1; len <= 5; len++) if (set.has(s.padStart(len, '0'))) return true;
     }
@@ -292,7 +297,7 @@ async function parseDelivery(extractDir) {
                         rows.forEach((rec, i) => {
                             for (const field of codeFields) {
                                 const v = rec.row[field];
-                                if (isBlank(v) || isKnownCode(codeSetOf(field), v)) continue;
+                                if (isBlank(v) || isKnownCode(field, v)) continue;
                                 const value = typeof v === 'string' ? v.trim() : String(v);
                                 const pkVal = rec.row[layer.pkColumn];
                                 const pk = isBlank(pkVal) ? `(${path.basename(dbfPath)} ${i + 1}번째 행)` : String(pkVal);

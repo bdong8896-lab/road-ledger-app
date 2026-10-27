@@ -4950,7 +4950,7 @@ function initBulkRegister() {
                 <td>${escapeHtml(c.koreanName)}</td>
                 <td>${escapeHtml(c.label)}<span class="kr-field">${escapeHtml(c.field)}</span></td>
                 <td class="kr-num">${c.total.toLocaleString()}</td>
-                <td>${c.values.map((v) => `<span class="kr-code">${escapeHtml(v.value)}<i>×${v.count.toLocaleString()}</i></span>`).join(' ')}${c.distinct > c.values.length ? ` 외 ${c.distinct - c.values.length}종` : ''}</td>
+                <td>${c.values.map((v) => `<span class="kr-code">${escapeHtml(v.value)}<i>${v.count.toLocaleString()}건</i></span>`).join(' ')}${c.distinct > c.values.length ? ` 외 ${c.distinct - c.values.length}종` : ''}</td>
             </tr>`).join('');
         const anyDefect = crsBad || k.nnTotal || codesTotal;
         krrisEl.innerHTML = `
@@ -4971,8 +4971,8 @@ function initBulkRegister() {
             ${hasCodeCheck ? `<div class="kr-item ${codesTotal ? 'fail' : 'pass'}">
                 <i class="fa-solid ${codesTotal ? 'fa-triangle-exclamation' : 'fa-circle-check'}"></i>
                 <div><b>V-1 코드표</b> <span class="kr-msg">${codesTotal ? `코드표에 없는 값 ${codesTotal.toLocaleString()}건` : '이상 없음'}</span>
-                ${codesTotal ? `<div class="kr-sub">공통입력코드정의서(v2.6)의 코드가 아닌 값입니다. 등록은 되지만 원본 수정이 필요한지 확인하세요. 관리기관(MCO)은 대조하지 않습니다.</div>
-                <table class="kr-table"><thead><tr><th>레이어</th><th>항목</th><th>건수</th><th>값</th></tr></thead><tbody>${codeRows}</tbody></table>` : ''}</div>
+                ${codesTotal ? `<div class="kr-sub">공통입력코드정의서(v2.6)의 코드가 아닌 값입니다. 등록은 되지만 원본 수정이 필요한지 확인하세요. 관리기관(MCO)은 대조하지 않으며, 정의서 주석이 인정하는 표기(표지명칭 406 = 40600 등)는 오류로 보지 않습니다.</div>
+                <table class="kr-table"><thead><tr><th>레이어</th><th>항목</th><th>건수</th><th>코드표에 없는 값 (건수)</th></tr></thead><tbody>${codeRows}</tbody></table>` : ''}</div>
             </div>` : ''}
             ${anyDefect ? '<div class="kr-note">등록은 그대로 진행할 수 있습니다. 이 원본을 KRRIS에 제출하면 위 항목이 결함으로 지적됩니다.</div>' : ''}
         `;

@@ -15,7 +15,7 @@ const outDir = path.join(outRoot, '검수프로그램');
 const LIB_FILES = [
     'bulkImportParse.js', 'dbfParser.js', 'shpParser.js', 'crsRegistry.js', 'bulkImportSectors.js',
     'bulkImportAttachments.js', 'bulkImportRank.js', 'routeFileNaming.js', 'zipOpen.js', 'govLayerMap.js', 'schemaLabels.js',
-    'govCodebook.js', // V-1 코드표 대조
+    'govCodebook.js', 'codeAliases.js', // V-1 코드표 대조
 ];
 const MODULES = ['iconv-lite', 'proj4', 'adm-zip'];
 

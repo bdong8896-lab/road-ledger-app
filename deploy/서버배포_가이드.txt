@@ -1238,3 +1238,25 @@ IIS(ARR) 설정 확인 — ⚠ 운영 서버에서 아직 시험하지 못했다
     (lib/govSectionSync.js 와 routes/sections.js 가 public 경로를 고정해 읽고 있었음).
   - 수정: lib/managingAgencies.js 가 SERVE_DIR → public-dist → public 순서로 찾고, 못 찾아도 저장은 계속한다(관리기관 이름만 비우고 로그 1회).
     서버 코드만 바뀌었으므로 서버 재시작(pm2 restart road-ledger)이면 된다. public 을 같이 올려 둔 서버는 영향이 없었다.
+
+40. 코드표 검사(V-1)에서 정의서가 인정하는 표기는 오류로 보지 않도록 보강 — 2026-10-27
+  - 정의서(2025_도로대장공간정보_공통입력코드정의서_v2.6.xlsx) "07.표지" 시트 44.표지명칭 표 오른쪽(F열) 주석: 406 관광지표지→40600, 408 유도표지→40800,
+    411 보행인표지→41100, 415 지점표지→41500 (3자리 코드의 5자리 표기). 장성 납품의 40600(표지 17~38건)이 이 표기라 오류가 아니었다.
+    (같은 열의 "추가" 주석은 v1.9.5 에서 403-1/403-3/403-7/403-8/404-3 을 A·B·C형으로 나눈 코드로, 코드표에 이미 들어 있다.)
+  - lib/codeAliases.js 에 이 별칭을 두고 V-1 검사(lib/bulkImportParse.js)가 코드표와 함께 본다. lib/signNameCodes.js(화면의 표지 명칭 풀이)에도 같은 4개를 추가했다.
+  - 그 결과 장성 2026-08 납품의 V-1 은 48건 → 10건(404-1 8건, 11000-1 2건: 정의서에 없는 코드라 계속 "확인 필요")이 된다.
+  - 서버 코드와 화면이 바뀌었으므로 서버 재시작 + 화면 새로고침(Ctrl+F5, build-dist 후)이 필요하다. 납품 검수 프로그램은 build-portable.js --zip 으로 새로 만들어 배포한다.
+
+41. 포터블 패키지에 VWorld 키·기본 관리자 계정 내장 — 2026-10-27
+  - local-portable\defaults.local.env(git 제외)에 VWORLD_API_KEY/VWORLD_REFERER/ADMIN_USER/ADMIN_PASSWORD 를 두면 build-package.ps1 이 패키지 루트의 defaults.env 로 넣고,
+    처음 실행(start.bat)이 이 값으로 .env 를 만들고 관리자 계정을 묻지 않고 생성한다(명령줄 값 > defaults.env > 직접 입력). 양식: defaults.env.example.
+  - 이 패키지는 키가 들어 있으므로 ZIP 을 공개 저장소·메신저에 올리지 말 것. 운영 서버(IIS)에는 해당 없음(서버는 server\.env.production 을 쓴다).
+
+42. 포터블 패키지를 "프로그램처럼" — RoadLedger.exe 와 실행 관리 창 — 2026-10-27
+  - 루트에는 RoadLedger.exe(아이콘 내장)만 보인다. 더블클릭하면 콘솔 창 없이 "도로대장 시스템" 창이 뜨고 [서버 시작] [서버 종료] [브라우저에서 열기] [백업] [복원]
+    [자료 폴더 열기] [프로그램 종료] 버튼과 상태 표시(중지/진행 중/실행 중)·진행 로그가 있다. 기존 start/stop/backup/restore .bat 은 tools\ 로 옮겨 문제 해결용으로만 둔다.
+  - 구성: local-portable\launcher\Launcher.cs → build-package.ps1 이 csc.exe(.NET Framework 4)로 RoadLedger.exe 를 컴파일(/win32icon:assets\app.ico). exe 는 같은 폴더의
+    scripts\launcher.ps1(WinForms 창)을 숨겨서 실행하고, 폴더당 하나만 실행되게 막는다. 실제 DB·서버 실행은 scripts\start.ps1 이 숨김 프로세스로 맡는다(data\server.pid, server.out.log).
+  - 아이콘은 assets\make-icon.ps1 로 그린 app.ico (모양을 바꿀 때만 다시 실행). 기본값 파일(VWORLD 키·기본 계정)은 scripts\defaults.env 로 들어간다(§41).
+  - 시험: scripts\launcher.ps1 -SelfTest -PgPort <p> -AppPort <p> -ShotDir <폴더> 가 시작→실행 확인→백업→종료를 자동으로 돌리고 화면을 PNG 로 저장한다.
+  - 주의: 서명되지 않은 exe 가 PowerShell 을 숨겨 실행하므로 일부 백신/EDR 이 의심할 수 있다. 막히면 폴더 예외 등록을 요청하거나 tools\start.bat 로 콘솔 실행한다.

@@ -28,6 +28,8 @@ local-setup/data/
 # 포터블 로컬 패키지 빌드 결과(수백 MB)와 내려받은 PostgreSQL 바이너리 ZIP
 local-portable/dist/
 local-portable/cache/
+# 포터블 패키지에 내장할 VWorld 키·기본 관리자 계정(로컬 전용, 양식은 defaults.env.example)
+local-portable/defaults.local.env
 /server.out.log
 /server.err.log
 server/server.out.log
