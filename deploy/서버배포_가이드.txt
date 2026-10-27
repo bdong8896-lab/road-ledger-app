@@ -1224,3 +1224,17 @@ IIS(ARR) 설정 확인 — ⚠ 운영 서버에서 아직 시험하지 못했다
   - 수정: 숫자만으로 된 노선·구간 도면(5~6자리, 예: 000501.DXF, 00802.DXF)도 용지도로 분류한다. DB 변경 없음, 이미 올라간 파일도 그대로 보이게 된다.
     서버 코드만 바뀌었으므로 서버 재시작(pm2 restart road-ledger)이면 된다.
   - 500_U 폴더 도면(예: 000501100000U.dxf)은 매설물도다(사용자 확인). 도면 탭의 "매설물도" 하위탭에 표시되도록 분류에 추가했다(서버 재시작만 필요, DB 변경 없음).
+
+38. 설치 없는(포터블) 로컬 실행 패키지 추가 — 2026-10-27
+  - 로컬 PC 용 선택지로 local-portable\ 을 추가했다(운영 서버 배포와 무관): build-package.ps1 이 node.exe + PostgreSQL 바이너리 + 앱 + 운영용 node_modules 를
+    한 폴더(RoadLedger-Local)로 묶고, 받는 PC 는 압축을 풀어 start.bat 만 실행한다(Docker·관리자 권한 불필요).
+  - 서버 코드 변경 1건: server/index.js 가 환경변수 HOST 를 지원한다(예: HOST=127.0.0.1 이면 그 주소로만 받음). 비우면 기존과 같다 — 운영 서버 설정은 바꿀 필요 없다.
+  - 로컬 복원 스크립트(local-setup\restore-data.ps1, 포터블 restore.bat)는 DB 에 절대경로로 저장된 파일 경로(route_files 등)를 복원한 PC 의 uploads 폴더 기준으로 보정한다.
+    운영 서버를 다른 위치로 옮기거나 백업을 다른 경로에 복원할 때도 같은 문제가 생긴다: DB 의 stored_path 가 옛 경로를 가리키면 파일이 "없음"으로 나온다.
+
+39. 관리기관 이름표(managing_agencies.json)를 public 이 없는 배포에서도 찾도록 수정 — 2026-10-27
+  - 증상: 화면 폴더를 난독화본(public-dist)만 올린 배포(이 가이드 §2 대로 public 은 안 올림)에서 일괄등록 확정이 노선마다
+    "저장 중 오류가 발생했습니다"로 실패했다. 서버 로그: ENOENT ... app\public\data\managing_agencies.json
+    (lib/govSectionSync.js 와 routes/sections.js 가 public 경로를 고정해 읽고 있었음).
+  - 수정: lib/managingAgencies.js 가 SERVE_DIR → public-dist → public 순서로 찾고, 못 찾아도 저장은 계속한다(관리기관 이름만 비우고 로그 1회).
+    서버 코드만 바뀌었으므로 서버 재시작(pm2 restart road-ledger)이면 된다. public 을 같이 올려 둔 서버는 영향이 없었다.

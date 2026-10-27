@@ -54,18 +54,9 @@ function withJurisdiction(user, where, params) {
 }
 
 // gov_* 부속시설 테이블의 mco(관리기관 코드)를 풀어 보여주기 위한 표
-// (public/data/managing_agencies.json, govSectionSync.js의 getMcoNameByCode와
-// 같은 원본). 코드북에 없는 값(예: 납품 DBF의 mco가 실제 공식 코드와 다른 경우
-// — govSectionSync.js 주석 참고)이면 그냥 원본 코드만 보여주고 해석을 붙이지 않는다.
-let managingAgenciesCache = null;
-function getMcoNameByCode(code) {
-    if (!managingAgenciesCache) {
-        const jsonPath = path.join(__dirname, '..', '..', 'public', 'data', 'managing_agencies.json');
-        managingAgenciesCache = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-    }
-    const found = managingAgenciesCache.find((a) => a.code === code);
-    return found ? found.name : null;
-}
+// (managing_agencies.json — lib/managingAgencies.js, govSectionSync.js와 같은 원본). 코드북에 없는 값(예: 납품 DBF의
+// mco가 실제 공식 코드와 다른 경우 — govSectionSync.js 주석 참고)이면 그냥 원본 코드만 보여주고 해석을 붙이지 않는다.
+const { getMcoNameByCode } = require('../lib/managingAgencies');
 
 // 시설물 속성정보 패널(facility-detail)에서 "코드값 (해석)"처럼 접미사로
 // 풀어 보여줄 컬럼들 — gov_* 테이블 전체에 공통으로 있는 컬럼명 기준(테이블 무관).

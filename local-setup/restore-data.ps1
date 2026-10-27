@@ -52,5 +52,28 @@ if (Test-Path $up) {
 } else {
     Write-Host '    (백업에 uploads 폴더가 없어 파일 복원은 건너뜀)'
 }
+
+# DB 에 들어 있는 파일 경로는 백업한 PC·폴더의 절대경로라, 이 PC 의 server\uploads 로 바꿔 줘야 파일이 열린다.
+# 예전 경로가 어디든 "uploads\" 뒤의 부분은 같으므로 그 앞부분만 교체한다.
+$newUploads = (Join-Path $ProjectDir 'server\uploads').TrimEnd('\').Replace("'", "''")
+$targets = @(
+    @('route_files', 'stored_path'), @('route_files', 'converted_path'),
+    @('gov_facility_files', 'stored_path'), @('road_issue_files', 'stored_path'), @('road_ledger_files', 'stored_path'),
+    @('bulk_import_file_changes', 'stored_path'), @('bulk_import_file_changes', 'converted_path'), @('bulk_import_file_changes', 'trash_path'),
+    @('section_trash_files', 'original_path'), @('section_trash_files', 'trash_path')
+)
+$remap = ($targets | ForEach-Object {
+    "UPDATE $($_[0]) SET $($_[1]) = '$newUploads' || '\' || substring($($_[1]) from '(?i)[\\/]uploads[\\/](.*)$') WHERE $($_[1]) ~* '[\\/]uploads[\\/]';"
+}) -join "`n"
+$tmpSql = Join-Path $env:TEMP 'rl-remap.sql'
+[System.IO.File]::WriteAllText($tmpSql, $remap, (New-Object System.Text.UTF8Encoding($false)))
+$old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+docker cp $tmpSql "${Container}:/tmp/remap.sql" | Out-Null
+docker exec -e "PGPASSWORD=$($kv.PGPASSWORD)" -e PGCLIENTENCODING=UTF8 $Container psql -q -U $kv.PGUSER -d $kv.PGDATABASE -f /tmp/remap.sql
+$remapCode = $LASTEXITCODE
+docker exec $Container rm -f /tmp/remap.sql | Out-Null
+$ErrorActionPreference = $old
+Remove-Item $tmpSql -Force -ErrorAction SilentlyContinue
+if ($remapCode -ne 0) { Write-Host '    !! 파일 경로 보정에 실패했습니다(복원은 끝났지만 일부 파일이 열리지 않을 수 있음).' -ForegroundColor Yellow } else { Ok '파일 경로를 이 PC 의 server\uploads 기준으로 보정' }
 Write-Host ''
 Write-Host '복원 끝. 서버를 다시 시작한 뒤 로그인하세요(계정도 백업의 것으로 바뀌었습니다).' -ForegroundColor Green

@@ -24,6 +24,10 @@ delivery-checker/dist/
 # 로컬 설치용 ZIP(make-package)과 자료 복원용 데이터(local-setup/data) — 실제 자료가 들어갈 수 있어 제외
 local-setup/dist/
 local-setup/data/
+
+# 포터블 로컬 패키지 빌드 결과(수백 MB)와 내려받은 PostgreSQL 바이너리 ZIP
+local-portable/dist/
+local-portable/cache/
 /server.out.log
 /server.err.log
 server/server.out.log

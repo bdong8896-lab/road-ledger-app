@@ -15,6 +15,7 @@
 | 하려는 일 | 폴더 | 시작 문서 |
 |---|---|---|
 | 다른 PC(개발·시연·검수용 로컬)에 설치 | `local-setup/` | [local-setup/로컬설치_가이드.txt](local-setup/로컬설치_가이드.txt) |
+| Docker·설치 없이 압축만 풀어 실행(관리자 권한 불필요) | `local-portable/` | [local-portable/포터블_사용법.txt](local-portable/포터블_사용법.txt) |
 | 운영 서버(IIS·pm2·HTTPS)에 설치·배포 | `deploy/` | [deploy/서버배포_가이드.txt](deploy/서버배포_가이드.txt), [deploy/서버배포_안내서.html](deploy/서버배포_안내서.html) |
 
 **로컬 설치 요약** (Windows, Node.js 18+ 와 Docker Desktop 필요):

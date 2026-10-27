@@ -8,19 +8,8 @@
 // DBF 값에서 자동으로 뽑지 않고, 검수 화면에서 관리자가 선택한 값
 // (targetSigunguCode)을 그대로 쓴다. mco_code/mco_name은 참고용 표시 필드일
 // 뿐 관할 판정에 쓰이지 않으므로 DBF 원본 값을 그대로 저장한다.
-const path = require('path');
-const fs = require('fs');
 const { ROAD_RANK_NAME_BY_CODE, RANK_NAMES_FOR_1599 } = require('./roadRank');
-
-let managingAgencies = null;
-function getMcoNameByCode(code) {
-    if (!managingAgencies) {
-        const jsonPath = path.join(__dirname, '..', '..', 'public', 'data', 'managing_agencies.json');
-        managingAgencies = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-    }
-    const found = managingAgencies.find((a) => a.code === code);
-    return found ? found.name : null;
-}
+const { getMcoNameByCode } = require('./managingAgencies');
 
 // client: pg 트랜잭션 클라이언트. row: gov_section의 파싱된 한 레코드(소문자
 // 필드명). geom: 재투영된 GeoJSON LineString(없으면 null).

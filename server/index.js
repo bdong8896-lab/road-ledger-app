@@ -130,6 +130,8 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: '서버 오류가 발생했습니다.' });
 });
 
-app.listen(config.port, () => {
+// HOST를 정하면 그 주소로만 받는다(예: 127.0.0.1 — 이 PC에서만 접속. 포터블 로컬 실행이 쓴다). 비우면 예전처럼 모든 주소로 받는다.
+const listenArgs = process.env.HOST ? [config.port, process.env.HOST] : [config.port];
+app.listen(...listenArgs, () => {
     console.log(`도로대장 시스템 서버 실행 중: http://localhost:${config.port} (정적 파일: ${config.serveDir}/)`);
 });
