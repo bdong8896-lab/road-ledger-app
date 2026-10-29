@@ -101,7 +101,8 @@ try {
         foreach ($line in [System.IO.File]::ReadAllLines($defLocal, [System.Text.Encoding]::UTF8)) { if ($line -match '^\s*([A-Z_]+)\s*=\s*(.*)$') { $dv[$Matches[1]] = $Matches[2].Trim() } }
         $keyShown = if ($dv['VWORLD_API_KEY']) { $dv['VWORLD_API_KEY'].Substring(0, [Math]::Min(8, $dv['VWORLD_API_KEY'].Length)) + '…(내장)' } else { '없음(처음 실행 때 입력)' }
         $adminShown = if ($dv['ADMIN_USER'] -and $dv['ADMIN_PASSWORD']) { "$($dv['ADMIN_USER']) (비밀번호 내장 — 처음 실행 때 묻지 않고 생성)" } else { '없음(처음 실행 때 입력)' }
-        Write-Host "  기본값 내장: VWorld 키 = $keyShown ; 관리자 계정 = $adminShown"
+        $cctvShown = if ($dv['ITS_CCTV_API_KEY']) { '내장' } else { '없음(CCTV 레이어가 비어 있음)' }
+        Write-Host "  기본값 내장: VWorld 키 = $keyShown ; CCTV 키 = $cctvShown ; 관리자 계정 = $adminShown"
     } else {
         Write-Host "  기본값 없음(defaults.local.env 가 없음): VWorld 키·관리자 계정은 처음 실행 때 직접 입력받습니다." -ForegroundColor Yellow
     }

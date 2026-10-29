@@ -132,6 +132,9 @@ if ($firstRun) {
     $vworldGiven = $PSBoundParameters.ContainsKey('VworldKey') -or $vworldFromEnv
     if (-not $vworldGiven -and $defaults['VWORLD_API_KEY']) { $VworldKey = $defaults['VWORLD_API_KEY']; $vworldGiven = $true; Ok "VWorld 키: 패키지에 내장된 키를 사용합니다" }
     $vworldReferer = if ($defaults['VWORLD_REFERER']) { $defaults['VWORLD_REFERER'] } else { 'http://localhost/' }
+    # CCTV(국가교통정보센터 ITS) 키 — 없으면 기본 레이어의 CCTV 가 비어 있다(고속도로·국도 CCTV 만 제공되는 API 라 군도 구간엔 원래 안 나온다).
+    $itsCctvKey = if ($defaults['ITS_CCTV_API_KEY']) { $defaults['ITS_CCTV_API_KEY'] } else { '' }
+    if ($itsCctvKey) { Ok "CCTV 키: 패키지에 내장된 키를 사용합니다" }
     if (-not $vworldGiven -and $guiMode) { $VworldKey = ''; $vworldGiven = $true }
     if (-not $vworldGiven) {
         Info ""
@@ -150,7 +153,7 @@ SESSION_SECRET=$(RandomText 48)
 SESSION_MAX_AGE_HOURS=8
 VWORLD_API_KEY=$VworldKey
 VWORLD_REFERER=$vworldReferer
-ITS_CCTV_API_KEY=
+ITS_CCTV_API_KEY=$itsCctvKey
 UPLOAD_DIR=../../data/uploads
 SERVE_DIR=public-dist
 DWG_CONVERTER_PATH=
