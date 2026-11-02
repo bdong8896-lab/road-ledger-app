@@ -1145,7 +1145,7 @@ async function identifyParcel(lon, lat, mapCoordinate) {
         map.getView().animate({ center: mapCoordinate, duration: 300 });
     } else {
         const extent = olFeature.getGeometry().getExtent();
-        map.getView().fit(extent, { duration: 400, maxZoom: 19 });
+        map.getView().fit(extent, { duration: 400, maxZoom: 19, size: map.getSize() });
         popupCoordinate = ol.extent.getCenter(extent);
     }
 
@@ -5771,7 +5771,11 @@ function fitMapToExtent(extent, maxZoom) {
         return;
     }
     const pad = Math.max(10, Math.min(60, Math.floor(Math.min(size[0], size[1]) / 4)));
-    const opts = { padding: [pad, pad, pad, pad], maxZoom };
+    // size를 직접 넘긴다 — 안 넘기면 fit()이 뷰 내부의 뷰포트 크기를 쓰는데, 로그인 직후엔 이 값이
+    // 기본값(100x100)에 머물러 있어(OpenLayers 7.5는 지도 크기가 안 바뀌면 updateSize()로도 갱신하지 않는다)
+    // 범위가 실제보다 훨씬 작은 화면에 맞춰 계산되고 줌이 maxZoom까지 올라간다. 패널이 열려 지도 크기가
+    // 바뀐 뒤에야 정상이 되는 "최초 로그인 직후 도로 종류 선택 줌 오류"의 원인.
+    const opts = { padding: [pad, pad, pad, pad], maxZoom, size };
     view.fit(extent, Object.assign({
         duration: 500,
         callback: (done) => {
@@ -5786,7 +5790,7 @@ function fitMapToExtent(extent, maxZoom) {
         const now = map.getSize();
         if (now && (now[0] !== size[0] || now[1] !== size[1])) {
             view.cancelAnimations();
-            view.fit(extent, { padding: [pad, pad, pad, pad], maxZoom });
+            view.fit(extent, { padding: [pad, pad, pad, pad], maxZoom, size: now });
         }
     }, 320);
 }
@@ -6469,7 +6473,7 @@ async function loadIssueTree() {
                 // setStyle 호출(레이어 재렌더 트리거)이 진행 중인 뷰 애니메이션을
                 // 멈춰버리는 문제가 있어(OL 뷰 애니메이션과 레이어 changed()의 상호작용
                 // 이슈) 이동은 애니메이션 없이 즉시 이동시킨다.
-                map.getView().fit(feature.getGeometry().getExtent(), { padding: [60, 60, 60, 60], maxZoom: 18 });
+                map.getView().fit(feature.getGeometry().getExtent(), { padding: [60, 60, 60, 60], maxZoom: 18, size: map.getSize() });
                 setSelectedIssueFeature(feature);
                 blinkIssueFeature(feature);
             });
