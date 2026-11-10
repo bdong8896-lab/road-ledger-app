@@ -174,6 +174,41 @@ const FACILITY_NAME_DECODE = {
 
 router.use(requireAuth);
 
+// 시설물 개수를 "한 번의 조회"로 세기 위한 준비. 구간을 누를 때마다 35개 테이블을 하나씩(개수 35번 + 500m 단위 35번)
+// 따로 조회해서 DB 연결(10개)에 줄을 섰다 — 테이블마다의 SELECT를 UNION ALL로 이어 한 번에 보낸다.
+// 다만 한 줄로 이으면 테이블 하나라도 컬럼이 없을 때 조회 전체가 실패하므로, 어떤 테이블에 어떤 컬럼이 있는지
+// 먼저 확인해(10분간 기억) 조건에 맞는 테이블만 잇는다. 예전 방식은 컬럼이 없으면 그 종류만 0으로 처리했고 결과는 같다.
+const FACILITY_LABEL_BY_TABLE = Object.fromEntries(Object.entries(FACILITY_TABLE_MAP).map(([label, table]) => [table, label]));
+let facilityColumnsCache = null; // Promise<Map<테이블, Set<컬럼>>>
+function facilityTableColumns() {
+    if (!facilityColumnsCache) {
+        const pending = pool.query(
+            `SELECT table_name, column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = ANY($1) AND column_name = ANY($2)`,
+            [Object.values(FACILITY_TABLE_MAP), ['road_rank', 'road_no', 'sect', 'sect_st', 'sigungu_code']]
+        ).then(({ rows }) => {
+            const byTable = new Map();
+            for (const row of rows) {
+                if (!byTable.has(row.table_name)) byTable.set(row.table_name, new Set());
+                byTable.get(row.table_name).add(row.column_name);
+            }
+            return byTable;
+        });
+        facilityColumnsCache = pending;
+        const forget = () => { if (facilityColumnsCache === pending) facilityColumnsCache = null; };
+        pending.catch(forget);
+        setTimeout(forget, 10 * 60 * 1000).unref();
+    }
+    return facilityColumnsCache;
+}
+// 주어진 컬럼을 모두 가진 시설물 테이블 목록. 컬럼 정보를 못 읽었으면(권한·스키마 차이 등) null — 호출한 쪽이 예전 방식으로 조회한다.
+async function facilityTablesWith(columns) {
+    let byTable;
+    try { byTable = await facilityTableColumns(); } catch (e) { return null; }
+    if (!byTable.size) return null;
+    return Object.values(FACILITY_TABLE_MAP).filter((t) => byTable.has(t) && columns.every((c) => byTable.get(t).has(c)));
+}
+
 function outsideJurisdiction(userSigungu, rowSigungu) {
     return !!userSigungu && !!rowSigungu && userSigungu !== rowSigungu;
 }
@@ -193,6 +228,23 @@ router.get('/facility-counts', async (req, res) => {
     let where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
     where = withJurisdiction(req.session.user, where, params);
+
+    // 한 번의 조회로 35종을 다 센다(아래 facilityTablesWith 주석 참고). 묶은 조회를 못 쓰는 상황이면 예전처럼 종류별로 센다.
+    const needed = ['road_rank', 'road_no', 'sect'].concat(params.length > (sect ? 3 : 2) ? ['sigungu_code'] : []);
+    const tables = await facilityTablesWith(needed);
+    if (tables) {
+        try {
+            const counts = Object.fromEntries(Object.keys(FACILITY_TABLE_MAP).map((label) => [label, 0]));
+            if (tables.length) {
+                const sql = tables.map((t) => `SELECT '${t}' AS tbl, COUNT(*) AS cnt FROM ${t} WHERE ${where}`).join(' UNION ALL ');
+                const { rows } = await pool.query(sql, params);
+                for (const row of rows) counts[FACILITY_LABEL_BY_TABLE[row.tbl]] = Number(row.cnt);
+            }
+            return res.json({ counts });
+        } catch (e) {
+            console.warn('[facility-counts] 묶음 조회 실패 — 종류별 조회로 대신합니다:', e.message);
+        }
+    }
 
     const entries = await Promise.all(
         Object.entries(FACILITY_TABLE_MAP).map(async ([label, table]) => {
@@ -245,6 +297,30 @@ router.get('/facility-counts-by-sector', async (req, res) => {
     let where = sect ? 'road_rank = $1 AND road_no = $2 AND sect = $3' : 'road_rank = $1 AND road_no = $2';
     const params = sect ? [roadRankCode, routeNo, sect] : [roadRankCode, routeNo];
     where = withJurisdiction(req.session.user, where, params);
+
+    // facility-counts와 같은 방식으로 한 번에 조회한다(위치 컬럼 sect_st가 있는 테이블만).
+    const needed = ['road_rank', 'road_no', 'sect', 'sect_st'].concat(params.length > (sect ? 3 : 2) ? ['sigungu_code'] : []);
+    const tables = await facilityTablesWith(needed);
+    if (tables) {
+        try {
+            const grouped = {};
+            if (tables.length) {
+                const sql = tables.map((t) =>
+                    `SELECT '${t}' AS tbl, FLOOR(sect_st / 0.5) * 0.5 AS bucket, COUNT(*) AS cnt
+                     FROM ${t} WHERE ${where} AND sect_st IS NOT NULL GROUP BY FLOOR(sect_st / 0.5)`
+                ).join(' UNION ALL ');
+                const { rows } = await pool.query(sql, params);
+                for (const row of rows) {
+                    const key = Number(row.bucket).toFixed(1);
+                    if (!grouped[key]) grouped[key] = {};
+                    grouped[key][FACILITY_LABEL_BY_TABLE[row.tbl]] = Number(row.cnt);
+                }
+            }
+            return res.json({ buckets: grouped });
+        } catch (e) {
+            console.warn('[facility-counts-by-sector] 묶음 조회 실패 — 종류별 조회로 대신합니다:', e.message);
+        }
+    }
 
     const buckets = {};
     await Promise.all(
@@ -648,11 +724,36 @@ router.get('/search', async (req, res) => {
 });
 
 // 데이터보기 트리: 도로등급 > 노선(노선번호/노선명) 순으로 그룹핑 (관할 시군구만)
+// 구간 선형(GeoJSON, 경위도)의 범위 [서, 남, 동, 북]. 트리에 같이 실어 보내서, 화면이 구간·노선을 눌렀을 때
+// 선형을 받아오길 기다리지 않고 바로 그 자리로 지도를 옮길 수 있게 한다(선형이 없거나 깨졌으면 null).
+function geomBbox(geom) {
+    let g = geom;
+    if (typeof g === 'string') { try { g = JSON.parse(g); } catch (e) { return null; } }
+    if (!g || typeof g !== 'object') return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const walk = (c) => {
+        if (!Array.isArray(c)) return;
+        if (typeof c[0] === 'number') {
+            const x = c[0], y = c[1];
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            return;
+        }
+        for (const child of c) walk(child);
+    };
+    if (g.type === 'GeometryCollection') for (const part of g.geometries || []) walk(part && part.coordinates);
+    else walk(g.coordinates);
+    return Number.isFinite(minX) ? [minX, minY, maxX, maxY] : null;
+}
+
 router.get('/tree', async (req, res) => {
     const userSigungu = req.session.user.sigunguCode;
     const { rows } = await pool.query(
         `SELECT rdid, road_rank_code, road_rank_name, route_no, route_name, sect,
-                s_point, e_point, length_m, sigungu_code
+                s_point, e_point, length_m, sigungu_code, geom
          FROM road_sections
          ORDER BY road_rank_code, route_no NULLS LAST, sect NULLS LAST`
     );
@@ -668,6 +769,7 @@ router.get('/tree', async (req, res) => {
         }
         routeMap.get(routeKey).sections.push({
             rdid: row.rdid, sect: row.sect, s_point: row.s_point, e_point: row.e_point, length_m: row.length_m,
+            bbox: geomBbox(row.geom),
         });
     }
 
@@ -689,6 +791,22 @@ router.get('/all-geoms', async (req, res) => {
         : await pool.query('SELECT rdid, geom, sigungu_code FROM road_sections WHERE geom IS NOT NULL');
     const visible = rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code));
     res.json({ items: visible.map((r) => ({ rdid: r.rdid, geom: r.geom })) });
+});
+
+// 노선(호선)을 눌렀을 때 소속 구간의 정보를 한 번에 돌려준다 — 예전엔 화면이 구간 수만큼 GET /:rdid 를
+// 따로 보내서, 구간이 많은 노선은 브라우저의 동시 요청 한도(6개)에 걸려 여러 번에 나눠 받느라 늦었다.
+// 조회지만 POST로 받는다(rdid 목록이 길면 IIS의 주소 길이 제한에 걸린다). 관할 밖 구간은 조용히 뺀다.
+const MAX_BATCH_RDIDS = 2000;
+router.post('/records', async (req, res) => {
+    const raw = req.body && req.body.rdids;
+    if (!Array.isArray(raw)) return res.status(400).json({ error: 'rdids 배열이 필요합니다.' });
+    const rdids = [...new Set(raw.filter((v) => typeof v === 'string' && v))];
+    if (rdids.length > MAX_BATCH_RDIDS) return res.status(400).json({ error: `한 번에 ${MAX_BATCH_RDIDS}개까지 조회할 수 있습니다.` });
+    if (!rdids.length) return res.json({ records: [] });
+    const { rows } = await pool.query('SELECT * FROM road_sections WHERE rdid = ANY($1)', [rdids]);
+    const userSigungu = req.session.user.sigunguCode;
+    const byRdid = new Map(rows.filter((r) => !outsideJurisdiction(userSigungu, r.sigungu_code)).map((r) => [r.rdid, r]));
+    res.json({ records: rdids.map((id) => byRdid.get(id)).filter(Boolean) }); // 요청한 순서 그대로
 });
 
 // 조서/전체자료 다운로드 공용: 좌측 트리에서 무엇을 선택했느냐에 따라 범위를

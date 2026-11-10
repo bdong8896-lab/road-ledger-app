@@ -48,7 +48,7 @@ try {
 
     Step '3/5 서버·화면 코드'
     $app = Join-Path $stage 'app'
-    & robocopy (Join-Path $ProjectDir 'server') (Join-Path $app 'server') /E /NFL /NDL /NJH /NJS /NP /XD node_modules logs uploads backups /XF .env .env.production .env.bak env.production *.log ecosystem.config.js | Out-Null
+    & robocopy (Join-Path $ProjectDir 'server') (Join-Path $app 'server') /E /NFL /NDL /NJH /NJS /NP /XD node_modules logs uploads backups tile-cache /XF .env .env.production .env.bak env.production *.log ecosystem.config.js | Out-Null
     if ($LASTEXITCODE -ge 8) { Fail "server 복사 오류(robocopy $LASTEXITCODE)" }
     # 화면은 원본(public)이 아니라 난독화본(public-dist)만 담는다 — 지금 public 을 기준으로 새로 만든다(server\build-dist.js)
     Push-Location (Join-Path $ProjectDir 'server')

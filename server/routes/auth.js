@@ -7,6 +7,7 @@ const { regionNameEn } = require('../lib/regionNameEn');
 const SIGUNGU_CODES = require('../lib/sigunguCodes.json');
 const SIGUNGU_EXTENTS = require('../lib/sigunguExtents.json');
 const { logAction, clientIp } = require('../lib/auditLog');
+const { clearSessionReadCache } = require('../lib/sessionTuning');
 
 // 로그인 계정의 관할 시군구 코드로 지도 기본 확대범위(EPSG:3857)를 찾는다 —
 // 예전엔 프론트엔드(script.js)에 시군구 3~4개만 하드코딩해뒀었는데, 새
@@ -171,6 +172,9 @@ async function destroyUserSessions(userId, exceptSid) {
         );
     } catch (e) {
         console.error('[auth/destroyUserSessions]', e.message);
+    } finally {
+        // 세션 읽기를 몇 초 메모리에 두므로(lib/sessionTuning.js), DB에서 직접 지운 세션이 그동안 살아 있지 않게 전부 비운다
+        clearSessionReadCache();
     }
 }
 

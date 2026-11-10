@@ -5,6 +5,8 @@ env.production
 .vscode/
 public-dist/
 server/logs/
+# 브이월드 배경지도 타일 임시 보관(routes/vworldProxy.js) — 실행 중에 생기고 기한이 지나면 지워진다
+server/tile-cache/
 server/uploads/*
 !server/uploads/.gitkeep
 backups/

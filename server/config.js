@@ -63,6 +63,13 @@ module.exports = {
         apiKey: process.env.VWORLD_API_KEY || '',
         referer: process.env.VWORLD_REFERER || 'http://localhost/',
     },
+    // 브이월드 배경지도 타일을 서버 디스크에 잠시 보관하는 폴더(routes/vworldProxy.js). 한 사람이 본 지역은
+    // 다른 사람·다른 PC가 볼 때 브이월드까지 다시 가지 않고 서버에서 바로 나간다. 브이월드가 응답에 적어 준
+    // 보관 기한(max-age)까지만 두고 지난 것은 자동으로 지운다. 끄려면 .env에 TILE_CACHE=off.
+    tileCache: {
+        enabled: process.env.TILE_CACHE !== 'off',
+        dir: path.resolve(__dirname, process.env.TILE_CACHE_DIR || './tile-cache'),
+    },
     itsCctvApiKey: process.env.ITS_CCTV_API_KEY || '',
     // 정적 파일을 서빙할 폴더명(public/ 아래가 아니라 프로젝트 루트 기준) —
     // 평소엔 'public'(원본), 배포용 난독화 버전을 쓰려면 .env에

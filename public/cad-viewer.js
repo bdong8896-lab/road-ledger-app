@@ -448,6 +448,26 @@ function refreshRouteFilePanel() {
 // 먼저 클릭한(오래된) 구간의 응답이 나중에 도착해 최신 화면에 그대로 덧붙여지는
 // 문제가 있었다 — 매 호출마다 토큰을 발급해서, 응답이 왔을 때 그사이 더 최신
 // 호출이 있었으면(토큰 불일치) 그 결과는 버리고 화면에 반영하지 않는다.
+// 노선 트리(/api/sections/tree)는 한 번 받아 둔 것을 같이 쓴다 — 예전엔 구간을 누를 때마다(그것도 두 번씩)
+// 등록된 노선 전체를 서버에서 다시 받았다. 메인 화면에선 왼쪽 트리(loadLedgerTree)가 등록·수정·삭제 뒤마다
+// 새로 받아(forceFresh) 이 값을 갱신하므로 그대로 믿고 쓰고, 트리가 없는 도면 팝업 창에선 1분까지만 재사용한다.
+let sectionsTreeCache = null; // { promise, at }
+function fetchSectionsTree(forceFresh) {
+    const now = Date.now();
+    const maxAgeMs = typeof loadLedgerTree === 'function' ? Infinity : 60 * 1000;
+    if (forceFresh || !sectionsTreeCache || now - sectionsTreeCache.at > maxAgeMs) {
+        const entry = {
+            at: now,
+            promise: fetch('/api/sections/tree')
+                .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+                .then((data) => data.tree || []),
+        };
+        sectionsTreeCache = entry;
+        entry.promise.catch(() => { if (sectionsTreeCache === entry) sectionsTreeCache = null; }); // 실패한 응답은 기억하지 않는다
+    }
+    return sectionsTreeCache.promise;
+}
+
 let routeSectionPickerToken = 0;
 async function loadRouteSectionPicker() {
     const myToken = ++routeSectionPickerToken;
@@ -457,7 +477,7 @@ async function loadRouteSectionPicker() {
         return;
     }
     listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;">불러오는 중...</div>';
-    const { tree } = await fetch('/api/sections/tree').then((r) => r.json());
+    const tree = await fetchSectionsTree();
     if (myToken !== routeSectionPickerToken) return; // 기다리는 동안 더 최신 호출이 시작됐으면 여기서 중단
     const roadGrade = currentRoute.road_rank_name || currentRoute.road_grade;
     const gradeGroup = (tree || []).find((g) => g.road_grade === roadGrade);

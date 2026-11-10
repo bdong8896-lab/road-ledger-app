@@ -7,15 +7,14 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <script>/* 저장된 화면 테마를 첫 그리기 전에 적용(밝은 테마 사용자가 로딩 중 어두운 화면을 잠깐 보지 않게) */try{if(localStorage.getItem('rl-theme')==='light')document.documentElement.setAttribute('data-theme','light');var fs=localStorage.getItem('rl-fs');if(fs==='lg'||fs==='xl')document.documentElement.setAttribute('data-fs',fs)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" integrity="sha384-blOohCVdhjmtROpu8+CfTnUWham9nkX7P7OZQMst+RUnhtoY/9qemFAkIKOYxDI3" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/ol@7.5.1/dist/ol.js" integrity="sha384-fgnsY/cRU3yn34YpGkLBh/4lzNBJVh159U+7K2IypwCNY+hmOBsypjKU7ZPs9aI6" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js" integrity="sha384-U14wzrePlI+UpXk1Jpe45fK/C0yeI7rtwKzi9eM3Lj7LYjXlHNy0YacuWZIk7Hic" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
+<script src="vendor/ol.js"></script>
+<script src="vendor/proj4.js"></script>
 <script src="./kakao_sdk.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js" integrity="sha384-cciJ0zi8d1uMKC2zJd7jvPY4HQt7W4ByUI/FlMkltvBi31aW61rcpVBhpmW8/NwX" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/dxf-parser@1.1.2/dist/dxf-parser.js" integrity="sha384-bFhNbiyxHEo2RbidLz4oUgawuuHSALUTKp85+l9Vg+WFNX2gMnROUY6I/e8MWhuD" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js" integrity="sha384-82q0nm29xZzIo5BMtDYnh2/NxeO6FoaK1S/0nF84w3cEsqbBfun3JdMyDVYWfVY5" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" integrity="sha384-CI3ELBVUz9XQO+97x6nwMDPosPR5XvsxW2ua7N1Xeygeh1IxtgqtCkGfQY9WWdHu" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
+<script src="vendor/dxf-parser.js"></script>
+<script src="vendor/turf.min.js"></script>
+<!-- hls.min.js(CCTV 재생)·three.min.js(360도 영상)·xlsx.full.min.js(조서 미리보기)는 여기서 읽지 않고
+     그 기능을 처음 열 때 받아온다(script.js loadVendorScript) — 합쳐 2MB라 첫 화면이 그만큼 가벼워진다. -->
 </head>
 <body>
 

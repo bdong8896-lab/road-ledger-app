@@ -33,7 +33,7 @@ function Copy-Tree($rel, $xd, $xf) {
     & robocopy @rc | Out-Null
     if ($LASTEXITCODE -ge 8) { Fail "$rel 복사 중 오류(robocopy 종료코드 $LASTEXITCODE)" }
 }
-Copy-Tree 'server' @('node_modules', 'logs', 'uploads') @('.env', '.env.production', '.env.bak', 'env.production', '*.log')
+Copy-Tree 'server' @('node_modules', 'logs', 'uploads', 'tile-cache') @('.env', '.env.production', '.env.bak', 'env.production', '*.log')
 Copy-Tree 'public' @() @()
 Copy-Tree 'local-setup' @('dist', 'data') @()
 Copy-Item (Join-Path $ProjectDir 'README.md') $stage -Force

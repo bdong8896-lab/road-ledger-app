@@ -6,6 +6,31 @@ let VWORLD_KEY = '';
 let currentUser = null;
 let registeredPnuSet = new Set();
 
+// ---------- 무거운 라이브러리는 쓸 때 받는다 ----------
+// CCTV 재생(hls)·360도 영상(three)·조서 미리보기(xlsx)는 일부 사용자만, 가끔 쓰는 기능인데 합쳐 2MB라
+// 첫 화면에서 다 읽으면 접속이 그만큼 늦다. 그 기능을 처음 열 때 vendor/ 에서 받아오고(같은 서버, 30일 캐시),
+// 한 번 받은 뒤에는 바로 쓴다. globalName: 그 라이브러리가 만드는 전역 이름(이미 있으면 다시 받지 않는다).
+const vendorScriptLoads = new Map();
+function loadVendorScript(file, globalName) {
+    if (window[globalName]) return Promise.resolve();
+    let pending = vendorScriptLoads.get(file);
+    if (!pending) {
+        pending = new Promise((resolve, reject) => {
+            const el = document.createElement('script');
+            el.src = 'vendor/' + file;
+            el.onload = () => resolve();
+            el.onerror = () => {
+                vendorScriptLoads.delete(file); // 다음에 다시 시도할 수 있게
+                el.remove();
+                reject(new Error(`${file} 을(를) 불러오지 못했습니다.`));
+            };
+            document.head.appendChild(el);
+        });
+        vendorScriptLoads.set(file, pending);
+    }
+    return pending;
+}
+
 // ---------- VWorld 프록시 헬퍼 (모든 VWorld 요청은 우리 서버를 거친다) ----------
 function vworldProxyUrl(targetUrl) {
     return '/api/vworld?url=' + encodeURIComponent(targetUrl);
@@ -404,6 +429,28 @@ function makeBoundaryLayer(typeName, labelField, strokeColor, options = {}) {
     // 'prerender'는 이 레이어가 매 프레임 다시 그려질 때마다 한 번씩 실행되므로
     // 여기서 Set을 비워야 프레임이 바뀔 때(팬/줌 등) 라벨이 다시 정상적으로 보인다.
     const shownLabelsThisFrame = new Set();
+    // 스타일 객체는 (색, 글자)가 같으면 만들어 둔 것을 다시 쓴다 — 예전엔 화면을 그릴 때마다 선분 하나하나에
+    // 스타일·선·채움·글자 객체를 새로 만들어서(수천 개 × 매 프레임) 지도를 움직일 때 버벅였다. 그리는 결과는 같다.
+    const styleCache = new Map(); // "색\n글자" → ol.style.Style
+    const styleFor = (color, labelText) => {
+        const key = color + '\n' + labelText;
+        let style = styleCache.get(key);
+        if (!style) {
+            if (styleCache.size > 5000) styleCache.clear(); // 이름이 아주 많은 지역을 오래 돌아다닌 경우에만 — 다시 채워진다
+            style = new ol.style.Style({
+                stroke: new ol.style.Stroke({ color, width: lineWidth }),
+                fill: new ol.style.Fill({ color: 'rgba(0,0,0,0)' }),
+                text: new ol.style.Text({
+                    text: labelText,
+                    font: 'bold 12px sans-serif',
+                    fill: new ol.style.Fill({ color }),
+                    stroke: new ol.style.Stroke({ color: '#ffffff', width: 3 }),
+                }),
+            });
+            styleCache.set(key, style);
+        }
+        return style;
+    };
     const layer = new ol.layer.Vector({
         source,
         visible: defaultVisible,
@@ -420,16 +467,7 @@ function makeBoundaryLayer(typeName, labelField, strokeColor, options = {}) {
                     labelText = rawLabel;
                 }
             }
-            return new ol.style.Style({
-                stroke: new ol.style.Stroke({ color, width: lineWidth }),
-                fill: new ol.style.Fill({ color: 'rgba(0,0,0,0)' }),
-                text: new ol.style.Text({
-                    text: labelText,
-                    font: 'bold 12px sans-serif',
-                    fill: new ol.style.Fill({ color }),
-                    stroke: new ol.style.Stroke({ color: '#ffffff', width: 3 }),
-                }),
-            });
+            return styleFor(color, labelText);
         },
         zIndex: 90,
     });
@@ -498,7 +536,9 @@ function initMap() {
                 return vworldProxyUrl(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Base/${z}/${y}/${x}.png`);
             },
             maxZoom: 19,
+            transition: 0, // 받은 타일을 0.25초 서서히 띄우지 않고 즉시 표시
         }),
+        preload: 1, // 한 단계 낮은 축척 타일도 받아 둔다 — 주변으로 옮기거나 축소할 때 빈 화면 대신 흐린 지도가 먼저 보인다
         visible: true,
     });
     satellite = new ol.layer.Tile({
@@ -509,7 +549,9 @@ function initMap() {
                 return vworldProxyUrl(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Satellite/${z}/${y}/${x}.jpeg`);
             },
             maxZoom: 19,
+            transition: 0,
         }),
+        preload: 1,
         visible: false,
     });
     kakaoBase = createKakaoBaseLayer();
@@ -1003,15 +1045,19 @@ function openCctvPreview(name, url) {
     if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
     const video = document.getElementById('cctv-video');
 
-    if (window.Hls && Hls.isSupported()) {
-        hlsInstance = new Hls();
-        hlsInstance.loadSource(url);
-        hlsInstance.attachMedia(video);
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = url;
-    } else {
-        cctvDiv.innerHTML += '<div style="color:#fff;padding:12px;text-align:center;">이 브라우저에서는 CCTV 스트리밍을 재생할 수 없습니다.</div>';
-    }
+    // 스트리밍 라이브러리(hls.js)는 CCTV를 처음 열 때 받아온다. 못 받았으면 브라우저 자체 재생으로 넘어간다.
+    loadVendorScript('hls.min.js', 'Hls').catch(() => {}).then(() => {
+        if (!video.isConnected) return; // 받는 동안 다른 CCTV·미리보기로 바뀌었다
+        if (window.Hls && Hls.isSupported()) {
+            hlsInstance = new Hls();
+            hlsInstance.loadSource(url);
+            hlsInstance.attachMedia(video);
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+        } else {
+            cctvDiv.insertAdjacentHTML('beforeend', '<div style="color:#fff;padding:12px;text-align:center;">이 브라우저에서는 CCTV 스트리밍을 재생할 수 없습니다.</div>');
+        }
+    });
 }
 
 // ---------- 필지 클릭 식별 ----------
@@ -1890,7 +1936,7 @@ async function loadSectionPanel(rdid) {
     document.getElementById('parcel-form').style.display = 'block';
     document.getElementById('save-status').textContent = '';
 
-    const { record } = await fetch(`/api/sections/${rdid}`).then((r) => r.json());
+    const { record } = await fetchSectionRecord(rdid);
     document.getElementById('f-rdid').textContent = rdid;
     document.getElementById('f-road-rank').textContent = record?.road_rank_name || '-';
     document.getElementById('f-road-rank').style.display = '';
@@ -2061,10 +2107,15 @@ function buildFilePreviewMediaHtml(originalName, viewUrl, downloadUrl, sizeStyle
 // 직후 호출한다 — 렌더러 크기를 컨테이너 실측 크기로 잡아야 하므로 문자열 단계
 // (buildFilePreviewMediaHtml)에서는 초기화할 수 없다.
 function initVideo360Containers(rootEl) {
-    if (typeof THREE === 'undefined') return; // CDN 로드 실패 시에도 나머지 화면은 그대로 동작
-    rootEl.querySelectorAll('.video360-container').forEach((el) => {
-        createVideo360Player(el, el.dataset.src, el.dataset.autoplay === '1');
-    });
+    const containers = [...rootEl.querySelectorAll('.video360-container')];
+    if (!containers.length) return;
+    // three.js는 360도 영상을 처음 열 때 받아온다. 못 받아도 나머지 화면은 그대로 동작한다.
+    loadVendorScript('three.min.js', 'THREE').then(() => {
+        containers.forEach((el) => {
+            if (!el.isConnected) return; // 받는 동안 미리보기를 닫았다
+            createVideo360Player(el, el.dataset.src, el.dataset.autoplay === '1');
+        });
+    }).catch(() => {});
 }
 
 // 구체 안쪽에 영상을 입히고, 드래그로 시야(경도/위도)를 돌려볼 수 있게 한다.
@@ -2878,6 +2929,7 @@ function initSplitView() {
                     return vworldProxyUrl(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Satellite/${z}/${y}/${x}.jpeg`);
                 },
                 maxZoom: 19,
+                transition: 0,
             }),
         })],
         view: map.getView(), // 메인 지도와 뷰(중심/줌)를 공유해 자동 동기화
@@ -3105,20 +3157,39 @@ function initRoadview() {
             if (!feature) return;
             openRoadviewFacilityInfo(feature);
             const [lng, lat] = ol.proj.toLonLat(evt.coordinate);
-            if (typeof kakao !== 'undefined' && kakao.maps) {
-                kakao.maps.load(() => openRoadviewAt(lat, lng));
-            }
+            openRoadviewWhenSdkReady(lat, lng, true);
             return;
         }
 
         const [lng, lat] = ol.proj.toLonLat(evt.coordinate);
-
-        if (typeof kakao !== 'undefined' && kakao.maps) {
-            kakao.maps.load(() => openRoadviewAt(lat, lng));
-        } else {
-            uiAlert('카카오맵 SDK 로드 실패. 네트워크 연결을 확인해주세요.');
-        }
+        openRoadviewWhenSdkReady(lat, lng, false);
     });
+}
+
+// 카카오 SDK 본체는 화면을 열 때가 아니라 로드뷰를 처음 쓸 때 받아온다(kakao_sdk.js 머리말 참고) — 그 주소가
+// 방화벽에 막힌 PC에서도 첫 화면이 멈추지 않는다. 받는 동안 여러 번 눌렀으면 마지막에 누른 자리만 연다.
+// 일정 시간 안에 못 받으면 한 번만 안내한다(늦게라도 받아지면 그때 열린다).
+const KAKAO_SDK_WAIT_MS = 8000;
+let roadviewOpenSeq = 0;
+let kakaoSdkNoticeShown = false;
+function openRoadviewWhenSdkReady(lat, lng, quiet) {
+    if (typeof kakao === 'undefined' || !kakao.maps || typeof kakao.maps.load !== 'function') {
+        if (!quiet) uiAlert('카카오맵 SDK 로드 실패. 네트워크 연결을 확인해주세요.');
+        return;
+    }
+    const seq = ++roadviewOpenSeq;
+    let loaded = false;
+    kakao.maps.load(() => {
+        loaded = true;
+        if (seq !== roadviewOpenSeq || typeof kakao.maps.Roadview !== 'function') return;
+        openRoadviewAt(lat, lng);
+    });
+    if (loaded) return; // 이미 받아 둔 상태 — 바로 열렸다
+    setTimeout(() => {
+        if (loaded || kakaoSdkNoticeShown) return;
+        kakaoSdkNoticeShown = true;
+        uiAlert('카카오 로드뷰 서버(t1.daumcdn.net)에 연결하지 못했습니다. 이 PC에서 외부 지도 서비스 접속이 허용돼 있는지 확인해주세요.');
+    }, KAKAO_SDK_WAIT_MS);
 }
 
 // 로드뷰의 "시설물 선택" 모드에서 지도의 시설물을 클릭했을 때 — 로드뷰를 끄지
@@ -3241,7 +3312,7 @@ let cadastralEditLayer = null; // 지적편집도(카카오 PNGSD_CAD02) — 기
 // 로드뷰 안내선과 지적편집도가 같은 카카오 타일 그리드·좌표계를 쓰므로 공통으로 만든다.
 // tilePath: 카카오 타일 종류/버전(kakao_sdk.js의 URI_FUNC 값), displayMaxLevel: 이보다 축소되면 숨김.
 // 주소는 https — 로드뷰도 예전엔 http였는데 운영을 HTTPS로 바꾸면 혼합 콘텐츠로 막힐 수 있었다.
-function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex, urlOf, visible }) {
+function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex, urlOf, visible, preload }) {
     // z=0이 가장 축소(level=14, 해상도 큼), z가 커질수록 확대(level=1, 해상도 작음) —
     // OpenLayers TileGrid는 resolutions가 z 증가에 따라 감소해야 한다.
     const levelByZ = [];
@@ -3258,6 +3329,7 @@ function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex, urlO
     const source = new ol.source.TileImage({
         projection: 'KAKAOTM',
         tileGrid,
+        transition: 0, // 받은 타일을 서서히 띄우지 않고 즉시 표시
         tileUrlFunction: (tileCoord) => {
             if (!tileCoord) return undefined;
             const [z] = tileCoord;
@@ -3276,7 +3348,7 @@ function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex, urlO
         ? kakaoRvResolution(displayMaxLevel) / Math.cos(38 * Math.PI / 180)
         : undefined;
 
-    return new ol.layer.Tile({ source, visible: !!visible, opacity, zIndex, maxResolution });
+    return new ol.layer.Tile({ source, visible: !!visible, opacity, zIndex, maxResolution, preload: preload || 0 });
 }
 
 // ---------- 카카오 배경지도(일반/위성) ----------
@@ -3285,11 +3357,11 @@ function createKakaoTileLayer({ tilePath, displayMaxLevel, opacity, zIndex, urlO
 //   일반   : PNGSD02 (kakao_sdk.js URI_FUNC.ROADMAP)
 //   위성   : map_skyview 항공사진 + 지명·도로명 글자 타일(PNGSD_SKYH02, URI_FUNC.HYBRID)을 위에 겹친다
 function createKakaoBaseLayer() {
-    return createKakaoTileLayer({ tilePath: 'PNGSD02/v19_ktmbq', displayMaxLevel: null, opacity: 1, zIndex: 0, visible: false });
+    return createKakaoTileLayer({ tilePath: 'PNGSD02/v19_ktmbq', displayMaxLevel: null, opacity: 1, zIndex: 0, visible: false, preload: 1 });
 }
 function createKakaoSkyviewLayer() {
     return createKakaoTileLayer({
-        displayMaxLevel: null, opacity: 1, zIndex: 0, visible: false,
+        displayMaxLevel: null, opacity: 1, zIndex: 0, visible: false, preload: 1,
         urlOf: (level, V, H) => `https://map.daumcdn.net/map_skyview/L${level}/${V}/${H}.jpg?v=160114`,
     });
 }
@@ -4559,7 +4631,7 @@ function initBulkRegister() {
         rdRouteSelect.innerHTML = '<option value="">불러오는 중...</option>';
         let tree;
         try {
-            ({ tree } = await fetch('/api/sections/tree').then((r) => r.json()));
+            tree = await fetchSectionsTree();
         } catch (e) {
             rdRouteSelect.innerHTML = '<option value="">자동 인식 (파일명으로 노선·구간 찾기)</option>';
             return;
@@ -5238,6 +5310,7 @@ async function openLedgerReportPreview() {
             return;
         }
         const buf = await res.arrayBuffer();
+        await loadVendorScript('xlsx.full.min.js', 'XLSX'); // 엑셀 해석 라이브러리는 조서를 처음 볼 때 받아온다
         const workbook = XLSX.read(buf, { type: 'array' });
         const sheetNames = workbook.SheetNames;
         const tabsHtml = sheetNames.map((name, i) =>
@@ -5357,9 +5430,7 @@ async function loadLedgerTree() {
 
     let tree;
     try {
-        const res = await fetch('/api/sections/tree');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        ({ tree } = await res.json());
+        tree = await fetchSectionsTree(true); // 항상 새로 받는다 — 받은 결과는 "도로" 탭·도면 일괄등록 목록이 같이 쓴다(cad-viewer.js)
     } catch (e) {
         container.innerHTML = `<div class="tree-empty">불러오기 실패: ${escapeHtml(e.message)}<br>서버 콘솔(pm2 logs) 확인 필요</div>`;
         return;
@@ -5403,6 +5474,7 @@ async function loadLedgerTree() {
                     rdid: section.rdid, road_grade: grade, road_rank_name: grade,
                     route_no: route.route_no, route_name: route.route_name, sect: section.sect,
                     s_point: section.s_point, e_point: section.e_point, length_m: section.length_m,
+                    bbox: section.bbox, // 구간 선형의 범위 — 누르는 즉시 지도를 옮기는 데 쓴다
                 };
                 const leaf = buildTreeLeaf(leafLabel, sectionInfo);
                 leaf.addEventListener('click', () => {
@@ -5777,7 +5849,8 @@ function fitMapToExtent(extent, maxZoom) {
     // 바뀐 뒤에야 정상이 되는 "최초 로그인 직후 도로 종류 선택 줌 오류"의 원인.
     const opts = { padding: [pad, pad, pad, pad], maxZoom, size };
     view.fit(extent, Object.assign({
-        duration: 500,
+        // 짧게(0.2초) — 길면 움직이는 동안 지나가는 자리의 타일까지 요청해서, 정작 도착한 자리의 타일이 뒤로 밀린다
+        duration: 200,
         callback: (done) => {
             if (done || token !== mapFitToken || view.getInteracting()) return;
             view.fit(extent, opts);
@@ -5795,10 +5868,46 @@ function fitMapToExtent(extent, maxZoom) {
     }, 320);
 }
 
-async function highlightSectionGeom(rdid) {
+// 구간 한 건 조회(GET /api/sections/:rdid). 구간을 누르면 지도 강조와 정보 탭이 같은 주소를 동시에 불렀다 —
+// 진행 중인 같은 요청이 있으면 그 응답을 같이 쓴다. 응답이 끝나면 바로 잊으므로 저장 뒤엔 새 값을 다시 받는다.
+const sectionRecordInFlight = new Map();
+function fetchSectionRecord(rdid) {
+    let pending = sectionRecordInFlight.get(rdid);
+    if (!pending) {
+        pending = fetch(`/api/sections/${rdid}`).then((r) => r.json()).finally(() => sectionRecordInFlight.delete(rdid));
+        sectionRecordInFlight.set(rdid, pending);
+    }
+    return pending;
+}
+
+// 트리가 구간마다 같이 받아 둔 범위(bbox, 경위도 [서,남,동,북])로 지도를 먼저 옮긴다 — 선형을 서버에서 받아오길
+// 기다리지 않아서 누르는 즉시 움직인다. 옮겼으면 그 범위(지도 좌표)를, 범위가 없으면 null을 돌려준다.
+function fitMapToLonLatBbox(bbox, maxZoom) {
+    if (!Array.isArray(bbox) || bbox.length !== 4 || bbox.some((v) => !isFinite(v))) return null;
+    const extent = ol.proj.transformExtent(bbox, 'EPSG:4326', map.getView().getProjection());
+    fitMapToExtent(extent, maxZoom);
+    return extent;
+}
+
+// 미리 옮겨 둔 범위와 실제 선형의 범위가 같은지(1m 이내) — 다르면(트리를 받은 뒤 선형이 바뀐 경우) 다시 맞춘다.
+function sameMapExtent(a, b) {
+    return !!a && !!b && a.every((v, i) => Math.abs(v - b[i]) < 1);
+}
+
+function unionLonLatBbox(bboxes) {
+    let out = null;
+    (bboxes || []).forEach((b) => {
+        if (!Array.isArray(b) || b.length !== 4 || b.some((v) => !isFinite(v))) return;
+        out = out ? [Math.min(out[0], b[0]), Math.min(out[1], b[1]), Math.max(out[2], b[2]), Math.max(out[3], b[3])] : b.slice();
+    });
+    return out;
+}
+
+async function highlightSectionGeom(rdid, bbox) {
     const seq = ++routeFocusSeq;
     routeHighlightLayer.getSource().clear();
-    const { record } = await fetch(`/api/sections/${rdid}`).then((r) => r.json());
+    const preFit = fitMapToLonLatBbox(bbox, 18);
+    const { record } = await fetchSectionRecord(rdid);
     if (seq !== routeFocusSeq) return; // 그 사이 다른 구간·노선·전체보기를 눌렀다 — 늦게 도착한 응답이 지도를 되돌리지 않게 한다
     if (!record?.geom) { stopRouteHighlightBlink(); return; }
     const geojsonFormat = new ol.format.GeoJSON();
@@ -5808,8 +5917,20 @@ async function highlightSectionGeom(rdid) {
     );
     routeHighlightLayer.getSource().addFeature(feature);
     const extent = feature.getGeometry().getExtent();
-    fitMapToExtent(extent, 18);
+    if (!sameMapExtent(preFit, extent)) fitMapToExtent(extent, 18);
     startRouteHighlightBlink();
+}
+
+// 노선에 속한 구간들의 정보를 한 번에 받는다. 서버가 옛 버전이라 묶음 조회가 없으면 예전처럼 구간마다 따로 받는다.
+async function fetchSectionRecords(rdids) {
+    try {
+        const res = await fetch('/api/sections/records', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rdids }),
+        });
+        if (res.ok) return (await res.json()).records || [];
+    } catch (e) { /* 아래 방식으로 다시 시도 */ }
+    const results = await Promise.all(rdids.map((rdid) => fetch(`/api/sections/${rdid}`).then((r) => r.json())));
+    return results.map((r) => r.record).filter(Boolean);
 }
 
 // 데이터보기 트리에서 노선(호선) 그룹 라벨을 클릭하면 그 노선에 속한 구간
@@ -5826,11 +5947,10 @@ async function selectRouteGroup(grade, route) {
     const rdids = (route.sections || []).map((s) => s.rdid).filter(Boolean);
     if (!rdids.length) return;
     const seq = ++routeFocusSeq;
-    const results = await Promise.all(
-        rdids.map((rdid) => fetch(`/api/sections/${rdid}`).then((r) => r.json()))
-    );
+    // 트리에 실려 온 구간 범위를 합쳐 지도를 먼저 옮기고, 선형·정보는 그 뒤에 받아 그린다
+    const preFit = fitMapToLonLatBbox(unionLonLatBbox((route.sections || []).map((s) => s.bbox)), 18);
+    const records = await fetchSectionRecords(rdids);
     if (seq !== routeFocusSeq) return;
-    const records = results.map((r) => r.record).filter(Boolean);
 
     routeHighlightLayer.getSource().clear();
     const geojsonFormat = new ol.format.GeoJSON();
@@ -5846,7 +5966,7 @@ async function selectRouteGroup(grade, route) {
         combinedExtent = combinedExtent ? ol.extent.extend(combinedExtent, extent) : extent;
     });
     if (combinedExtent) {
-        fitMapToExtent(combinedExtent, 18);
+        if (!sameMapExtent(preFit, combinedExtent)) fitMapToExtent(combinedExtent, 18);
         startRouteHighlightBlink();
     } else {
         stopRouteHighlightBlink();
@@ -6659,7 +6779,7 @@ function selectSectionForLeftSidebar(section) {
     loadRouteSectors(section);
     // 시설물(주요시설물·부대시설)은 구간을 선택해도 자동으로 켜지 않는다 — 필요할 때 트리의 아이콘으로 켠다.
     if (section.rdid) {
-        highlightSectionGeom(section.rdid);
+        highlightSectionGeom(section.rdid, section.bbox);
         loadSectionPanel(section.rdid);
     }
 }

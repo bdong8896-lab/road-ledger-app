@@ -11,6 +11,8 @@ const pgSession = require('connect-pg-simple')(session);
 const config = require('./config');
 const pool = require('./db');
 const { requireAuth } = require('./middleware/requireAuth');
+const { gzipStatic, gzipJson } = require('./lib/gzip');
+const { tuneSessionStore } = require('./lib/sessionTuning');
 const authRoutes = require('./routes/auth').router;
 const vworldProxyRoutes = require('./routes/vworldProxy');
 const parcelsRoutes = require('./routes/parcels');
@@ -56,11 +58,42 @@ if (config.cookieSecure) {
     app.use((req, res, next) => { req.headers['x-forwarded-proto'] = 'https'; next(); });
 }
 
+// 정적 파일(HTML/CSS/JS/글꼴) — 세션 미들웨어보다 앞에 둔다. 세션 뒤에 있으면 파일 하나를
+// 받을 때마다(바뀌었는지 확인만 하는 304 응답 포함) 세션 테이블을 읽고 만료시간을 갱신해서,
+// 접속할 때마다 파일 수만큼 DB를 다녀왔다. 정적 파일은 원래도 로그인 없이 내려가던 것이라
+// 순서를 바꿔도 접근 권한은 그대로다.
+//  · vendor/(외부 라이브러리·글꼴): 배포 사이에 바뀌지 않으므로 30일간 서버에 묻지 않고 PC에 저장된 것을 쓴다.
+//    라이브러리를 교체할 때는 파일명을 바꾸거나 index.html의 주소 뒤에 ?v=날짜 를 붙여야 사용자 PC에 바로 반영된다.
+//  · 그 밖(index.html, script.js, style.css 등): 배포 때마다 같은 이름으로 바뀌므로 매번 확인(no-cache)한다.
+//    안 바뀌었으면 본문 없이 304만 오가고, 바뀌었으면 즉시 새 파일을 받는다(강력 새로고침 불필요).
+//  · /api/ 로 시작하는 요청은 여기서 파일을 찾지 않고 바로 넘긴다(지도 타일 요청마다 디스크를 확인하지 않게).
+//  · 글자로 된 파일(HTML/JS/CSS 등)은 압축해서 보낸다(lib/gzip.js) — 화면 코드가 1/3~1/5 크기로 간다.
+const staticDir = path.join(__dirname, '..', config.serveDir);
+const VENDOR_MAX_AGE_SEC = 30 * 24 * 60 * 60;
+function setStaticCacheHeaders(res, filePath) {
+    const rel = path.relative(staticDir, filePath).split(path.sep).join('/');
+    res.setHeader('Cache-Control', rel.startsWith('vendor/') ? `public, max-age=${VENDOR_MAX_AGE_SEC}` : 'no-cache');
+}
+const serveStaticGzip = gzipStatic(staticDir, setStaticCacheHeaders);
+const serveStatic = express.static(staticDir, { setHeaders: setStaticCacheHeaders });
+app.use((req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    return serveStaticGzip(req, res, () => serveStatic(req, res, next));
+});
+
+// 큰 JSON 응답(노선 트리·선형·시설물 목록 등)도 압축해서 보낸다.
+app.use('/api', gzipJson);
+
 app.use(express.json());
 app.use('/api', require('./lib/csrfOrigin').csrfOriginCheck);
+// 세션 저장소의 DB 왕복 줄이기(요청마다 읽기+만료시각 갱신 → 몇 초에 한 번 읽기, 몇 분에 한 번 갱신) — lib/sessionTuning.js
+const sessionStore = tuneSessionStore(new pgSession({ pool, tableName: 'session' }), {
+    maxAgeMs: config.sessionMaxAgeHours * 60 * 60 * 1000,
+});
+
 app.use(
     session({
-        store: new pgSession({ pool, tableName: 'session' }),
+        store: sessionStore,
         secret: config.sessionSecret,
         resave: false,
         saveUninitialized: false,
@@ -116,9 +149,6 @@ app.use('/api/road-issues', roadIssuesRoutes);
 app.use('/api/bulk-import', bulkImportRoutes);
 app.use('/api/audit-log', auditLogRoutes);
 app.use('/api/facility-history', facilityHistoryRoutes);
-
-const staticDir = path.join(__dirname, '..', config.serveDir);
-app.use(express.static(staticDir));
 
 // 전역 에러 핸들러 — 각 라우트의 자체 try/catch를 빠져나간 예외(주로 throw err로
 // 위임된 것들)까지 여기서 잡아서, DB 에러 메시지(테이블/제약조건명 등)나 스택
