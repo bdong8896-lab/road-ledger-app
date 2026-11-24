@@ -117,6 +117,8 @@ async function inspect(inputPath, onStep = () => {}) {
         const errors = [];
         const warns = [];
         parsed.blockingWarnings.forEach((w) => errors.push(w));
+        // 파일명 형식이 달라 읽히지 않은 레이어 파일 — 표준 레이어코드의 오타로 보이면 오류(그 레이어가 등록되지 않음), 그 외는 경고
+        parsed.ignoredLayerFiles.forEach((g) => (g.suggestion ? errors : warns).push(g.message));
         layers.forEach((l) => {
             if (l.missingRequired.length) errors.push(`${l.code} ${l.name}: 필수 필드가 DBF에 없습니다 — ${l.missingRequired.join(', ')}`);
             if (l.skippedWrongSchema) errors.push(`${l.code} ${l.name}: 다른 레이어의 속성표가 들어 있어 ${l.skippedWrongSchema}건은 등록되지 않습니다`);
@@ -146,6 +148,7 @@ async function inspect(inputPath, onStep = () => {}) {
             deliveryCodes: parsed.deliveryCodes,
             sectionCount: parsed.sectionRecords.length,
             unknownLayerCodes: parsed.unknownLayerCodes,
+            ignoredLayerFiles: parsed.ignoredLayerFiles,
             totalNew: layers.reduce((s, l) => s + l.newCount, 0),
             totalDelete: layers.reduce((s, l) => s + l.deleteCount, 0),
             layers,

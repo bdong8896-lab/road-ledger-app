@@ -115,8 +115,62 @@ async function getTableColumns(table) {
     };
 }
 
+// 레이어 폴더(LAYER/신규, LAYER/삭제) 안에 있는데 {관리번호}_{레이어코드}_{N|D} 형식이 아니라서 읽히지 않은 파일.
+// 예) 589502026003003_A00200000_N.dbf — 레이어코드의 0이 하나 많아(숫자 8자) 통째로 무시되고, 도로대장총괄(A0020000)이
+//     빠지면 그 구간이 만들어지지 않는다. 예전에는 아무 알림 없이 건너뛰었다(unknownLayerCodes는 형식이 맞는 것만 본다).
+const LAYER_STEM_RE = /^(\d+)_([A-Z][0-9]{7})_(N|D)$/i;
+const LAYER_COMPANION_EXTS = new Set(['.dbf', '.shp', '.shx', '.prj']);
+const IGNORED_FILE_LIMIT = 200;
+
+// 코드가 한두 글자 어긋난 오타로 보이면(숫자가 하나 많거나 적음) 가장 가까운 표준 레이어코드를 알려 준다.
+function suggestLayerCode(stem) {
+    const m = stem.match(/^.*?_([A-Za-z][0-9]+)_[A-Za-z]$/);
+    if (!m) return null;
+    const code = m[1].toUpperCase();
+    const candidates = [];
+    if (code.length > 8) {
+        for (let i = 1; i < code.length; i++) candidates.push(code.slice(0, i) + code.slice(i + 1));
+    } else if (code.length < 8) {
+        for (let i = 1; i <= code.length; i++) candidates.push(code.slice(0, i) + '0' + code.slice(i));
+    }
+    const hit = candidates.find((c) => GOV_LAYER_MAP[c]);
+    return hit ? { code: hit, koreanName: GOV_LAYER_MAP[hit].koreanName } : null;
+}
+
+function findIgnoredLayerFiles(allFiles) {
+    const groups = new Map(); // 폴더|파일명(확장자 제외) -> { deliveryCode, folder, stem, exts[] }
+    for (const f of allFiles) {
+        const ext = path.extname(f).toLowerCase();
+        if (!LAYER_COMPANION_EXTS.has(ext)) continue;
+        const dir = path.dirname(f);
+        const folder = path.basename(dir);
+        if (!['신규', '삭제'].includes(folder) || path.basename(path.dirname(dir)).toUpperCase() !== 'LAYER') continue;
+        const stem = path.basename(f, path.extname(f));
+        if (LAYER_STEM_RE.test(stem)) continue;
+        const key = `${dir}|${stem}`;
+        if (!groups.has(key)) groups.set(key, { deliveryCode: path.basename(path.dirname(path.dirname(dir))), folder, stem, exts: [] });
+        groups.get(key).exts.push(ext);
+    }
+    return [...groups.values()]
+        .sort((a, b) => a.deliveryCode.localeCompare(b.deliveryCode) || a.stem.localeCompare(b.stem))
+        .slice(0, IGNORED_FILE_LIMIT)
+        .map((g) => {
+            const suggestion = suggestLayerCode(g.stem);
+            const files = `${g.stem}${g.exts.length > 1 ? `(${g.exts.join(' ')})` : g.exts[0]}`;
+            let message;
+            if (suggestion) {
+                message = `납품 ${g.deliveryCode} — 파일명 오류로 읽히지 않았습니다: ${files}. 레이어코드가 형식(영문 1자+숫자 7자)에 맞지 않습니다 — ${suggestion.code}(${suggestion.koreanName})의 오타로 보입니다. 고치지 않으면 이 레이어는 등록되지 않습니다.`;
+                if (suggestion.code === 'A0020000') message += ' 도로대장총괄이 없으면 이 구간 자체가 만들어지지 않습니다.';
+            } else {
+                message = `납품 ${g.deliveryCode} — LAYER/${g.folder}에 {관리번호}_{레이어코드}_{N|D} 형식이 아닌 파일이 있어 읽히지 않았습니다: ${files}.`;
+            }
+            return { deliveryCode: g.deliveryCode, folder: g.folder, stem: g.stem, exts: g.exts, suggestion, message };
+        });
+}
+
 async function parseDelivery(extractDir) {
-    const dbfFiles = walkFiles(extractDir).filter((f) => path.basename(f).match(LAYER_FILE_RE));
+    const allFiles = walkFiles(extractDir);
+    const dbfFiles = allFiles.filter((f) => path.basename(f).match(LAYER_FILE_RE));
 
     // 납품 루트별로 묶는다 — 루트 하나 = 노선(구간) 하나.
     const deliveries = new Map(); // root -> { code, dbfFiles: [] }
@@ -360,6 +414,7 @@ async function parseDelivery(extractDir) {
         layers,
         sectionRecords,
         unknownLayerCodes: [...new Set(unknownLayerCodes)],
+        ignoredLayerFiles: findIgnoredLayerFiles(allFiles),
         blockingWarnings,
         krris,
     };

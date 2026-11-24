@@ -4980,6 +4980,9 @@ function initBulkRegister() {
 
         const allWarnings = [];
         if (data.unknownLayerCodes.length) allWarnings.push(`알 수 없는 레이어코드: ${data.unknownLayerCodes.join(', ')}`);
+        // 파일명 형식이 달라 읽히지 않은 레이어 파일(예: A0020000 → A00200000 오타) — 오타로 보이는 것은 앞쪽에, 눈에 띄게
+        (data.ignoredLayerFiles || []).slice().sort((a, b) => (b.suggestion ? 1 : 0) - (a.suggestion ? 1 : 0))
+            .forEach((g) => allWarnings.push(`${g.suggestion ? '⚠ 파일명 오류 — ' : ''}${g.message}`));
         data.layers.forEach((l) => l.warnings.forEach((w) => allWarnings.push(w)));
         if (allWarnings.length) {
             warningsEl.innerHTML = allWarnings.map((w) => escapeHtml(w)).join('<br>');

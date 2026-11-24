@@ -50,6 +50,7 @@ function summarizeForPreview(parsed) {
         deliveryCodes: parsed.deliveryCodes,
         dbfMcoCode: parsed.dbfMcoCode,
         unknownLayerCodes: parsed.unknownLayerCodes,
+        ignoredLayerFiles: parsed.ignoredLayerFiles,   // 파일명 형식이 달라 읽히지 않은 레이어 파일(오타 등)
         blockingWarnings: parsed.blockingWarnings,
         layers: parsed.layers.map((l) => ({
             code: l.code, table: l.table, koreanName: l.koreanName,
