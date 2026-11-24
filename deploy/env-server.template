@@ -1,0 +1,46 @@
+# 도로대장 시스템 — 서버용 설정 템플릿 (서버용 USB 키트에 .env.template 이름으로 들어간다)
+# 서버에서  Copy-Item .env.template .env  로 복사한 뒤, 아래 < > 로 표시된 값만 채운다.
+# < > 가 하나라도 남아 있으면 서버가 시작을 거부하거나 DB 에 접속하지 못한다.
+# 이 파일에는 비밀 값이 없다(키·비밀번호는 설치하는 서버에서 직접 채운다).
+
+# Node 가 듣는 포트. IIS(ARR)가 이 포트로 넘겨 준다(IIS 사이트 포트와 다름). 외부에는 열지 않는다.
+PORT=3000
+
+# PostgreSQL — 서버에 이미 설치된 것에 앱 전용 계정·DB 를 만들어 쓴다(키트 README [2]).
+# 포트는 사전 점검(preflight-server.ps1)이 알려 준다(기본 5432 가 아닐 수 있다).
+PGHOST=localhost
+PGPORT=<확인한 PostgreSQL 포트>
+PGDATABASE=DSMap
+PGUSER=DSMap
+PGPASSWORD=<DB 계정 비밀번호>
+
+# 세션 서명 키 — 서버마다 새로 만든 16자 이상 무작위 문자열(공개된 값·예시 재사용 금지).
+# 만드는 법(PowerShell):  [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+SESSION_SECRET=<무작위 문자열 16자 이상>
+SESSION_MAX_AGE_HOURS=8
+
+# 브이월드(VWorld) 지도 — 이 서버 접속 주소로 새로 발급받은 키.
+# VWORLD_REFERER 는 VWorld 개발자센터에 등록한 "서비스 URL" 과 글자 그대로 같아야 한다(http/https·포트 포함).
+VWORLD_API_KEY=<브이월드 API 키>
+VWORLD_REFERER=http://<서버 IP 또는 도메인>:<IIS 사이트 포트>/
+
+# CCTV(국가교통정보센터 ITS) 키 — 없으면 CCTV 레이어만 비어 있고 나머지는 정상이다. 쓰지 않으면 이 줄을 비워 둔다.
+ITS_CCTV_API_KEY=
+
+# 화면은 반드시 난독화본(public-dist)으로 — 빠뜨리면 원본 소스가 그대로 서비스된다.
+SERVE_DIR=public-dist
+
+# 서버 운영 로그 보관 일수(기본 365) / 관리 콘솔 비밀번호 재인증 유효시간(분)
+LOG_RETENTION_DAYS=365
+ADMIN_REAUTH_MINUTES=15
+
+# 관할이 없는(전체 권한) 계정의 지도 하단 저작권 문구. 관할 지자체 계정은 지자체 영문명으로 자동 생성된다. 비우면 표시 안 함.
+SITE_COPYRIGHT=
+
+# 브이월드 타일 서버 보관을 끄려면 주석 해제(기본은 켜짐: server\tile-cache, 응답 기한까지만 보관)
+#TILE_CACHE=off
+
+# ── HTTPS 로 운영할 때만(HTTP 에서 COOKIE_SECURE 를 켜면 로그인이 안 된다) ──
+#COOKIE_SECURE=true
+# 데이터를 바꾸는 요청의 출처를 엄격히 검사하려면(로그인·저장이 정상인 것을 확인한 뒤): 접속 주소 그대로
+#ALLOWED_ORIGINS=http://<서버 IP 또는 도메인>:<포트>

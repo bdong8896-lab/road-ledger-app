@@ -1,38 +1,44 @@
-﻿# 화성 서버(폐쇄망, USB 반입)용 설치 키트를 만든다 — 개발 PC 에서 실행.
+﻿# 서버용 USB 설치 키트(폐쇄망, USB 반입)를 만든다 — 개발 PC 에서 실행. 어느 시군구 서버에도 쓸 수 있다(특정 지자체 값은 들어가지 않는다).
 #   powershell -NoProfile -ExecutionPolicy Bypass -File deploy\build-usb-kit.ps1 -NssmExe <nssm-2.24\win64\nssm.exe>
 # 담는 것: 서버·화면(난독화 public-dist)·web.config·운영용 node_modules·PM2 오프라인본·NSSM·사전 점검 스크립트·설치 순서
 # 안 담는 것: Node.js, IIS 확장(URL Rewrite/ARR) — 서버 담당이 따로 준비한다.
-# server\.env.production(운영 키가 든 git 제외 파일)이 키트에 그대로 들어가므로 USB 보관에 주의한다.
+# 설정(.env)은 비밀 값 없는 템플릿(deploy\env-server.template → 키트의 server\.env.template)만 담는다 — 서버에서 값을 채워 .env 로 쓴다.
+#   특정 서버의 설정 파일을 미리 넣어 가려면 -EnvFile <파일> 을 준다(그 파일에 든 키·비밀번호가 USB 에 그대로 실리므로 보관에 주의).
 param(
     [string]$OutDir = '',
     [string]$NssmExe = '',
+    [string]$EnvFile = '',
     [string]$ProjectDir = ''
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $ProjectDir) { $ProjectDir = Split-Path -Parent $here }
-if (-not $OutDir) { $OutDir = Join-Path (Split-Path -Parent $ProjectDir) '화성서버_USB키트' }
+if (-not $OutDir) { $OutDir = Join-Path (Split-Path -Parent $ProjectDir) '서버용_USB키트' }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 function Step($m) { Write-Host ""; Write-Host "[$m]" -ForegroundColor Cyan }
 function Fail($m) { Write-Host "  실패: $m" -ForegroundColor Red; exit 1 }
 function SizeMB($p) { [math]::Round(((Get-ChildItem $p -Recurse -File -Force | Measure-Object Length -Sum).Sum) / 1MB, 0) }
 
-$envProd = Join-Path $ProjectDir 'server\.env.production'
-if (-not (Test-Path $envProd)) { Fail "server\.env.production 이 없습니다: $envProd" }
-$envText = [System.IO.File]::ReadAllText($envProd, [System.Text.Encoding]::UTF8)
-if ($envText -match '(?m)^COOKIE_SECURE\s*=\s*true') { Write-Host '  주의: .env.production 에 COOKIE_SECURE=true 가 켜져 있습니다 — HTTP 운영이면 로그인이 안 됩니다.' -ForegroundColor Yellow }
-if ($envText -notmatch '(?m)^SERVE_DIR\s*=\s*public-dist') { Fail '.env.production 에 SERVE_DIR=public-dist 가 없습니다(없으면 원본 소스가 서비스됨).' }
-if ($envText -match '(?m)^ITS_CCTV_API_KEY\s*=\s*<') { Write-Host '  주의: ITS_CCTV_API_KEY 가 아직 자리표시자입니다.' -ForegroundColor Yellow }
+$envTemplate = Join-Path $here 'env-server.template'
+if (-not (Test-Path $envTemplate)) { Fail "설정 템플릿이 없습니다: $envTemplate" }
+if ($EnvFile) {
+    if (-not (Test-Path $EnvFile)) { Fail "-EnvFile 을 찾을 수 없습니다: $EnvFile" }
+    $envText = [System.IO.File]::ReadAllText($EnvFile, [System.Text.Encoding]::UTF8)
+    if ($envText -match '(?m)^COOKIE_SECURE\s*=\s*true') { Write-Host '  주의: -EnvFile 에 COOKIE_SECURE=true 가 켜져 있습니다 — HTTP 운영이면 로그인이 안 됩니다.' -ForegroundColor Yellow }
+    if ($envText -notmatch '(?m)^SERVE_DIR\s*=\s*public-dist') { Fail '-EnvFile 에 SERVE_DIR=public-dist 가 없습니다(없으면 원본 소스가 서비스됨).' }
+    Write-Host '  -EnvFile 사용: 그 파일의 키·비밀번호가 키트에 그대로 들어갑니다(USB 보관 주의).' -ForegroundColor Yellow
+}
 
 if (Test-Path $OutDir) { Remove-Item -Recurse -Force $OutDir }
 $app = Join-Path $OutDir 'Dsmap_ROAD'
 New-Item -ItemType Directory -Force -Path $app, (Join-Path $OutDir 'tools') | Out-Null
 
 Step '1/6 서버 코드'
-# 제외: node_modules(아래에서 새로 만든다), 로그·업로드·백업, 개발용 .env/.env.bak, 이전 서버용 옛 복사본 env.production(점 없는 이름)
-& robocopy (Join-Path $ProjectDir 'server') (Join-Path $app 'server') /E /NFL /NDL /NJH /NJS /NP /XD node_modules logs uploads backups tile-cache /XF .env .env.bak env.production *.log | Out-Null
+# 제외: node_modules(아래에서 새로 만든다), 로그·업로드·백업, 이 PC 의 .env/.env.bak/.env.production(특정 서버의 키·비밀번호가 든 파일 — 키트에 넣지 않는다), 옛 복사본 env.production
+& robocopy (Join-Path $ProjectDir 'server') (Join-Path $app 'server') /E /NFL /NDL /NJH /NJS /NP /XD node_modules logs uploads backups tile-cache /XF .env .env.bak .env.production env.production *.log | Out-Null
 if ($LASTEXITCODE -ge 8) { Fail "server 복사 오류(robocopy $LASTEXITCODE)" }
 New-Item -ItemType Directory -Force -Path (Join-Path $app 'server\uploads'), (Join-Path $app 'server\logs') | Out-Null
+if ($EnvFile) { Copy-Item $EnvFile (Join-Path $app 'server\.env.production') -Force } else { Copy-Item $envTemplate (Join-Path $app 'server\.env.template') -Force }
 Write-Host "  server: $(SizeMB (Join-Path $app 'server')) MB"
 
 Step '2/6 화면(난독화 public-dist) + web.config + 배포 문서'
@@ -100,4 +106,5 @@ foreach ($rel in 'tools\nssm\nssm.exe', 'tools\pm2-offline.zip', 'Dsmap_ROAD\pub
 
 Write-Host ""
 Write-Host "키트 완성: $OutDir  (전체 $(SizeMB $OutDir) MB)" -ForegroundColor Green
-Write-Host '  USB 에 폴더째 복사 → 서버에서 README_설치순서.txt 를 따른다. (.env.production 에 운영 키가 있으니 USB 관리 주의)'
+if ($EnvFile) { Write-Host '  USB 에 폴더째 복사 → 서버에서 README_설치순서.txt 를 따른다. (-EnvFile 로 넣은 server\.env.production 에 키·비밀번호가 있으니 USB 관리 주의)' }
+else { Write-Host '  USB 에 폴더째 복사 → 서버에서 README_설치순서.txt 를 따른다. (설정 파일에는 비밀 값이 없다 — 서버에서 .env.template 을 .env 로 복사해 채운다)' }
