@@ -32,6 +32,22 @@ function fetchCctv(roadType, bbox) {
     });
 }
 
+// ITS 응답의 response.data 는 보통 배열이지만, 해당 범위에 CCTV 가 1개뿐이거나 오류·안내 응답일 때는
+// 배열이 아닌 객체로 오는 경우가 있다 — 그대로 펼치면 "is not iterable" 로 전체가 502 가 되므로 모양을 가려서 받는다.
+let warnedShape = false;
+function cctvList(result, roadType) {
+    const data = result?.response?.data;
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === 'object') {
+        if (data.cctvurl || data.coordx !== undefined) return [data];   // 1건짜리 응답
+        if (!warnedShape) {                                              // 오류·안내 응답: 한 번만 모양을 남겨 원인 파악에 쓴다
+            warnedShape = true;
+            console.warn(`[cctv] ${roadType}: 배열이 아닌 응답(${JSON.stringify(data).slice(0, 200)}) — 건너뜁니다.`);
+        }
+    }
+    return [];
+}
+
 router.get('/', async (req, res) => {
     const { minX, maxX, minY, maxY } = req.query;
     if (!minX || !maxX || !minY || !maxY) {
@@ -52,8 +68,8 @@ router.get('/', async (req, res) => {
             fetchCctv('its', bbox),
         ]);
         const items = [
-            ...(exResult?.response?.data || []),
-            ...(itsResult?.response?.data || []),
+            ...cctvList(exResult, 'ex'),
+            ...cctvList(itsResult, 'its'),
         ];
         res.json({ items });
     } catch (err) {
