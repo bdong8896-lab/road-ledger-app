@@ -27,12 +27,34 @@ function readFieldDescriptors(buf, offset) {
     return { fields, headerEnd: pos + 1 };
 }
 
+const utf8Strict = new TextDecoder('utf-8', { fatal: true });
+// UTF-8로 온전히 읽히고 그 안에 한글(또는 한자)이 있으면 "UTF-8로 저장된 한글"로 본다. EUC-KR 글자 한두 개가 우연히 UTF-8 규칙에
+// 맞는 경우(라틴 기호로 읽힘)는 한글이 나오지 않으므로 여기서 걸러진다.
+function isValidUtf8(raw) {
+    try { return /[가-힣ㄱ-ㆎ一-鿿]/.test(utf8Strict.decode(raw)); } catch (e) { return false; }
+}
+function hasHighByte(raw) {
+    for (let i = 0; i < raw.length; i++) if (raw[i] >= 0x80) return true;
+    return false;
+}
+
+// 문자(C) 필드의 인코딩 점검용 집계 — 한글이 EUC-KR이 아닌 방식(UTF-8 등)으로 저장됐거나, 저장 중 글자가 깨졌는지 본다.
+//   utf8Like : 한글(비ASCII) 값 중 UTF-8로 읽어도 온전한 값 — EUC-KR 한글은 UTF-8로는 거의 항상 깨지므로, 이 값이 많으면 UTF-8로 저장된 파일이다.
+//   invalid  : EUC-KR로 읽을 수 없는 바이트가 섞인 값(디코딩하면 � 가 나온다)
+//   question : 글자가 '?'로 바뀐 것으로 보이는 값('??' 이상 연속) — 내보내기 때 코드페이지가 맞지 않아 글자가 사라진 경우
+const ENCODING_SAMPLE_LIMIT = 5;
+function newEncodingStats() {
+    return { nonAscii: 0, utf8Like: 0, invalid: 0, question: 0, samples: [] };
+}
+
 // encoding: 문자(C) 필드를 디코딩할 인코딩(기본 euc-kr). buf: 파일 전체 Buffer.
+// 반환: { fields, records, encodingStats, languageDriver } — languageDriver는 DBF 머리의 언어 드라이버 바이트(참고용).
 function parseDbf(buf, encoding = 'euc-kr') {
     const numRecords = buf.readUInt32LE(4);
     const headerLen = buf.readUInt16LE(8);
     const recordLen = buf.readUInt16LE(10);
     const { fields } = readFieldDescriptors(buf, 32);
+    const encodingStats = newEncodingStats();
 
     const records = [];
     let pos = headerLen;
@@ -49,7 +71,20 @@ function parseDbf(buf, encoding = 'euc-kr') {
             const raw = recordBuf.slice(fieldOffset, fieldOffset + field.length);
             fieldOffset += field.length;
             if (field.type === 'C') {
-                row[field.name] = iconv.decode(raw, encoding).trim();
+                const text = iconv.decode(raw, encoding).trim();
+                row[field.name] = text;
+                if (hasHighByte(raw)) {
+                    encodingStats.nonAscii++;
+                    // UTF-8로 온전히 읽히는지를 먼저 본다 — UTF-8 한글을 EUC-KR로 읽으면 � 가 섞여 나오므로 순서가 바뀌면 "깨짐"으로 오판한다.
+                    const bad = isValidUtf8(raw) ? 'utf8Like' : (text.includes('�') ? 'invalid' : null);
+                    if (bad) {
+                        encodingStats[bad]++;
+                        if (encodingStats.samples.length < ENCODING_SAMPLE_LIMIT) encodingStats.samples.push({ row: records.length + 1, field: field.name, value: text });
+                    }
+                } else if (text.includes('??')) {
+                    encodingStats.question++;
+                    if (encodingStats.samples.length < ENCODING_SAMPLE_LIMIT) encodingStats.samples.push({ row: records.length + 1, field: field.name, value: text });
+                }
             } else {
                 const text = raw.toString('latin1').trim();
                 if (field.type === 'N' || field.type === 'F') {
@@ -63,7 +98,7 @@ function parseDbf(buf, encoding = 'euc-kr') {
         }
         records.push(row);
     }
-    return { fields, records };
+    return { fields, records, encodingStats, languageDriver: buf[29] };
 }
 
 module.exports = { parseDbf };

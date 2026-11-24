@@ -138,6 +138,104 @@ const VERDICT = {
     error: ['error', '등록할 수 없거나 일부가 등록되지 않는 문제가 있습니다', '아래 오류를 먼저 해결한 뒤 다시 올리세요.'],
 };
 
+const GEOM_LABEL = { Point: '점', Line: '선', Polygon: '면' };
+const SHOW_ROWS = 100; // 점검 표에서 화면에 보여주는 행 수(전체는 결함 목록 CSV)
+
+// 구간(관리번호 폴더)별 요약 — 구간마다 어떤 레이어가 몇 건 들어 있고 어디에 문제가 있는지 한눈에 본다.
+function renderSections(r) {
+    const secs = (r.integrity && r.integrity.sections) || [];
+    if (!secs.length) return '';
+    const chip = (cls, text) => `<span class="chip ${cls}">${text}</span>`;
+    const rows = secs.map((s) => {
+        const c = [];
+        if (!s.hasSection) c.push(chip('err', s.sectionNameTypo ? '총괄 파일명 오류' : '총괄 없음'));
+        if (s.issues.dup) c.push(chip('err', `ID 중복 ${fmt(s.issues.dup)}`));
+        if (s.issues.encoding) c.push(chip('warn', `한글 인코딩 ${fmt(s.issues.encoding)}`));
+        if (s.issues.geom) c.push(chip('warn', `도형 ${fmt(s.issues.geom)}`));
+        if (s.issues.mismatch) c.push(chip('warn', `관리번호 불일치 ${fmt(s.issues.mismatch)}`));
+        if (s.issues.nn) c.push(chip('warn', `필수값 빈칸 ${fmt(s.issues.nn)}`));
+        if (s.issues.code) c.push(chip('warn', `코드표 외 ${fmt(s.issues.code)}`));
+        const layerList = s.layers.map((l) => `<span class="chip gray">${esc(l.koreanName)} ${fmt(l.newCount)}${l.deleteCount ? ` / 삭제 ${fmt(l.deleteCount)}` : ''}</span>`).join('');
+        return `<tr><td class="mono">${esc(s.deliveryCode)}</td>
+            <td>${esc(s.roadName || '-')} <span class="mono">${esc(s.roadNo)}-${esc(s.sect)}</span></td>
+            <td class="num">${fmt(s.layerCount)}</td><td class="num">${fmt(s.newTotal)}</td><td class="num">${fmt(s.deleteTotal)}</td>
+            <td>${c.join('') || chip('ok', '이상 없음')}<details><summary>레이어별 건수</summary><div style="margin-top:4px">${layerList || '-'}</div></details></td></tr>`;
+    }).join('');
+    return `<section class="card"><h2>구간별 요약</h2><div class="scroll"><table>
+        <thead><tr><th>관리번호</th><th>노선·구간</th><th class="num">레이어</th><th class="num">신규</th><th class="num">삭제</th><th>점검 결과</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="hint">관리번호 폴더 하나가 노선의 한 구간입니다. 도로대장총괄(A0020000)이 없는 구간은 새로 만들어지지 않고, 서버에 이미 있는 구간에만 시설물이 붙습니다.</div></section>`;
+}
+
+// 납품 데이터 점검 — ID 중복, 신규·삭제 충돌, 도형 종류, 한글 인코딩, 관리번호 일치, 파일 손상
+function renderIntegrity(r) {
+    const I = r.integrity;
+    if (!I) return '';
+    const fc = r.fileCheck || { brokenTotal: 0, broken: [] };
+    const state = (n, cls) => (n ? `<span class="chip ${cls}">${fmt(n)}건</span>` : '<span class="chip ok">이상 없음</span>');
+    const more = (total, shown) => (total > shown ? `<div class="more">화면에는 앞의 ${fmt(shown)}건만 보입니다. 전체는 결함 목록 CSV로 내려받으세요.</div>` : '');
+    const table = (head, rowsHtml) => `<div class="scroll"><table style="margin-top:6px"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
+    let html = `<section class="card"><div class="section-actions"><h2 style="margin:0">납품 데이터 점검</h2>
+        ${r.defectTotal ? `<a class="noprint" href="/api/defects.csv"><button>결함 목록 CSV 내려받기 (${fmt(r.defectTotal)}건)</button></a>` : ''}</div>`;
+
+    // 1) ID 중복
+    html += `<div><b>ID 중복</b> ${state(I.idDuplicateTotal, 'err')}</div>`;
+    if (I.idDuplicates.length) {
+        html += table(['레이어', 'ID', '횟수', '위치'], I.idDuplicates.slice(0, SHOW_ROWS).map((d) =>
+            `<tr><td>${esc(d.code)} ${esc(d.koreanName)}</td><td class="mono">${esc(d.pk)}</td><td class="num">${fmt(d.count)}</td><td class="mono">${esc(d.locations.join(' / '))}</td></tr>`).join(''));
+        html += more(I.idDuplicateTotal, Math.min(SHOW_ROWS, I.idDuplicates.length));
+        html += '<div class="hint">같은 ID는 한 건만 저장되고 나중 것이 앞의 것을 덮어씁니다. 의도한 것이 아니면 납품 업체에 ID를 고쳐 달라고 요청하세요.</div>';
+    }
+
+    // 2) 신규·삭제 충돌
+    html += `<div style="margin-top:10px"><b>신규·삭제에 같은 ID</b> ${state(I.deleteConflictTotal, 'err')}</div>`;
+    if (I.deleteConflicts.length) {
+        html += table(['레이어', 'ID'], I.deleteConflicts.slice(0, SHOW_ROWS).map((d) => `<tr><td>${esc(d.code)} ${esc(d.koreanName)}</td><td class="mono">${esc(d.pk)}</td></tr>`).join(''));
+        html += more(I.deleteConflictTotal, Math.min(SHOW_ROWS, I.deleteConflicts.length));
+        html += '<div class="hint">등록은 신규를 먼저 저장하고 삭제를 나중에 처리하므로, 같은 ID가 양쪽에 있으면 저장한 직후 지워집니다.</div>';
+    }
+
+    // 3) 도형 종류
+    const geomCount = I.geometry.reduce((s, g) => s + g.mismatch + g.none, 0);
+    html += `<div style="margin-top:10px"><b>도형 종류(점/선/면)</b> ${state(geomCount, 'warn')}</div>`;
+    if (I.geometry.length) {
+        html += table(['레이어', '표준', '실제 도형', '도형 없음', '예(ID)'], I.geometry.map((g) => {
+            const found = Object.entries(g.found).filter(([, n]) => n).map(([k, n]) => `${GEOM_LABEL[k]} ${fmt(n)}`).join(', ');
+            return `<tr><td>${esc(g.code)} ${esc(g.koreanName)}</td><td>${GEOM_LABEL[g.expected]}</td><td>${esc(found)}</td><td class="num">${fmt(g.none)}</td>
+                <td class="mono">${esc(g.samples.slice(0, 3).map((s) => s.pk).join(', '))}</td></tr>`;
+        }).join(''));
+        html += '<div class="hint">표준 SHP 템플릿(v2.3)의 도형 종류와 다릅니다. 다른 레이어를 잘못 내보냈거나 도형이 빠진 경우입니다.</div>';
+    }
+
+    // 4) 한글 인코딩
+    html += `<div style="margin-top:10px"><b>한글 인코딩(EUC-KR)</b> ${state(I.encoding.length, 'err')}</div>`;
+    if (I.encoding.length) {
+        const kindLabel = { utf8: 'UTF-8로 저장됨', broken: '글자 깨짐', question: "'?'로 바뀜" };
+        html += table(['납품', '파일', '판정', '값 개수', '예'], I.encoding.map((e) =>
+            `<tr><td class="mono">${esc(e.deliveryCode)}</td><td class="mono">${esc(e.file)}</td><td>${kindLabel[e.kind]}${e.cpg ? ` <span class="mono">(.cpg: ${esc(e.cpg)})</span>` : ''}</td>
+            <td class="num">${fmt(e.count)}</td><td class="mono">${e.samples[0] ? `${esc(e.samples[0].row)}행 ${esc(e.samples[0].field)} = ${esc(e.samples[0].value)}` : ''}</td></tr>`).join(''));
+        html += '<div class="hint">표준은 EUC-KR(CP949)입니다. UTF-8로 저장된 파일은 그대로 등록하면 한글이 깨집니다.</div>';
+    }
+
+    // 5) 관리번호와 노선·구간
+    const mmCount = I.routeMismatch.reduce((s, m) => s + m.count, 0);
+    html += `<div style="margin-top:10px"><b>관리번호와 노선·구간 일치</b> ${state(mmCount, 'warn')}</div>`;
+    if (I.routeMismatch.length) {
+        html += table(['납품', '레이어', '항목', '관리번호 기준', '파일의 값 (건수)'], I.routeMismatch.map((m) =>
+            `<tr><td class="mono">${esc(m.deliveryCode)}</td><td>${esc(m.code)} ${esc(m.koreanName)}</td><td>${m.field === 'road_no' ? '노선번호(ROAD_NO)' : '구간(SECT)'}</td>
+            <td class="mono">${esc(m.expected)}</td><td class="mono">${m.values.map((v) => `${esc(v.value)} (${fmt(v.count)}건)`).join(', ')}</td></tr>`).join(''));
+        html += '<div class="hint">관리번호(예: 589502026003003)는 관리기관 5자리 + 연도 4자리 + 노선번호 3자리 + 구간 3자리입니다. 이 값과 다른 레코드는 다른 노선·구간으로 등록됩니다.</div>';
+    }
+
+    // 6) 사진·보고서·도면 파일 손상
+    html += `<div style="margin-top:10px"><b>사진·보고서·도면 파일 손상</b> ${state(fc.brokenTotal, 'warn')} <span class="hint">(${fmt(fc.checked)}개 확인)</span></div>`;
+    if (fc.broken.length) {
+        html += table(['파일', '내용'], fc.broken.slice(0, SHOW_ROWS).map((b) => `<tr><td class="mono">${esc(b.name)}</td><td>${esc(b.reason)}</td></tr>`).join(''));
+        html += more(fc.brokenTotal, Math.min(SHOW_ROWS, fc.broken.length));
+        html += '<div class="hint">0바이트이거나, 확장자와 내용이 다르거나, 끝이 잘린 파일입니다. 등록은 되지만 열리지 않을 수 있습니다.</div>';
+    }
+    return html + '</section>';
+}
+
 function render(r) {
     const [cls, title, desc] = VERDICT[r.verdict];
     const list = (arr) => arr.length ? `<ul>${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
@@ -156,6 +254,8 @@ function render(r) {
     html += `<section class="card"><h2>관리번호</h2><div class="mono">${esc((r.deliveryCodes || []).join(', ') || '-')}</div>
         ${r.rankHints.length ? `<div class="hint">도로종류(파일명 인식): ${r.rankHints.map((h) => `${esc(h.deliveryCode)} → <b>${esc(h.name)}</b>`).join(', ')}</div>` : ''}
         <div class="hint">입력: ${esc(r.input.path)} (${r.input.kind === 'zip' ? 'ZIP' : '폴더'})</div></section>`;
+
+    html += renderSections(r);
 
     // 레이어 표
     html += `<section class="card"><h2>레이어별 결과</h2><div class="scroll"><table>
@@ -206,6 +306,8 @@ function render(r) {
             `<tr><td>${esc(d.code)} ${esc(d.layer)}</td><td class="mono">${esc(d.pk)}</td><td class="mono">${esc(d.file)}</td><td class="num">${esc(d.row)}</td><td>${esc(d.label)} <span class="mono">(${esc(d.field)})</span></td><td>${esc(d.detail)}</td></tr>`).join('')}</tbody></table></div></details>`;
     }
     html += `<div class="hint">좌표계는 변환해서 저장되므로 등록에는 영향이 없지만, 원본 그대로 KRRIS에 제출하면 반려됩니다. 빈 값은 납품 업체에서 채워야 합니다. QGIS에서는 CSV의 파일/행 열로 바로 찾을 수 있습니다.</div></section>`;
+
+    html += renderIntegrity(r);
 
     // 첨부
     const a = r.attachments;

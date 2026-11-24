@@ -7,7 +7,8 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const { requireAdminReauth } = require('../middleware/requireAuth');
-const { parseDelivery, krrisDefectRows } = require('../lib/bulkImportParse');
+const { parseDelivery, krrisDefectRows, publicIntegrity } = require('../lib/bulkImportParse');
+const { compareWithServer } = require('../lib/bulkImportCompare');
 const { runBulkConfirm } = require('../lib/bulkImportConfirm');
 const importBatch = require('../lib/importBatch');
 const { clientIp } = require('../lib/auditLog');
@@ -15,7 +16,7 @@ const {
     createEmptyStaging, extractZip, getExtractDir, cleanup, sweepOldStagingDirs,
     resolveIncomingDir, mergeIncomingDir, stageFromIncomingDir, listIncomingFolders,
 } = require('../lib/bulkImportStaging');
-const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles } = require('../lib/bulkImportAttachments');
+const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles, checkFileIntegrity } = require('../lib/bulkImportAttachments');
 const { detectRankNameHints } = require('../lib/bulkImportRank');
 const { parseSectorShpFiles } = require('../lib/bulkImportSectors');
 
@@ -60,9 +61,29 @@ function summarizeForPreview(parsed) {
         totalNew: parsed.layers.reduce((s, l) => s + l.newRecords.length, 0),
         totalDelete: parsed.layers.reduce((s, l) => s + l.deleteRecords.length, 0),
         krris: parsed.krris,
+        // 납품 데이터 점검(ID 중복·도형 종류·한글 인코딩·관리번호 일치)과 구간별 요약
+        integrity: publicIntegrity(parsed.integrity),
         // 500m 구간 SHP 파일명(면도0101.shp 등)에서 알아낸 도로종류 이름 — 코드가 1599(기타)인 노선만
         rankNameHints: detectRankNameHints(parsed.sectionRecords),
     };
+}
+
+// 서버 기존 데이터와의 비교(덮어쓰기·중복 위험)와 첨부 파일 손상 점검 — 둘 다 미리보기를 못 보여줄 만큼 중요하지는 않아서,
+// 실패하면 로그만 남기고 그 항목만 비운다.
+async function extraChecks(parsed, extractDir, sessionUser) {
+    let serverCompare = null;
+    try {
+        serverCompare = await compareWithServer(parsed, sessionUser.sigunguCode || null);
+    } catch (e) {
+        console.error('[bulk-import/compare]', e.message);
+    }
+    let fileCheck = null;
+    try {
+        fileCheck = checkFileIntegrity([...findFacilityAttachments(extractDir), ...findDrawingFiles(extractDir), ...findLooseDrawingFiles(extractDir)]);
+    } catch (e) {
+        console.error('[bulk-import/file-check]', e.message);
+    }
+    return { serverCompare, fileCheck };
 }
 
 // extractDir이 이미 채워진 뒤(zip 압축해제든, 폴더 업로드 재구성이든, 서버
@@ -83,8 +104,10 @@ async function buildPreviewPayload(extractDir, incomingFolderName, sessionUser) 
         ? findFacilityAttachments(extractDir).length + findDrawingFiles(extractDir).length + findLooseDrawingFiles(extractDir).length
         : 0;
     const sectors = parseSectorShpFiles(extractDir);
+    const extra = await extraChecks(parsed, extractDir, sessionUser);
     return {
         suggestedSigunguCode: sessionUser.sigunguCode || null,
+        ...extra,
         mergedLargeFiles,
         largeFileCount,
         sectorCount: sectors.records.length,
@@ -168,9 +191,11 @@ router.post('/preview-from-folder', async (req, res) => {
         const largeFileCount = findFacilityAttachments(staged.extractDir).length + findDrawingFiles(staged.extractDir).length
             + findLooseDrawingFiles(staged.extractDir).length;
         const sectors = parseSectorShpFiles(staged.extractDir);
+        const extra = await extraChecks(parsed, staged.extractDir, req.session.user);
         res.json({
             uploadId,
             suggestedSigunguCode: req.session.user.sigunguCode || null,
+            ...extra,
             mergedLargeFiles: true,
             largeFileCount,
             sectorCount: sectors.records.length,

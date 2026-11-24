@@ -20,6 +20,7 @@ const { detectCrs, reprojectGeometry, KRRIS_REQUIRED_EPSG } = require('./crsRegi
 const { getTableLabels } = require('./schemaLabels');
 const { CODEBOOK } = require('./govCodebook');
 const { CODE_ALIASES } = require('./codeAliases');
+const { GOV_LAYER_GEOM, GEOM_KIND_LABEL, geomKindOf } = require('./govLayerGeom');
 
 // KRRIS(국가 도로대장 검수) 사전검사 — 실제 장성군 납품 심사에서 지적된 결함 중
 // 기계적으로 판정할 수 있는 두 가지(C-1, M-1)와, 코드표 대조(V-1)를 미리보기 단계에서 잡는다.
@@ -168,6 +169,34 @@ function findIgnoredLayerFiles(allFiles) {
         });
 }
 
+// ---- 납품 데이터 점검: ID 중복 · 도형 종류 · 한글 인코딩 · 관리번호(노선·구간) 일치 ----
+// 등록은 되지만 결과가 어긋나는 경우(같은 ID가 덮어써짐, 지도에 엉뚱한 도형이 그려짐, 한글이 깨짐, 다른 구간으로 들어감)를
+// 미리보기/검수 단계에서 알려 주기 위한 것이다. 서버 미리보기와 별도 검수 프로그램이 같은 결과를 쓴다.
+const INTEGRITY_LIST_LIMIT = 500; // 화면·CSV에 담는 항목 수 상한(건수 집계는 상한과 무관하게 전부 센다)
+const INTEGRITY_SAMPLE_LIMIT = 3; // 메시지에 예로 보여주는 ID 개수
+const GEOM_SAMPLE_LIMIT = 200;
+
+// 관리번호 15자리 = 관리기관(5) + 연도(4) + 노선번호(3) + 구간(3). 예) 415902026101001 → 노선 101(0101), 구간 001.
+function routeFromDeliveryCode(code) {
+    const s = String(code || '');
+    if (!/^\d{15}$/.test(s)) return null;
+    return { mco: s.slice(0, 5), year: s.slice(5, 9), roadNo: Number(s.slice(9, 12)), sect: s.slice(12, 15) };
+}
+
+function readCpg(basePath) {
+    try { return fs.readFileSync(`${basePath}.cpg`, 'utf8').trim(); } catch (e) { return ''; }
+}
+
+// parseDbf가 모은 인코딩 집계를 판정한다. 한글 값의 절반 이상이 UTF-8로 읽히면 UTF-8로 저장된 파일로 본다.
+function judgeEncoding(stats) {
+    if (!stats) return null;
+    if (stats.nonAscii > 0 && stats.utf8Like >= Math.max(1, stats.nonAscii * 0.5)) return { kind: 'utf8', count: stats.utf8Like };
+    // 일부 값만 UTF-8이거나 깨진 경우(여러 곳에서 합친 데이터 등)
+    if (stats.invalid + stats.utf8Like > 0) return { kind: 'broken', count: stats.invalid + stats.utf8Like };
+    if (stats.question > 0) return { kind: 'question', count: stats.question };
+    return null;
+}
+
 async function parseDelivery(extractDir) {
     const allFiles = walkFiles(extractDir);
     const dbfFiles = allFiles.filter((f) => path.basename(f).match(LAYER_FILE_RE));
@@ -185,6 +214,15 @@ async function parseDelivery(extractDir) {
     const unknownLayerCodes = [];
     const layersByCode = new Map(); // 레이어 코드 -> 여러 납품 루트의 레코드를 합친 layer 객체
     const sectionRecords = []; // { deliveryRoot, row, geom } — A0020000(도로대장총괄) 레코드, 루트별로 구분
+
+    // 납품 데이터 점검 집계(레이어 밖에서 모으는 것들)
+    const rootIssues = new Map();      // 납품 루트 -> { nn, code, dup, geom, encoding, mismatch } 구간별 요약표용
+    const bump = (root, key, n = 1) => {
+        if (!rootIssues.has(root)) rootIssues.set(root, { nn: 0, code: 0, dup: 0, geom: 0, encoding: 0, mismatch: 0 });
+        rootIssues.get(root)[key] += n;
+    };
+    const encodingIssues = [];         // { code, koreanName, file, kind, count, nonAscii, cpg, samples }
+    const routeMismatches = new Map(); // 루트|레이어|필드 -> { deliveryCode, code, koreanName, field, expected, count, values, samples }
 
     for (const [deliveryRoot, { code: deliveryCode, dbfFiles: files }] of deliveries) {
         const layerEntries = []; // { code, kind, dbfPath } (이 납품 루트 안에서만)
@@ -217,10 +255,14 @@ async function parseDelivery(extractDir) {
                     codeDefects: [],      // V-1: { pk, file, row, field, value } — CODE_DEFECT_CAP까지만 담는다
                     codeTotal: 0,         // V-1 전체 건수(상한과 무관)
                     codeStats: new Map(), // V-1 집계: field -> Map(코드값 -> { count, samples })
+                    pkSeen: new Map(),    // 점검: 신규(N)에 나온 ID -> 처음 나온 위치("파일 n행") — 같은 ID가 또 나오면 중복
+                    dupGroups: new Map(), // 점검: 중복된 ID -> { pk, count, locations[] }
+                    geomStat: null,       // 점검: 도형 종류 집계(SHP가 있는 레이어만)
                 });
             }
             const layer = layersByCode.get(code);
             const { columns, requiredNoDefault } = await getTableColumns(layerDef.table);
+            layer.routeCols = columns.has('road_no') && columns.has('sect'); // 서버 기존 데이터와 비교할 때 쓴다
 
             for (const kind of ['N', 'D']) {
                 const dbfPath = kinds[kind];
@@ -233,6 +275,16 @@ async function parseDelivery(extractDir) {
                 } catch (e) {
                     layer.warnings.push(`${path.basename(dbfPath)}: DBF 파싱 실패 — ${e.message}`);
                     continue;
+                }
+
+                // 한글 인코딩 점검 — 표준은 EUC-KR(CP949). UTF-8로 저장됐거나 글자가 깨진 파일을 잡는다.
+                const enc = judgeEncoding(parsed.encodingStats);
+                if (enc) {
+                    encodingIssues.push({
+                        code, koreanName: layerDef.koreanName, deliveryCode: deliveryLabel, file: path.basename(dbfPath), kind: enc.kind, count: enc.count,
+                        nonAscii: parsed.encodingStats.nonAscii, cpg: readCpg(basePath), samples: parsed.encodingStats.samples,
+                    });
+                    bump(deliveryRoot, 'encoding', enc.count);
                 }
 
                 // 필드명 대조(여러 납품 루트가 있어도 매번 다시 검증 — 저렴한 검사라 문제없음)
@@ -340,6 +392,7 @@ async function parseDelivery(extractDir) {
                                 field,
                                 kind: v === null || v === undefined ? 'null' : 'empty',
                             });
+                            bump(deliveryRoot, 'nn');
                             // null은 확정 단계 INSERT를 실패시켜 일괄등록 전체를 롤백시키므로,
                             // 이 레코드만 저장에서 빼고 나머지는 정상 진행한다.
                             if (v === null || v === undefined) rec.skipNnNull = true;
@@ -356,6 +409,7 @@ async function parseDelivery(extractDir) {
                                 const pkVal = rec.row[layer.pkColumn];
                                 const pk = isBlank(pkVal) ? `(${path.basename(dbfPath)} ${i + 1}번째 행)` : String(pkVal);
                                 layer.codeTotal++;
+                                bump(deliveryRoot, 'code');
                                 if (!layer.codeStats.has(field)) layer.codeStats.set(field, new Map());
                                 const byValue = layer.codeStats.get(field);
                                 if (!byValue.has(value)) byValue.set(value, { count: 0, samples: [] });
@@ -368,6 +422,80 @@ async function parseDelivery(extractDir) {
                             }
                         });
                     }
+
+                    const dbfName = path.basename(dbfPath);
+                    // 점검 1) ID 중복 — 같은 ID는 DB에 한 건만 남고 나중 것이 앞의 것을 덮어쓴다(ON CONFLICT DO UPDATE).
+                    rows.forEach((rec, i) => {
+                        const pkVal = rec.row[layer.pkColumn];
+                        if (isBlank(pkVal)) return;
+                        const pk = String(pkVal).trim();
+                        const where = `${dbfName} ${i + 1}행`;
+                        const first = layer.pkSeen.get(pk);
+                        if (first === undefined) { layer.pkSeen.set(pk, where); return; }
+                        let g = layer.dupGroups.get(pk);
+                        if (!g) { g = { pk, count: 1, locations: [first] }; layer.dupGroups.set(pk, g); }
+                        g.count++;
+                        if (g.locations.length < 5) g.locations.push(where);
+                        bump(rec.deliveryRoot, 'dup');
+                    });
+
+                    // 점검 2) 도형 종류 — 표준 SHP 템플릿의 점/선/면과 같은지, 도형이 비어 있지 않은지
+                    const expectedGeom = GOV_LAYER_GEOM[code];
+                    if (geoms && expectedGeom) {
+                        const g = layer.geomStat || (layer.geomStat = {
+                            expected: expectedGeom, total: 0, none: 0, mismatch: 0, found: { Point: 0, Line: 0, Polygon: 0 }, list: [],
+                        });
+                        rows.forEach((rec, i) => {
+                            g.total++;
+                            const kindOfGeom = geomKindOf(geoms[i]);
+                            const pkVal = rec.row[layer.pkColumn];
+                            const pk = isBlank(pkVal) ? `(${dbfName} ${i + 1}번째 행)` : String(pkVal);
+                            if (!kindOfGeom) {
+                                g.none++;
+                                bump(rec.deliveryRoot, 'geom');
+                                if (g.list.length < GEOM_SAMPLE_LIMIT) g.list.push({ pk, file: dbfName, row: i + 1, found: null });
+                                return;
+                            }
+                            g.found[kindOfGeom]++;
+                            if (kindOfGeom !== expectedGeom) {
+                                g.mismatch++;
+                                bump(rec.deliveryRoot, 'geom');
+                                if (g.list.length < GEOM_SAMPLE_LIMIT) g.list.push({ pk, file: dbfName, row: i + 1, found: kindOfGeom });
+                            }
+                        });
+                    }
+
+                    // 점검 3) 관리번호와 레코드의 노선·구간 — 한 납품(관리번호) = 한 노선의 한 구간이라 레코드의 노선번호·구간이 같아야 한다.
+                    //          다르면 그 레코드가 엉뚱한 구간에 붙는다. (노선번호가 4자리로 1000 이상이면 관리번호(3자리)로 비교할 수 없어 건너뛴다.)
+                    const expectedRoute = routeFromDeliveryCode(deliveryCode);
+                    if (expectedRoute) {
+                        const note = (rec, i, field, actual, expected) => {
+                            const key = `${deliveryRoot}|${code}|${field}`;
+                            if (!routeMismatches.has(key)) {
+                                routeMismatches.set(key, { deliveryCode: deliveryLabel, code, koreanName: layerDef.koreanName, field, expected, count: 0, values: new Map(), samples: [] });
+                            }
+                            const m = routeMismatches.get(key);
+                            m.count++;
+                            m.values.set(actual, (m.values.get(actual) || 0) + 1);
+                            if (m.samples.length < GEOM_SAMPLE_LIMIT) {
+                                const pkVal = rec.row[layer.pkColumn];
+                                m.samples.push({ pk: isBlank(pkVal) ? `(${dbfName} ${i + 1}번째 행)` : String(pkVal), file: dbfName, row: i + 1, value: actual });
+                            }
+                            bump(rec.deliveryRoot, 'mismatch');
+                        };
+                        rows.forEach((rec, i) => {
+                            const { road_no: roadNo, sect } = rec.row;
+                            if (!isBlank(roadNo)) {
+                                const n = Number(roadNo);
+                                if (Number.isFinite(n) && n < 1000 && n !== expectedRoute.roadNo) note(rec, i, 'road_no', String(roadNo).trim(), String(expectedRoute.roadNo).padStart(4, '0'));
+                            }
+                            if (!isBlank(sect)) {
+                                const s = String(sect).trim();
+                                if (/^\d+$/.test(s) && s.padStart(3, '0') !== expectedRoute.sect) note(rec, i, 'sect', s, expectedRoute.sect);
+                            }
+                        });
+                    }
+
                     layer.newRecords.push(...rows);
                     // A0020000(도로대장총괄) 자체가 필수 필드 누락이면 road_sections 동기화도
                     // 시도하지 않는다 — gov_section INSERT를 건너뛰는 것과 같은 원칙.
@@ -386,6 +514,9 @@ async function parseDelivery(extractDir) {
     const layers = [...layersByCode.values()];
 
     const krris = buildKrrisChecks(layers);
+    const ignoredLayerFiles = findIgnoredLayerFiles(allFiles);
+    const integrity = buildIntegrity({ layers, deliveries, sectionRecords, rootIssues, encodingIssues, routeMismatches, ignoredLayerFiles });
+    for (const l of layers) { l.pkSeen = null; l.dupGroups = null; } // 큰 Map은 점검이 끝나면 비운다
 
     const blockingWarnings = [
         ...layers
@@ -414,10 +545,174 @@ async function parseDelivery(extractDir) {
         layers,
         sectionRecords,
         unknownLayerCodes: [...new Set(unknownLayerCodes)],
-        ignoredLayerFiles: findIgnoredLayerFiles(allFiles),
+        ignoredLayerFiles,
         blockingWarnings,
         krris,
+        integrity,
     };
+}
+
+// 위에서 모은 점검 결과를 화면·CSV·종합판정에 쓰는 모양으로 정리한다.
+function buildIntegrity({ layers, deliveries, sectionRecords, rootIssues, encodingIssues, routeMismatches, ignoredLayerFiles }) {
+    // ID 중복(신규 파일 안에서 같은 ID가 두 번 이상) / 신규와 삭제에 같은 ID
+    const idDuplicates = [];
+    const deleteConflicts = [];
+    let idDuplicateTotal = 0;
+    let idDuplicateRecords = 0;
+    let deleteConflictTotal = 0;
+    for (const l of layers) {
+        for (const g of l.dupGroups.values()) {
+            idDuplicateTotal++;
+            idDuplicateRecords += g.count;
+            if (idDuplicates.length < INTEGRITY_LIST_LIMIT) idDuplicates.push({ code: l.code, koreanName: l.koreanName, pk: g.pk, count: g.count, locations: g.locations });
+        }
+        // 확정은 신규를 먼저 저장하고 삭제를 나중에 처리한다 — 같은 ID가 둘 다 있으면 방금 저장한 것이 곧바로 지워진다.
+        for (const rec of l.deleteRecords) {
+            const pkVal = rec.row[l.pkColumn];
+            if (isBlank(pkVal)) continue;
+            const pk = String(pkVal).trim();
+            if (!l.pkSeen.has(pk)) continue;
+            deleteConflictTotal++;
+            if (deleteConflicts.length < INTEGRITY_LIST_LIMIT) deleteConflicts.push({ code: l.code, koreanName: l.koreanName, pk });
+        }
+    }
+
+    // 도형 종류 불일치 / 도형 없음
+    const geometry = layers.filter((l) => l.geomStat && (l.geomStat.mismatch || l.geomStat.none)).map((l) => ({
+        code: l.code, koreanName: l.koreanName, expected: l.geomStat.expected, total: l.geomStat.total,
+        mismatch: l.geomStat.mismatch, none: l.geomStat.none, found: l.geomStat.found, samples: l.geomStat.list,
+    }));
+
+    // 관리번호와 레코드의 노선·구간 불일치
+    const routeMismatch = [...routeMismatches.values()].map((m) => ({
+        deliveryCode: m.deliveryCode, code: m.code, koreanName: m.koreanName, field: m.field, expected: m.expected, count: m.count,
+        values: [...m.values.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+        samples: m.samples,
+    }));
+
+    // 구간(관리번호)별 요약
+    const perRoot = new Map(); // 루트 -> Map(레이어코드 -> { newCount, deleteCount })
+    for (const l of layers) {
+        for (const [key, list] of [['newCount', l.newRecords], ['deleteCount', l.deleteRecords]]) {
+            for (const rec of list) {
+                if (!perRoot.has(rec.deliveryRoot)) perRoot.set(rec.deliveryRoot, new Map());
+                const m = perRoot.get(rec.deliveryRoot);
+                if (!m.has(l.code)) m.set(l.code, { code: l.code, koreanName: l.koreanName, newCount: 0, deleteCount: 0 });
+                m.get(l.code)[key]++;
+            }
+        }
+    }
+    const sections = [];
+    for (const [root, info] of deliveries) {
+        const sec = sectionRecords.find((s) => s.deliveryRoot === root);
+        const route = routeFromDeliveryCode(info.code);
+        const layerList = [...(perRoot.get(root) || new Map()).values()].sort((a, b) => a.code.localeCompare(b.code));
+        const issues = rootIssues.get(root) || { nn: 0, code: 0, dup: 0, geom: 0, encoding: 0, mismatch: 0 };
+        const typoFixable = ignoredLayerFiles.some((g) => g.deliveryCode === info.code && g.suggestion && g.suggestion.code === 'A0020000');
+        sections.push({
+            _root: root, // 서버 안에서만 쓴다(서버 기존 데이터와 비교할 때 레코드를 구간에 묶는 키) — 화면에 보내기 전에 publicIntegrity()로 뺀다
+            deliveryCode: info.code,
+            roadName: sec ? String(sec.row.road_name || '').trim() : '',
+            roadNo: sec && !isBlank(sec.row.road_no) ? String(sec.row.road_no).trim() : (route ? String(route.roadNo).padStart(4, '0') : ''),
+            sect: sec && !isBlank(sec.row.sect) ? String(sec.row.sect).trim() : (route ? route.sect : ''),
+            hasSection: !!sec,
+            sectionNameTypo: !sec && typoFixable, // 총괄 파일이 있는데 파일명 오타로 읽히지 않은 경우(오타 메시지가 따로 나간다)
+            layerCount: layerList.length,
+            newTotal: layerList.reduce((s, l) => s + l.newCount, 0),
+            deleteTotal: layerList.reduce((s, l) => s + l.deleteCount, 0),
+            layers: layerList,
+            issues,
+        });
+    }
+    sections.sort((a, b) => a.deliveryCode.localeCompare(b.deliveryCode));
+
+    const integrity = { idDuplicates, idDuplicateTotal, idDuplicateRecords, deleteConflicts, deleteConflictTotal, geometry, encoding: encodingIssues, routeMismatch, sections };
+    integrity.messages = integrityMessages(integrity);
+    return integrity;
+}
+
+// 화면·API로 내보내는 모양 — 서버 임시 폴더 경로(_root)를 뺀다.
+function publicIntegrity(integ) {
+    if (!integ) return integ;
+    return { ...integ, sections: integ.sections.map(({ _root, ...s }) => s) };
+}
+
+const GEOM_LABEL = GEOM_KIND_LABEL;
+function samplesText(arr, fn) {
+    return arr.slice(0, INTEGRITY_SAMPLE_LIMIT).map(fn).join(', ');
+}
+
+// 종합 판정에 쓰는 문장 — errors: 등록 결과가 잘못되거나 일부가 사라지는 것, warnings: 확인이 필요한 것.
+function integrityMessages(integ) {
+    const errors = [];
+    const warnings = [];
+
+    // 레이어별로 묶어서 한 줄씩
+    const dupByLayer = new Map();
+    for (const d of integ.idDuplicates) {
+        if (!dupByLayer.has(d.code)) dupByLayer.set(d.code, { koreanName: d.koreanName, items: [] });
+        dupByLayer.get(d.code).items.push(d);
+    }
+    for (const [code, { koreanName, items }] of dupByLayer) {
+        const records = items.reduce((s, d) => s + d.count, 0);
+        errors.push(`${koreanName}(${code}): 같은 ID가 두 번 이상 들어 있습니다 — ${items.length.toLocaleString()}개 ID(${records.toLocaleString()}건). 같은 ID는 한 건만 저장되고 마지막 것이 앞의 것을 덮어씁니다. 예: ${samplesText(items, (d) => `${d.pk}(${d.locations.join(' / ')})`)}`);
+    }
+    if (integ.idDuplicateTotal > integ.idDuplicates.length) errors.push(`ID 중복이 많아 목록에는 앞의 ${integ.idDuplicates.length.toLocaleString()}개 ID만 담았습니다(전체 ${integ.idDuplicateTotal.toLocaleString()}개).`);
+
+    const delByLayer = new Map();
+    for (const d of integ.deleteConflicts) {
+        if (!delByLayer.has(d.code)) delByLayer.set(d.code, { koreanName: d.koreanName, items: [] });
+        delByLayer.get(d.code).items.push(d);
+    }
+    for (const [code, { koreanName, items }] of delByLayer) {
+        errors.push(`${koreanName}(${code}): 같은 ID가 신규(N)와 삭제(D)에 모두 있습니다 — ${items.length.toLocaleString()}건. 등록하면 저장한 직후 삭제돼 남지 않습니다. 예: ${samplesText(items, (d) => d.pk)}`);
+    }
+
+    for (const e of integ.encoding) {
+        const cpg = e.cpg ? ` (.cpg: ${e.cpg})` : '';
+        const sample = e.samples[0] ? ` 예: ${e.samples[0].row}행 ${e.samples[0].field} = "${e.samples[0].value}"` : '';
+        if (e.kind === 'utf8') {
+            errors.push(`납품 ${e.deliveryCode} ${e.file}: 한글이 UTF-8로 저장된 것으로 보입니다${cpg} — 표준은 EUC-KR(CP949)이라 이대로 등록하면 한글이 깨져 저장됩니다(${e.count.toLocaleString()}개 값).${sample} SHP를 EUC-KR로 다시 내보내 달라고 요청하세요.`);
+        } else if (e.kind === 'broken') {
+            warnings.push(`납품 ${e.deliveryCode} ${e.file}: 글자가 깨졌거나 UTF-8로 저장된 값이 ${e.count.toLocaleString()}개 있습니다${cpg} — 원본 파일에서 이미 깨졌거나 여러 곳의 데이터를 합치다 섞였을 수 있습니다.${sample}`);
+        } else {
+            warnings.push(`납품 ${e.deliveryCode} ${e.file}: 글자가 '?'로 바뀐 것으로 보이는 값이 ${e.count.toLocaleString()}개 있습니다${cpg} — 내보낼 때 한글이 사라졌을 수 있습니다.${sample}`);
+        }
+    }
+
+    for (const g of integ.geometry) {
+        if (g.mismatch) {
+            const foundText = Object.entries(g.found).filter(([k, n]) => n && k !== g.expected).map(([k, n]) => `${GEOM_LABEL[k]} ${n.toLocaleString()}건`).join(', ');
+            warnings.push(`${g.koreanName}(${g.code}): 표준은 ${GEOM_LABEL[g.expected]} 도형인데 다른 도형이 ${g.mismatch.toLocaleString()}건 들어 있습니다(${foundText}, 전체 ${g.total.toLocaleString()}건) — 다른 레이어를 잘못 내보냈을 수 있습니다. 예: ${samplesText(g.samples.filter((s) => s.found), (s) => s.pk)}`);
+        }
+        if (g.none) {
+            warnings.push(`${g.koreanName}(${g.code}): 도형이 없는 레코드가 ${g.none.toLocaleString()}건 있습니다(속성 행이 SHP 도형보다 많거나 빈 도형) — 지도에 표시되지 않습니다. 예: ${samplesText(g.samples.filter((s) => !s.found), (s) => s.pk)}`);
+        }
+    }
+
+    // 관리번호 불일치는 레이어마다 따로 쓰면 한 구간이 통째로 어긋났을 때 수십 줄이 되므로 납품·항목별로 묶는다.
+    const fieldLabel = { road_no: '노선번호(ROAD_NO)', sect: '구간(SECT)' };
+    const mmGroups = new Map();
+    for (const m of integ.routeMismatch) {
+        const key = `${m.deliveryCode}|${m.field}`;
+        if (!mmGroups.has(key)) mmGroups.set(key, { deliveryCode: m.deliveryCode, field: m.field, expected: m.expected, count: 0, values: new Map(), layers: [] });
+        const g = mmGroups.get(key);
+        g.count += m.count;
+        for (const v of m.values) g.values.set(v.value, (g.values.get(v.value) || 0) + v.count);
+        g.layers.push(`${m.koreanName} ${m.count.toLocaleString()}건`);
+    }
+    for (const g of mmGroups.values()) {
+        const values = [...g.values.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([v, n]) => `${v}(${n.toLocaleString()}건)`).join(', ');
+        const layerText = g.layers.slice(0, 4).join(', ') + (g.layers.length > 4 ? ` 외 ${g.layers.length - 4}개 레이어` : '');
+        warnings.push(`납품 ${g.deliveryCode}: ${fieldLabel[g.field]}가 관리번호의 값(${g.expected})과 다른 레코드가 ${g.count.toLocaleString()}건 있습니다 — 파일의 값: ${values}. 이 레코드는 관리번호 폴더와 다른 노선·구간으로 등록됩니다. (${layerText})`);
+    }
+
+    for (const s of integ.sections) {
+        if (!s.hasSection && !s.sectionNameTypo) {
+            warnings.push(`납품 ${s.deliveryCode}: 도로대장총괄(A0020000)이 없거나 등록할 수 없어 이 구간이 새로 만들어지지 않습니다 — 서버에 이미 있는 구간이어야 시설물이 붙습니다.`);
+        }
+    }
+    return { errors, warnings };
 }
 
 // 레이어별 결과를 KRRIS 사전검사 요약으로 모은다(미리보기 화면용 — 필드별 건수 + 대상 ID 몇 개).
@@ -503,7 +798,44 @@ function krrisDefectRows(parsed) {
             });
         }
     }
+    // 납품 데이터 점검(ID 중복·도형 종류·인코딩·관리번호) — 업체에 보완을 요청할 때 같은 CSV에서 함께 보이게 한다.
+    const integ = parsed.integrity;
+    if (integ) {
+        const row = (check, code, layer, pk, file, rowNo, detail) => rows.push({ check, code, layer, pk, file, row: rowNo, field: '', label: '', detail });
+        for (const d of integ.idDuplicates) {
+            row('D-1 ID중복', d.code, d.koreanName, d.pk, '', '', `같은 ID가 ${d.count}번 나옵니다 (${d.locations.join(' / ')}) — 마지막 것만 남습니다`);
+        }
+        if (integ.idDuplicateTotal > integ.idDuplicates.length) {
+            row('D-1 ID중복', '', '', '', '', '', `중복 ID ${integ.idDuplicateTotal.toLocaleString()}개 중 ${integ.idDuplicates.length.toLocaleString()}개만 목록에 담았습니다(상한)`);
+        }
+        for (const d of integ.deleteConflicts) {
+            row('D-2 신규·삭제 충돌', d.code, d.koreanName, d.pk, '', '', '같은 ID가 신규(N)와 삭제(D)에 모두 있습니다 — 등록 직후 삭제됩니다');
+        }
+        for (const g of integ.geometry) {
+            for (const s of g.samples) {
+                row('G-1 도형종류', g.code, g.koreanName, s.pk, s.file, s.row, s.found
+                    ? `표준은 ${GEOM_LABEL[g.expected]} 도형인데 ${GEOM_LABEL[s.found]} 도형입니다`
+                    : '도형이 없습니다(빈 도형이거나 SHP에 해당 행이 없음)');
+            }
+            if (g.mismatch + g.none > g.samples.length) {
+                row('G-1 도형종류', g.code, g.koreanName, '', '', '', `이 레이어는 ${(g.mismatch + g.none).toLocaleString()}건 중 ${g.samples.length.toLocaleString()}건만 목록에 담았습니다(상한)`);
+            }
+        }
+        for (const e of integ.encoding) {
+            const what = e.kind === 'utf8' ? 'UTF-8로 저장된 한글' : e.kind === 'broken' ? '글자가 깨진 값' : "'?'로 바뀐 값";
+            row('E-1 한글인코딩', e.code, e.koreanName, '', e.file, e.samples[0] ? e.samples[0].row : '', `${what} ${e.count}개${e.cpg ? ` (.cpg: ${e.cpg})` : ''} — 표준은 EUC-KR`);
+        }
+        const fieldLabel = { road_no: 'ROAD_NO', sect: 'SECT' };
+        for (const m of integ.routeMismatch) {
+            for (const s of m.samples) {
+                row('R-1 관리번호', m.code, m.koreanName, s.pk, s.file, s.row, `${fieldLabel[m.field]} = ${s.value} (관리번호 ${m.deliveryCode} 기준 ${m.expected})`);
+            }
+            if (m.count > m.samples.length) {
+                row('R-1 관리번호', m.code, m.koreanName, '', '', '', `${fieldLabel[m.field]}가 관리번호와 다른 레코드 ${m.count.toLocaleString()}건 중 ${m.samples.length.toLocaleString()}건만 목록에 담았습니다(상한)`);
+            }
+        }
+    }
     return rows;
 }
 
-module.exports = { parseDelivery, krrisDefectRows, setTableColumnProvider };
+module.exports = { parseDelivery, krrisDefectRows, setTableColumnProvider, publicIntegrity };

@@ -5,9 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { parseDelivery, krrisDefectRows, setTableColumnProvider } = require('../server/lib/bulkImportParse');
+const { parseDelivery, krrisDefectRows, setTableColumnProvider, publicIntegrity } = require('../server/lib/bulkImportParse');
 const { parseSectorShpFiles } = require('../server/lib/bulkImportSectors');
-const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles } = require('../server/lib/bulkImportAttachments');
+const { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles, checkFileIntegrity } = require('../server/lib/bulkImportAttachments');
 const { detectRankNameHints } = require('../server/lib/bulkImportRank');
 const { parseDrawingFilename } = require('../server/lib/routeFileNaming');
 const { openZip } = require('../server/lib/zipOpen');
@@ -82,7 +82,8 @@ async function inspect(inputPath, onStep = () => {}) {
         }
 
         onStep('도면 확인');
-        const etcDrawings = findDrawingFiles(dir).map((f) => path.basename(f));
+        const etcDrawingPaths = findDrawingFiles(dir);
+        const etcDrawings = etcDrawingPaths.map((f) => path.basename(f));
         const sectionKeys = new Set();
         for (const r of parsed.sectionRecords) sectionKeys.add(`${Number(r.row.road_no)}|${String(r.row.sect).padStart(3, '0')}`);
         const looseDrawings = findLooseDrawingFiles(dir).map((f) => {
@@ -96,6 +97,10 @@ async function inspect(inputPath, onStep = () => {}) {
                 note: inPackage ? '이번 납품의 노선' : '이번 납품에 없는 노선 — 서버에 이미 등록된 노선이어야 붙습니다',
             };
         });
+
+        // 사진·보고서·도면 파일 자체가 온전한지(0바이트, 확장자와 내용 불일치, 끊긴 파일)
+        onStep('파일 손상 확인');
+        const fileCheck = checkFileIntegrity([...attFiles, ...etcDrawingPaths, ...findLooseDrawingFiles(dir)]);
 
         const defects = krrisDefectRows(parsed);
         const rankHints = detectRankNameHints(parsed.sectionRecords);
@@ -119,6 +124,10 @@ async function inspect(inputPath, onStep = () => {}) {
         parsed.blockingWarnings.forEach((w) => errors.push(w));
         // 파일명 형식이 달라 읽히지 않은 레이어 파일 — 표준 레이어코드의 오타로 보이면 오류(그 레이어가 등록되지 않음), 그 외는 경고
         parsed.ignoredLayerFiles.forEach((g) => (g.suggestion ? errors : warns).push(g.message));
+        // 납품 데이터 점검 — ID 중복·신규/삭제 충돌·UTF-8 한글은 오류, 도형 종류·관리번호 불일치·깨진 글자는 경고
+        parsed.integrity.messages.errors.forEach((m) => errors.push(m));
+        parsed.integrity.messages.warnings.forEach((m) => warns.push(m));
+        if (fileCheck.brokenTotal) warns.push(`열리지 않거나 손상된 것으로 보이는 사진·보고서·도면 ${fileCheck.brokenTotal}건 (0바이트·형식 불일치·끊긴 파일)`);
         layers.forEach((l) => {
             if (l.missingRequired.length) errors.push(`${l.code} ${l.name}: 필수 필드가 DBF에 없습니다 — ${l.missingRequired.join(', ')}`);
             if (l.skippedWrongSchema) errors.push(`${l.code} ${l.name}: 다른 레이어의 속성표가 들어 있어 ${l.skippedWrongSchema}건은 등록되지 않습니다`);
@@ -149,6 +158,8 @@ async function inspect(inputPath, onStep = () => {}) {
             sectionCount: parsed.sectionRecords.length,
             unknownLayerCodes: parsed.unknownLayerCodes,
             ignoredLayerFiles: parsed.ignoredLayerFiles,
+            integrity: publicIntegrity(parsed.integrity),
+            fileCheck,
             totalNew: layers.reduce((s, l) => s + l.newCount, 0),
             totalDelete: layers.reduce((s, l) => s + l.deleteCount, 0),
             layers,

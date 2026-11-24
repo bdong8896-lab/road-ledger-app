@@ -4977,6 +4977,7 @@ function initBulkRegister() {
         });
 
         renderKrrisChecks(data);
+        renderIntegrityChecks(data);
 
         const allWarnings = [];
         if (data.unknownLayerCodes.length) allWarnings.push(`알 수 없는 레이어코드: ${data.unknownLayerCodes.join(', ')}`);
@@ -4984,6 +4985,13 @@ function initBulkRegister() {
         (data.ignoredLayerFiles || []).slice().sort((a, b) => (b.suggestion ? 1 : 0) - (a.suggestion ? 1 : 0))
             .forEach((g) => allWarnings.push(`${g.suggestion ? '⚠ 파일명 오류 — ' : ''}${g.message}`));
         data.layers.forEach((l) => l.warnings.forEach((w) => allWarnings.push(w)));
+        // 납품 데이터 점검(ID 중복·인코딩·도형·관리번호), 서버 기존 데이터 비교, 첨부 파일 손상
+        if (data.integrity && data.integrity.messages) {
+            data.integrity.messages.errors.forEach((w) => allWarnings.push(`⚠ ${w}`));
+            data.integrity.messages.warnings.forEach((w) => allWarnings.push(w));
+        }
+        if (data.serverCompare) data.serverCompare.warnings.forEach((w) => allWarnings.push(w));
+        if (data.fileCheck && data.fileCheck.brokenTotal) allWarnings.push(`열리지 않거나 손상된 것으로 보이는 사진·보고서·도면 ${data.fileCheck.brokenTotal}건 (0바이트·형식 불일치·끊긴 파일)`);
         if (allWarnings.length) {
             warningsEl.innerHTML = allWarnings.map((w) => escapeHtml(w)).join('<br>');
             warningsEl.classList.add('show');
@@ -5027,7 +5035,7 @@ function initBulkRegister() {
                 <td class="kr-num">${c.total.toLocaleString()}</td>
                 <td>${c.values.map((v) => `<span class="kr-code">${escapeHtml(v.value)}<i>${v.count.toLocaleString()}건</i></span>`).join(' ')}${c.distinct > c.values.length ? ` 외 ${c.distinct - c.values.length}종` : ''}</td>
             </tr>`).join('');
-        const anyDefect = crsBad || k.nnTotal || codesTotal;
+        const anyDefect = crsBad || k.nnTotal || codesTotal || integrityDefectCount(data);
         krrisEl.innerHTML = `
             <div class="kr-head">
                 <span>KRRIS 사전검사</span>
@@ -5053,6 +5061,96 @@ function initBulkRegister() {
         `;
         const dl = document.getElementById('bulk-krris-download');
         if (dl) dl.addEventListener('click', () => downloadKrrisReport(data.uploadId, dl));
+    }
+
+    // 납품 데이터 점검으로 찾은 결함 건수(결함 목록 CSV에 담기는 것들)
+    function integrityDefectCount(data) {
+        const I = data.integrity;
+        if (!I) return 0;
+        return I.idDuplicateTotal + I.deleteConflictTotal + I.encoding.length
+            + I.geometry.reduce((s, g) => s + g.mismatch + g.none, 0) + I.routeMismatch.reduce((s, m) => s + m.count, 0);
+    }
+
+    // 납품 데이터 점검 — 구간별 요약, ID 중복, 신규·삭제 충돌, 도형 종류, 한글 인코딩, 관리번호 일치, 파일 손상,
+    // 서버 기존 데이터와의 비교(덮어쓰기·중복 위험). 서버 lib/bulkImportParse.js(buildIntegrity), lib/bulkImportCompare.js 참고.
+    // 등록을 막지는 않는다(경고만) — 같은 ID 덮어쓰기처럼 의도한 경우도 있기 때문.
+    function renderIntegrityChecks(data) {
+        const I = data.integrity;
+        if (!I) return;
+        const GEOM = { Point: '점', Line: '선', Polygon: '면' };
+        const SHOW = 30;
+        const n = (v) => Number(v || 0).toLocaleString();
+        const chip = (text, count) => `<span class="kr-code">${escapeHtml(text)}${count === undefined ? '' : `<i>${n(count)}건</i>`}</span>`;
+        const table = (head, rows) => `<table class="kr-table"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+        const item = (title, count, msg, body) => `
+            <div class="kr-item ${count ? 'fail' : 'pass'}">
+                <i class="fa-solid ${count ? 'fa-triangle-exclamation' : 'fa-circle-check'}"></i>
+                <div><b>${title}</b> <span class="kr-msg">${count ? msg : '이상 없음'}</span>${count ? body : ''}</div>
+            </div>`;
+        const more = (total, shown) => (total > shown ? `<div class="kr-sub">앞의 ${n(shown)}건만 보입니다. 전체는 결함 목록 CSV에서 확인하세요.</div>` : '');
+
+        // 구간별 요약(+ 서버 기존 데이터와 비교)
+        const cmpByCode = new Map(((data.serverCompare && data.serverCompare.sections) || []).map((s) => [s.deliveryCode, s]));
+        const secRows = I.sections.map((s) => {
+            const c = [];
+            if (!s.hasSection) c.push(chip(s.sectionNameTypo ? '총괄 파일명 오류' : '총괄 없음'));
+            if (s.issues.dup) c.push(chip('ID 중복', s.issues.dup));
+            if (s.issues.encoding) c.push(chip('한글 인코딩', s.issues.encoding));
+            if (s.issues.geom) c.push(chip('도형', s.issues.geom));
+            if (s.issues.mismatch) c.push(chip('관리번호 불일치', s.issues.mismatch));
+            if (s.issues.nn) c.push(chip('필수값 빈칸', s.issues.nn));
+            if (s.issues.code) c.push(chip('코드표 외', s.issues.code));
+            const cmp = cmpByCode.get(s.deliveryCode);
+            const cmpText = !cmp ? '-' : cmp.isNewSection ? '새 구간(서버에 기존 데이터 없음)'
+                : `덮어쓰기 ${n(cmp.overwriteTotal)} · 새 ID ${n(cmp.addedTotal)}${cmp.existingOnlyTotal ? ` · 기존에만 ${n(cmp.existingOnlyTotal)}` : ''}`;
+            return `<tr>
+                <td>${escapeHtml(s.deliveryCode)}<span class="kr-field">${escapeHtml(s.roadName || '')} ${escapeHtml(s.roadNo)}-${escapeHtml(s.sect)}</span></td>
+                <td class="kr-num">${n(s.newTotal)}${s.deleteTotal ? `<span class="kr-skip">삭제 ${n(s.deleteTotal)}</span>` : ''}</td>
+                <td>${escapeHtml(cmpText)}</td>
+                <td>${c.join(' ') || '이상 없음'}</td></tr>`;
+        }).join('');
+
+        const dupRows = I.idDuplicates.slice(0, SHOW).map((d) =>
+            `<tr><td>${escapeHtml(d.koreanName)}</td><td>${escapeHtml(d.pk)}</td><td class="kr-num">${n(d.count)}</td><td>${escapeHtml(d.locations.join(' / '))}</td></tr>`).join('');
+        const delRows = I.deleteConflicts.slice(0, SHOW).map((d) => `<tr><td>${escapeHtml(d.koreanName)}</td><td>${escapeHtml(d.pk)}</td></tr>`).join('');
+        const geomCount = I.geometry.reduce((s, g) => s + g.mismatch + g.none, 0);
+        const geomRows = I.geometry.map((g) => {
+            const found = Object.entries(g.found).filter(([, v]) => v).map(([k, v]) => `${GEOM[k]} ${n(v)}`).join(', ');
+            return `<tr><td>${escapeHtml(g.koreanName)}</td><td>${GEOM[g.expected]}</td><td>${escapeHtml(found)}</td><td class="kr-num">${n(g.none)}</td></tr>`;
+        }).join('');
+        const encLabel = { utf8: 'UTF-8로 저장됨', broken: '글자 깨짐', question: "'?'로 바뀜" };
+        const encRows = I.encoding.map((e) =>
+            `<tr><td>${escapeHtml(e.file)}</td><td>${encLabel[e.kind]}${e.cpg ? ` (.cpg ${escapeHtml(e.cpg)})` : ''}</td><td class="kr-num">${n(e.count)}</td></tr>`).join('');
+        const mmCount = I.routeMismatch.reduce((s, m) => s + m.count, 0);
+        const mmRows = I.routeMismatch.map((m) =>
+            `<tr><td>${escapeHtml(m.deliveryCode)}</td><td>${escapeHtml(m.koreanName)}</td><td>${m.field === 'road_no' ? '노선번호' : '구간'}</td><td>${escapeHtml(m.expected)}</td><td>${m.values.map((v) => `${escapeHtml(v.value)} (${n(v.count)}건)`).join(', ')}</td></tr>`).join('');
+        const fc = data.fileCheck || { brokenTotal: 0, broken: [] };
+        const fcRows = fc.broken.slice(0, SHOW).map((b) => `<tr><td>${escapeHtml(b.name)}</td><td>${escapeHtml(b.reason)}</td></tr>`).join('');
+        const cmp = data.serverCompare;
+        const cmpRows = cmp ? cmp.sections.map((s) => `<tr><td>${escapeHtml(s.deliveryCode)}</td><td class="kr-num">${n(s.overwriteTotal)}</td><td class="kr-num">${n(s.addedTotal)}</td><td class="kr-num">${n(s.existingOnlyTotal)}</td></tr>`).join('') : '';
+
+        krrisEl.insertAdjacentHTML('beforeend', `
+            <div class="kr-head" style="margin-top:12px"><span>납품 데이터 점검</span></div>
+            ${I.sections.length ? `<div class="kr-item pass"><i class="fa-solid fa-list"></i><div><b>구간별 요약</b>
+                ${table(['관리번호', '신규', '서버 기존 데이터와 비교', '점검'], secRows)}
+                <div class="kr-sub">관리번호 폴더 하나가 노선의 한 구간입니다. 도로대장총괄(A0020000)이 없는 구간은 새로 만들어지지 않습니다.${cmp ? '' : ' (서버 기존 데이터와의 비교는 이번에 하지 못했습니다.)'}</div></div></div>` : ''}
+            ${item('ID 중복', I.idDuplicateTotal, `${n(I.idDuplicateTotal)}개 ID — 같은 ID는 마지막 것만 남습니다`,
+                table(['레이어', 'ID', '횟수', '위치'], dupRows) + more(I.idDuplicateTotal, Math.min(SHOW, I.idDuplicates.length)))}
+            ${item('신규·삭제에 같은 ID', I.deleteConflictTotal, `${n(I.deleteConflictTotal)}건 — 저장한 직후 삭제됩니다`,
+                table(['레이어', 'ID'], delRows) + more(I.deleteConflictTotal, Math.min(SHOW, I.deleteConflicts.length)))}
+            ${item('도형 종류(점/선/면)', geomCount, `${n(geomCount)}건이 표준과 다릅니다`,
+                table(['레이어', '표준', '실제 도형', '도형 없음'], geomRows) + '<div class="kr-sub">표준 SHP 템플릿(v2.3)의 도형 종류와 다른 레이어입니다. 다른 레이어를 잘못 내보냈을 수 있습니다.</div>')}
+            ${item('한글 인코딩(EUC-KR)', I.encoding.length, `${n(I.encoding.length)}개 파일`,
+                table(['파일', '판정', '값 개수'], encRows) + '<div class="kr-sub">UTF-8로 저장된 파일은 그대로 등록하면 한글이 깨집니다. SHP를 EUC-KR로 다시 받으세요.</div>')}
+            ${item('관리번호와 노선·구간', mmCount, `${n(mmCount)}건이 관리번호와 다른 노선·구간입니다`,
+                table(['납품', '레이어', '항목', '관리번호 기준', '파일의 값'], mmRows) + '<div class="kr-sub">관리번호는 관리기관 5자리 + 연도 4자리 + 노선번호 3자리 + 구간 3자리입니다. 다르면 다른 구간으로 등록됩니다.</div>')}
+            ${item('사진·보고서·도면 파일', fc.brokenTotal, `${n(fc.brokenTotal)}건이 열리지 않을 수 있습니다`,
+                table(['파일', '내용'], fcRows) + more(fc.brokenTotal, Math.min(SHOW, fc.broken.length)))}
+            ${cmp ? item('서버 기존 데이터와 비교', cmp.warnings.length, `확인할 곳 ${n(cmp.warnings.length)}곳(위 경고 참고)`,
+                table(['관리번호', '덮어쓰기', '새 ID', '기존에만 있음'], cmpRows)
+                + '<div class="kr-sub">덮어쓰기: 이미 서버에 있는 ID(등록하면 이번 값으로 바뀜) · 기존에만 있음: 같은 구간 서버 데이터 중 이번 납품에 없는 것</div>') : ''}
+            <div class="kr-note">이 점검은 등록을 막지 않습니다. 의도한 덮어쓰기인지 확인한 뒤 진행하세요.</div>
+        `);
     }
 
     async function downloadKrrisReport(uploadId, btn) {

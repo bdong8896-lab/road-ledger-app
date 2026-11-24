@@ -16,6 +16,7 @@ const LIB_FILES = [
     'bulkImportParse.js', 'dbfParser.js', 'shpParser.js', 'crsRegistry.js', 'bulkImportSectors.js',
     'bulkImportAttachments.js', 'bulkImportRank.js', 'routeFileNaming.js', 'zipOpen.js', 'govLayerMap.js', 'schemaLabels.js',
     'govCodebook.js', 'codeAliases.js', // V-1 코드표 대조
+    'govLayerGeom.js', // 도형 종류(점/선/면) 점검
 ];
 const MODULES = ['iconv-lite', 'proj4', 'adm-zip'];
 

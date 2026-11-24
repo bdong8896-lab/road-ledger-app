@@ -84,4 +84,64 @@ function findLooseDrawingFiles(root) {
     return out;
 }
 
-module.exports = { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles };
+// ---- 파일 자체가 온전한지 점검 (0바이트 · 확장자와 내용 불일치 · 중간에 끊긴 파일) ----
+// 파일을 통째로 읽지 않고 앞 16바이트와 뒤 일부만 본다 — 수천 장의 사진이 있어도 빠르다.
+// 열리지 않는 사진/PDF/도면이 등록된 뒤에야 발견되는 일을 막는 것이 목적이라, 형식별로 "확실히 이상한 경우"만 잡는다.
+const SIGNATURES = {
+    '.jpg': { magic: [0xff, 0xd8, 0xff], tail: (t) => t.includes(Buffer.from([0xff, 0xd9])), tailBytes: 2048, kind: 'JPEG 이미지', image: true },
+    '.jpeg': { magic: [0xff, 0xd8, 0xff], tail: (t) => t.includes(Buffer.from([0xff, 0xd9])), tailBytes: 2048, kind: 'JPEG 이미지', image: true },
+    '.png': { magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], tail: (t) => t.includes(Buffer.from('IEND')), tailBytes: 16, kind: 'PNG 이미지', image: true },
+    '.gif': { magic: [0x47, 0x49, 0x46, 0x38], tail: (t) => t.includes(0x3b), tailBytes: 4, kind: 'GIF 이미지', image: true },
+    '.bmp': { magic: [0x42, 0x4d], kind: 'BMP 이미지', image: true },
+    '.pdf': { magic: [0x25, 0x50, 0x44, 0x46], tail: (t) => t.includes(Buffer.from('%%EOF')), tailBytes: 1100, kind: 'PDF 문서' },
+    '.dwg': { magic: [0x41, 0x43], kind: 'DWG 도면' }, // "AC10xx"
+};
+const ATTACHMENT_CHECK_LIMIT = 300; // 목록에 담는 개수 상한(건수 집계는 상한과 무관)
+
+function checkOneFile(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    let fd;
+    try {
+        const size = fs.statSync(filePath).size;
+        if (size === 0) return '0바이트(빈 파일)';
+        const sig = SIGNATURES[ext];
+        if (!sig) return null;
+        fd = fs.openSync(filePath, 'r');
+        const head = Buffer.alloc(Math.min(16, size));
+        fs.readSync(fd, head, 0, head.length, 0);
+        let real = sig; // 내용으로 본 실제 형식
+        if (!sig.magic.every((b, i) => head[i] === b)) {
+            // 다른 형식의 파일이 확장자만 바뀐 경우 — 어떤 형식으로 보이는지 찾는다
+            const as = Object.values(SIGNATURES).find((s) => s.magic.every((b, i) => head[i] === b));
+            // 사진끼리의 확장자 불일치(PNG를 .jpg로 저장 등)는 브라우저·뷰어가 내용을 보고 열기 때문에 문제로 보지 않는다 — 실제 형식으로 끝 부분만 확인한다.
+            if (as && as.image && sig.image) real = as;
+            else return as ? `확장자는 ${ext}인데 내용은 ${as.kind}입니다` : `${sig.kind}가 아닙니다(파일 내용이 손상됐거나 다른 형식입니다)`;
+        }
+        if (real.tail) {
+            const n = Math.min(real.tailBytes, size);
+            const tail = Buffer.alloc(n);
+            fs.readSync(fd, tail, 0, n, size - n);
+            if (!real.tail(tail)) return `${real.kind} 끝부분이 없습니다(전송·복사 중 잘린 파일일 수 있습니다 — 직접 열어 확인하세요)`;
+        }
+        return null;
+    } catch (e) {
+        return `읽을 수 없습니다(${e.code || e.message})`;
+    } finally {
+        if (fd !== undefined) try { fs.closeSync(fd); } catch (e) { /* 무시 */ }
+    }
+}
+
+// files: 경로 배열. 반환: { checked, brokenTotal, broken: [{ name, reason }] }
+function checkFileIntegrity(files) {
+    const broken = [];
+    let brokenTotal = 0;
+    for (const f of files) {
+        const reason = checkOneFile(f);
+        if (!reason) continue;
+        brokenTotal++;
+        if (broken.length < ATTACHMENT_CHECK_LIMIT) broken.push({ name: path.basename(f), reason });
+    }
+    return { checked: files.length, brokenTotal, broken };
+}
+
+module.exports = { findFacilityAttachments, findDrawingFiles, findLooseDrawingFiles, checkFileIntegrity };
