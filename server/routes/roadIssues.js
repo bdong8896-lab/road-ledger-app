@@ -9,6 +9,7 @@ const multer = require('multer');
 const pool = require('../db');
 const config = require('../config');
 const { requireAuth, requireAdmin } = require('../middleware/requireAuth');
+const { reprojectFromWgs84, EXPORT_TARGET_EPSG } = require('../lib/crsRegistry');
 
 const router = express.Router();
 
@@ -72,9 +73,12 @@ router.get('/geojson', async (req, res) => {
         visible = visible.filter((r) => idSet.has(r.id));
     }
 
+    // 내려받는 파일의 좌표계는 노선 내보내기와 같은 EPSG:5179(UTM-K)로 통일한다(DB에는 4326으로 저장돼 있어 여기서 변환).
+    // GeoJSON 최신 규격은 4326만 인정하지만, QGIS 등은 아래 crs 항목(옛 규격)을 읽어 좌표계를 올바르게 잡는다. 좌표는 mm 단위로 줄인다.
+    const toExportCrs = (geom) => JSON.parse(JSON.stringify(reprojectFromWgs84(geom, EXPORT_TARGET_EPSG)), (k, v) => (typeof v === 'number' ? Math.round(v * 1000) / 1000 : v));
     const features = visible.filter((r) => r.geom).map((r) => ({
         type: 'Feature',
-        geometry: r.geom,
+        geometry: toExportCrs(r.geom),
         properties: {
             id: r.id, category: r.category, team: r.team, status: r.status,
             title: r.title, content: r.content, created_at: r.created_at,
@@ -82,7 +86,7 @@ router.get('/geojson', async (req, res) => {
     }));
 
     res.setHeader('Content-Disposition', 'attachment; filename="user_road_issues.geojson"');
-    res.json({ type: 'FeatureCollection', features });
+    res.json({ type: 'FeatureCollection', crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::5179' } }, features });
 });
 
 router.get('/:id', async (req, res) => {
